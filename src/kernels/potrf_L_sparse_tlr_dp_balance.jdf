@@ -1,0 +1,1305 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+/* Disable GPU support for this implementation */
+#undef PARSEC_HAVE_DEV_CUDA_SUPPORT 
+
+/*
+ * Task Priority System for Cholesky Factorization with Load Balancing
+ * 
+ * This JDF implements a priority-based scheduling system to optimize task execution order
+ * for Cholesky factorization with sparse Tile Low-Rank (TLR) support and dynamic load balancing.
+ * 
+ * Priority formulas for different task types:
+ *      - potrf_dpotrf(k)    : (MT-k)**3     - Diagonal block factorization
+ *      - potrf_dsyrk(k,m)   : (MT-m)**3 + 3 * (m - k)     - Symmetric rank-k update
+ *      - potrf_dtrsm(m,k)   : (MT-m)**3 + 3 * (m - k) * (2 * MT - k - m - 1)  - Triangular solve
+ *      - potrf_dgemm(m,n,k) : (MT-m)**3 + 3 * (m - n) * (2 * MT - m - n - 1) + 6 * (m - k)  - Matrix multiply
+ *
+ * Maximum priority calculation:
+ *      (MT - PRI_CHANGE)**3 + 3 * MT * (2 * MT - PRI_CHANGE - 1) + 6 * MT  < (MT**3 + 6 MT**2 + 3 MT)
+ *
+ * WARNING: Integer overflow may occur if mt > 1200 due to cubic priority calculations.
+ */
+
+
+/*
+ * Custom Task Management Functions
+ * 
+ * These functions provide optimized task scheduling and key generation for the Cholesky factorization
+ * with load balancing. The combination of my_defined_nb_tasks_fn and make_key functions allows
+ * skipping the loop in the task class's internal initialization, improving performance.
+ */
+
+/* Define the number of local tasks for each process to optimize load balancing */
+static uint32_t my_defined_nb_tasks_fn(struct __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_s *__tp);
+
+/* Create custom make_key functions for each task class to optimize task scheduling */
+static parsec_key_t my_make_key_potrf_dpotrf(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dtrsm(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dtrsm_READ(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dtrsm_WRITE(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dsyrk(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dgemm_READ(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+
+/* Startup function for potrf_dgemm_READ task to handle initialization */ 
+struct __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dgemm_READ_task_s;
+static int my_startup_potrf_dgemm_READ(parsec_execution_stream_t * es, struct __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dgemm_READ_task_s * this_task);
+
+%}
+
+%option nb_local_tasks_fn = my_defined_nb_tasks_fn
+
+/*
+ * Global Variables and Data Structures
+ * 
+ * These variables define the matrix descriptors, parameters, and analysis data
+ * required for the Cholesky factorization with sparse TLR support and load balancing.
+ */
+
+/* Matrix descriptors for the main computation */
+descA        [ type = "parsec_tiled_matrix_t *" ]        /* Main matrix descriptor */
+descAr       [ type = "parsec_tiled_matrix_t *" aligned = descA ]  /* Rank matrix descriptor */
+descRank     [ type = "parsec_tiled_matrix_t *" aligned = descA ]  /* Rank information matrix */
+descDist     [ type = "parsec_tiled_matrix_t *" aligned = descA ]  /* Distribution matrix for load balancing */
+params_tlr   [ type = "hicma_parsec_params_t *" ]        /* TLR-specific parameters */
+analysis     [ type = "hicma_parsec_matrix_analysis_t *" ] /* Matrix analysis data for sparse structure */
+
+/* Hidden Global Variables - Internal memory management */
+/* Memory pool handlers for efficient memory allocation */
+p_work       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* General work memory pool */
+p_work_rr    [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Rank-rank work memory pool */
+p_work_mbr   [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /* Matrix-block-rank work memory pool */
+
+/* Priority control variables for task scheduling */
+PRI_CHANGE   [ type = "int" hidden = on default = 0 ]    /* Priority change threshold */
+PRI_MAX      [ type = "int" hidden = on default = "(descA->mt * ( 3 + descA->mt * ( 2 + descA->mt )))" ]  /* Maximum priority value */
+
+
+/**************************************************
+ *               potrf_dtrsm READ                 *
+ **************************************************/
+/*
+ * TRSM READ Task - Triangular Solve Matrix Read Operation
+ * 
+ * This task handles the initial read operation for triangular solve (TRSM) operations
+ * in the Cholesky factorization. It reads the necessary data for TRSM computations
+ * and prepares control messages for subsequent tasks.
+ */
+potrf_dtrsm_READ(m, k) [ make_key_fn = my_make_key_potrf_dtrsm_READ
+                         high_priority = on ]
+
+// Execution space definition
+k = 0 .. descA->mt-2  /* Column index range for TRSM operations */
+
+// Number of initial TRSM operations in iteration k
+num_trsm_initial = %{ return analysis->trsm_num_initial[k]; %}
+
+// Execution space for row indices based on initial TRSM count
+m = [ mi = 0 .. %{ return num_trsm_initial-1; %} ] %{ return analysis->trsm_initial[k][mi]; %}
+
+// Local number of GEMM operations for this tile
+num_local_gemm = %{ return analysis->gemm_local_num[k*descA->mt+m]; %}
+
+// Control message size to send (contains new rank information)
+size = 1
+
+// Parallel partitioning - assign tasks to processors based on tile location
+: descA(m, k)
+
+/* Data dependencies and flow control */
+READ C <- ((num_trsm_initial > 0) && (k == 0 || num_local_gemm == 0)) ? descA(m, k): NULL
+       -> ((num_trsm_initial > 0) && (k == 0 || num_local_gemm == 0)) ? C potrf_dtrsm(m, k)    [ layout_remote = MPI_DOUBLE count_remote = size ] 
+
+READ Cr <- ((num_trsm_initial > 0) && (k == 0 || num_local_gemm == 0)) ? descAr(m, k): NULL  
+        -> ((num_trsm_initial > 0) && (k == 0 || num_local_gemm == 0)) ? Cr potrf_dtrsm(m, k)  [ type_remote = AR ]
+
+/* Control dependency - wait for diagonal block factorization to complete */
+CTL ctl <- ctl1 potrf_dpotrf(k)
+
+BODY
+{
+    /* Calculate and set the message size based on rank information */
+    if( (num_trsm_initial > 0) && (k == 0 || num_local_gemm == 0) ) {
+        /* Size = block_size * rank * 2 (for U and V components) */
+        this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2;
+        if( DEBUG_INFO ) fprintf(stderr, "TRSM_READ %d %d : rank %d size %d\n", m, k, descA->super.myrank, this_task->locals.size.value);
+    }
+}
+END
+
+/**************************************************
+ *               potrf_dtrsm WRITE                 *
+ **************************************************/
+/*
+ * TRSM WRITE Task - Triangular Solve Matrix Write Operation
+ * 
+ * This task handles the write operation for triangular solve (TRSM) operations,
+ * writing the computed results back to the matrix and handling rank updates
+ * for sparse TLR representation.
+ */
+potrf_dtrsm_WRITE(m, k) [ make_key_fn = my_make_key_potrf_dtrsm_WRITE
+                          high_priority = on ]
+
+// Execution space definition
+k = 0 .. descA->mt-2  /* Column index range for TRSM operations */
+
+// Number of TRSM operations in iteration k
+num_trsm = %{ return analysis->trsm_num[k]; %}
+
+// Execution space for row indices based on TRSM count
+m = [ mi = 0 .. %{ return num_trsm-1; %} ] %{ return analysis->trsm[k][mi]; %}
+
+// Control message size to send (contains new rank information)
+size = 1
+
+// Parallel partitioning - assign tasks to processors based on tile location
+: descA(m, k)
+
+/* Data dependencies and flow control */
+READ C <- C potrf_dtrsm(m, k)           [ type_remote = UV ]  /* Read computed TRSM result */
+READ A <- descA(m, k)                                        /* Read original matrix tile */
+
+RW Cr <- Cr potrf_dtrsm(m, k)           [ type_remote = AR ]  /* Read rank information */
+      -> descAr(m, k)                                        /* Write updated rank to rank matrix */
+
+BODY
+{
+    /* Handle rank changes and memory reallocation for load balancing */
+    if( descA->super.rank_of(&descA->super, m, k) != descDist->super.rank_of(&descDist->super, m, k) ) {
+        int old_rank = analysis->initial_rank[k*descA->mt+m];  /* Previous rank */
+        int new_rank = ((int *)Cr)[0];                         /* New rank from TRSM computation */
+        int data_size = descA->mb * new_rank * 2 * sizeof(double);  /* Required memory size */
+        
+        /* Reallocate memory if rank has increased */
+        if( new_rank > old_rank ) {
+            /* Free existing memory if it exists */
+            if( old_rank != 0 ) {
+                if( NULL != this_task->data._f_A.data_out->device_private)
+                    free( this_task->data._f_A.data_out->device_private );
+            } else {
+                /* Create new data structure for first allocation */
+                this_task->data._f_A.data_out = parsec_data_copy_new(data_of_descA(m, k), 0, PARSEC_potrf_L_sparse_tlr_dp_balance_UV_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+            }
+
+            /* Allocate new memory for increased rank */
+            this_task->data._f_A.data_out->device_private = malloc( data_size ); 
+            this_task->data._f_A.data_out->original->nb_elts = data_size; 
+        } 
+
+        /* Copy computed data to the matrix descriptor */
+        memcpy( (void *)this_task->data._f_A.data_out->device_private, (void *)C, data_size ); 
+    }
+}
+END
+
+/**************************************************
+ *               potrf_dgemm READ                 *
+ **************************************************/
+/*
+ * GEMM READ Task - General Matrix Multiply Read Operation
+ * 
+ * This task handles the initial read operation for general matrix multiply (GEMM) operations
+ * in the Cholesky factorization. It reads the necessary data for GEMM computations
+ * and prepares for subsequent matrix multiplication tasks.
+ */
+potrf_dgemm_READ(m, n) [ make_key_fn = my_make_key_potrf_dgemm_READ ]
+                         //startup_fn  = my_startup_potrf_dgemm_READ ]
+
+// Execution space definition
+n = 1 .. descA->mt-2  /* Column index range for GEMM operations */
+
+// Number of initial TRSM operations in iteration n
+num_trsm_initial = %{ return analysis->trsm_num_initial[n]; %}
+
+// Execution space for row indices based on initial TRSM count
+// Note: num_trsm_initial could be 0, potentially causing deadlock in startup function
+// The "restore_context" mechanism in __jdf2c_startup_potrf_dgemm_READ prevents this
+// by setting restore_context to 1, which skips the problematic loop
+m = [ mi = 0 .. %{ return num_trsm_initial-1; %} ] %{ return analysis->trsm_initial[n][mi]; %}
+
+// Number of local GEMM operations for this tile
+num_gemm = %{ return analysis->gemm_local_num[n*descA->mt+m]; %}
+
+// Execution space for k index (first local GEMM index if applicable)
+k = %{ return (num_gemm > 0 && descA->super.myrank == descA->super.rank_of(&descA->super, m, n))? analysis->gemm_local[n*descA->mt+m][0]: -1; %}
+
+// Control message size to send (initially 0, will be set in body)
+size = 0
+
+// Parallel partitioning - assign tasks to processors based on tile location
+: descA(m, n)
+
+/* Data dependencies and flow control */
+READ C <- (num_gemm > 0)? descA(m, n): NULL
+       -> (num_gemm > 0)? C potrf_dgemm(m, n, k)     [ layout_remote = MPI_DOUBLE count_remote = size ] 
+
+BODY
+{
+    /* Set message size based on initial rank if GEMM operations are required */
+    if( num_gemm > 0 ) {
+        /* Size = block_size * initial_rank * 2 (for U and V components) */
+        this_task->locals.size.value = descA->mb * analysis->initial_rank[n*descA->mt+m] * 2;
+        if( DEBUG_INFO ) fprintf(stderr, "GEMM_READ %d %d %d: rank %d num_trsm_initial %d num_gemm %d size %d inital_rank %d\n",
+                m, n, k, descA->super.myrank, num_trsm_initial, num_gemm, this_task->locals.size.value,
+                analysis->initial_rank[n*descA->mt+m]);
+    }
+}
+END
+
+
+/**************************************************
+ *               potrf_dpotrf                     *
+ **************************************************/
+/*
+ * POTRF Task - Cholesky Factorization of Diagonal Block
+ * 
+ * This is the main diagonal block factorization task in the Cholesky decomposition.
+ * It performs the Cholesky factorization of the diagonal block A(k,k) and can
+ * recursively call itself for smaller subproblems or use optimized CPU kernels.
+ */
+potrf_dpotrf(k) [ make_key_fn = my_make_key_potrf_dpotrf
+                  high_priority = on ]
+
+// Execution space definition
+k = 0 .. descA->mt-1  /* Diagonal block index range */
+
+info = 0  /* Return code for recursive calls and error handling */
+
+// Number of local SYRK operations for this diagonal block
+num_syrk = %{ return analysis->syrk_local_num[k]; %}
+
+// Last local SYRK index that has dependency to this POTRF task
+last_syrk = %{ return (num_syrk > 0) ? analysis->syrk_local[k][num_syrk-1] : -1; %}
+
+// Number of TRSM operations for iteration k
+num_trsm = %{ return analysis->trsm_num[k]; %}
+
+// Number of initial TRSM operations for iteration k
+num_trsm_initial = %{ return analysis->trsm_num_initial[k]; %}
+
+// Number of TRSM operations for previous iteration k-1
+num_trsm_prev = %{ return (k > 0)? analysis->trsm_num[k-1] : -1; %}
+
+// Parallel partitioning - assign tasks to processors based on diagonal tile location
+:descA(k, k)
+
+/* Data dependencies and flow control */
+RW T <- ( k == 0 || num_syrk == 0 ) ? descA(k, k)  /* Read initial diagonal block or from SYRK */
+     <- (1)? T potrf_dsyrk(last_syrk, k)                                                                                [ type_remote = FULL ]
+     -> (num_trsm > 0) ? [ mi = 0 .. num_trsm-1 ] T potrf_dtrsm( %{ return analysis->trsm[k][mi]; %}, k )               [ type_remote = FULL ]
+     -> descA(k, k)                                                                                                    
+
+/* Control dependency - trigger TRSM READ tasks for next iteration */
+CTL ctl1 -> ( k < descA->mt-1 && num_trsm_initial > 0) ? [ mi = 0 .. num_trsm_initial-1 ] ctl potrf_dtrsm_READ( %{ return analysis->trsm_initial[k][mi]; %}, k )
+
+/* Priority calculation for task scheduling */
+; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
+
+
+BODY [type=RECURSIVE]
+{
+    /* Calculate actual block size (handle last block which might be smaller) */
+    int tempkm = k == descA->mt-1 ? descA->m - k*descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;  /* Hierarchical block size threshold */
+
+    /* Use sequential CPU version for small blocks */
+    if( tempkm <= smallnb ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    if(DEBUG_INFO) printf("POTRF_Recursive: %d\n", k);
+
+    /* Count floating point operations for performance monitoring */
+    unsigned long int cnt = hicma_parsec_op_counts('c', tempkm, 0, 0, 0);
+    params_tlr->op_band[es->th_id] += cnt;   /* Operations in band region */
+    params_tlr->op_path[es->th_id] += cnt;   /* Operations on critical path */
+
+    /* Print progress information */
+    hicma_parsec_print_process( descA->mt, k, params_tlr->start_time_potrf );
+
+    /* Create subtile descriptor for recursive call */
+    subtile_desc_t *small_descT;
+    parsec_taskpool_t *parsec_dpotrf;
+
+    small_descT = subtile_desc_create( descA, k, k,
+            smallnb, smallnb, 0, 0, tempkm, tempkm );
+    small_descT->mat = T;
+
+    /* Create recursive POTRF task pool */
+    parsec_dpotrf = dplasma_dpotrf_New(params_tlr->uplo, (parsec_tiled_matrix_t *)small_descT, &this_task->locals.info.value);
+
+    /* Execute recursive call */
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dpotrf, dplasma_dpotrf_Destruct,
+            1, small_descT);
+
+    return PARSEC_HOOK_RETURN_ASYNC;
+}
+END
+
+BODY
+{
+    /* Execute CPU kernel for Cholesky factorization */
+    hicma_parsec_core_potrf_cpu( descA, params_tlr, es, T, k );
+}
+END
+
+
+/**************************************************
+ *               potrf_dtrsm                      *
+ **************************************************/
+/*
+ * TRSM Task - Triangular Solve Matrix Operation
+ * 
+ * This task performs triangular solve operations in the Cholesky factorization.
+ * It solves the equation A(m,k) = A(m,k) * A(k,k)^(-T) where A(k,k) is the
+ * diagonal block that has been factorized. This task handles both dense and
+ * sparse TLR representations with dynamic load balancing.
+ */
+potrf_dtrsm(m, k) [ make_key_fn = my_make_key_potrf_dtrsm
+                    high_priority = on ]
+
+// Execution space definition
+k = 0 .. descA->mt-2  /* Column index range for TRSM operations */
+
+// Number of TRSM operations in iteration k
+num_trsm = %{ return analysis->trsm_num[k]; %}
+
+// Execution space for row indices based on TRSM count
+m = [ mi = 0 .. %{ return num_trsm-1; %} ] %{ return analysis->trsm[k][mi]; %}
+
+// Store the local index mi for this task (used for dependency management)
+local_mi = %{ return binary_search_index(analysis->trsm[k], m, num_trsm, k, k); %} 
+
+// Control message size to send (contains new rank information)
+size = 1
+
+// Local number of GEMM operations for this tile
+num_local_gemm = %{ return analysis->gemm_local_num[k*descA->mt+m]; %}
+
+// Last local GEMM index (used for dependency chain)
+last_local_gemm = %{ return (num_local_gemm > 0 && descDist->super.myrank == descDist->super.rank_of(&descDist->super, m, k)) ? analysis->gemm_local[k*descA->mt+m][num_local_gemm-1] : -1; %}
+
+// Parallel partitioning - assign tasks to processors based on distribution matrix
+: descDist(m, k)
+
+/* Data dependencies and flow control */
+READ  T <- T potrf_dpotrf(k)                                                                                                                  [ type_remote = FULL ]  /* Read factorized diagonal block */
+
+RW    C <- (k == 0 || num_local_gemm == 0) ? C potrf_dtrsm_READ(m, k) : C potrf_dgemm(m, k, last_local_gemm)                                  [ type_remote = UV ]  /* Read input matrix */
+        -> A potrf_dsyrk(k, m)                                                                                                                [ layout_remote = MPI_DOUBLE count_remote = size ]  /* Send to SYRK */
+        -> (local_mi > 0) ? [ ni_1 = 0 .. local_mi-1 ] A potrf_dgemm(m, %{ return analysis->trsm[k][ni_1]; %}, k)                             [ layout_remote = MPI_DOUBLE count_remote = size ]  /* Send to previous GEMMs */
+        -> (num_trsm-1 >= local_mi+1) ? [ mi_1 = local_mi+1 .. num_trsm-1 ] B potrf_dgemm(%{ return analysis->trsm[k][mi_1]; %}, m, k)        [ layout_remote = MPI_DOUBLE count_remote = size ]  /* Send to subsequent GEMMs */
+        -> C potrf_dtrsm_WRITE(m, k)                                                                                                          [ layout_remote = MPI_DOUBLE count_remote = size ]  /* Write result */
+
+READ  Cr <- (k == 0 || num_local_gemm == 0) ? Cr potrf_dtrsm_READ(m, k) : Cr potrf_dgemm(m, k, last_local_gemm)                               [ type_remote = AR ]  /* Read rank information */
+         -> Ar potrf_dsyrk(k, m)                                                                                                              [ type_remote = AR ]  /* Send rank to SYRK */
+         -> (local_mi > 0) ? [ ni_2 = 0 .. local_mi-1 ] Ar potrf_dgemm(m, %{ return analysis->trsm[k][ni_2]; %}, k)                           [ type_remote = AR ]  /* Send rank to previous GEMMs */
+         -> (num_trsm-1 >= local_mi+1) ? [ mi_2 = local_mi+1 .. num_trsm-1 ] Br potrf_dgemm(%{ return analysis->trsm[k][mi_2]; %}, m, k)      [ type_remote = AR ]  /* Send rank to subsequent GEMMs */
+         -> Cr potrf_dtrsm_WRITE(m, k)                                                                                                        [ type_remote = AR ]  /* Write updated rank */
+
+/* Control dependency for lookahead optimization */
+CTL ctl <- (params_tlr->lookahead == 1 && num_trsm > 0 && m > k+params_tlr->lookahead && %{ return analysis->trsm[k][0]; %} == k+1)? ctl potrf_dsyrk(k, k+1)
+
+/* Priority calculation for task scheduling */
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
+
+
+BODY [type=RECURSIVE]
+{
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* Go for the sequential CPU version */
+    if( tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    if(DEBUG_INFO) printf("TRSM Recursive: %d %d ; mb %d, nb: %d, band_size_dense: %d\n", m, k, descA->mb, descA->nb, params_tlr->band_size_dense);
+    subtile_desc_t *small_descT;
+    subtile_desc_t *small_descC;
+    parsec_taskpool_t* parsec_dtrsm;
+
+    small_descT = subtile_desc_create( descA, k, k,
+            smallnb, smallnb, 0, 0, descA->mb, descA->mb );
+    small_descT->mat = T;
+
+    small_descC = subtile_desc_create( descA, m, k,
+            smallnb, smallnb, 0, 0, tempmm, descA->mb );
+    small_descC->mat = C;
+
+    parsec_dtrsm = dplasma_dtrsm_New(PlasmaRight, PlasmaLower,
+            PlasmaTrans, PlasmaNonUnit,
+            (double)1.0,
+            (parsec_tiled_matrix_t *)small_descT,
+            (parsec_tiled_matrix_t *)small_descC );
+
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dtrsm, dplasma_dtrsm_Destruct,
+            2, small_descT, small_descC );
+
+    /* Update send size, how many bytes */
+    this_task->locals.size.value = descA->mb * descA->mb;
+
+    /* Operation count */
+    hicma_parsec_op_count_trsm( descA, params_tlr, m, k, es->th_id, tempmm, IS_DENSE(m, k)? 0: ((int*)Cr)[0] );
+
+    return PARSEC_HOOK_RETURN_ASYNC;
+
+}
+END
+
+BODY
+{
+    /* If rank is 0, return and set communication count to 0 */
+    if( !IS_DENSE(m, k) && 0 == *((int *)Cr) ) {
+        this_task->locals.size.value = 0;
+        return PARSEC_HOOK_RETURN_DONE;
+    }
+    
+    hicma_parsec_core_trsm_cpu( descA, descRank, params_tlr, es,
+            NULL, T, C, m, k, IS_DENSE(m, k)? 0: ((int*)Cr)[0] );
+    
+    /* Update send size, how many bytes */
+    if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb;
+    } else {
+        if(params_tlr->send_full_tile == 1){
+            this_task->locals.size.value = descA->mb * params_tlr->maxrank * 2;
+        } else {
+            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2;
+        }
+    }
+}
+END
+
+
+/**************************************************
+ *               potrf_dsyrk                      *
+ **************************************************/
+/*
+ * SYRK Task - Symmetric Rank-K Update Operation
+ * 
+ * This task performs symmetric rank-k updates in the Cholesky factorization.
+ * It computes A(m,m) = A(m,m) - A(m,k) * A(m,k)^T, updating the diagonal
+ * block with contributions from the TRSM operations. This is a key step
+ * in maintaining the Cholesky structure.
+ */
+potrf_dsyrk(k, m) [ make_key_fn = my_make_key_potrf_dsyrk
+                    high_priority = on ]
+
+// Execution space definition
+m = 1 .. descA->mt-1  /* Row index range for SYRK operations */
+
+// Number of local SYRK operations for this diagonal block
+num_syrk = %{ return analysis->syrk_local_num[m]; %}
+
+// Execution space for column indices based on local SYRK count
+k = [ ki = 0 .. %{ return num_syrk-1; %} ] %{ return analysis->syrk_local[m][ki]; %}
+
+// Number of TRSM operations for iteration k
+num_trsm = %{ return analysis->trsm_num[k]; %}
+
+// Local SYRK iteration index (used for dependency chain management)
+local_ki = %{ return binary_search_index(analysis->syrk_local[m], k, num_syrk, m, m); %}
+
+// Last local SYRK index that has dependency to POTRF task
+last_syrk = %{ return (num_syrk > 0) ? analysis->syrk_local[m][num_syrk-1] : -1; %}
+
+// Parallel partitioning - assign tasks to processors based on diagonal tile location
+: descA(m, m)
+
+//Parameters
+READ  A  <- C  potrf_dtrsm(m, k)               [ type_remote = UV ]
+READ  Ar <- Cr potrf_dtrsm(m, k)               [ type_remote = AR ]
+
+RW    T <- (local_ki == 0) ? descA(m, m)
+        <- T potrf_dsyrk(%{ return analysis->syrk_local[m][local_ki-1]; %}, m)                                                [ type_remote = FULL ] 
+        -> (k == last_syrk) ? T potrf_dpotrf(m) : T potrf_dsyrk(%{ return analysis->syrk_local[m][local_ki+1]; %}, m)         [ type_remote = FULL ]
+
+CTL ctl -> (params_tlr->lookahead == 1 && m == k+1 && num_trsm > 1)? [ mi = 1 .. num_trsm-1 ] ctl potrf_dtrsm(%{ return analysis->trsm[k][mi]; %}, k)
+
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * (m - k) : PRI_MAX
+
+
+BODY [type=RECURSIVE]
+{
+    int tempmm = m == descA->mt-1 ? descA->m - m*descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* Go for the sequential CPU version */
+    if( tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* Operation count */
+    hicma_parsec_op_count_syrk( descA, params_tlr, m, k, es->th_id, tempmm, IS_DENSE(m, k)? 0: ((int*)Ar)[0] );
+    
+    if(DEBUG_INFO) printf("SYRK Recursive %d %d \n", k, m); 
+    subtile_desc_t *small_descT;
+    subtile_desc_t *small_descA;
+    parsec_taskpool_t* parsec_dsyrk;
+    void *A_d;
+        
+    small_descT = subtile_desc_create( descA, m, m,
+            smallnb, smallnb, 0, 0, tempmm, tempmm );
+    small_descT->mat = T;
+        
+    small_descA = subtile_desc_create( descA, m, k,
+            smallnb, smallnb, 0, 0, tempmm, descA->mb );
+    small_descA->mat = A;
+            
+    parsec_dsyrk = dplasma_dsyrk_New( PlasmaLower, PlasmaNoTrans,
+            (double)-1.0, (parsec_tiled_matrix_t*) small_descA,
+            (double)1.0,  (parsec_tiled_matrix_t*) small_descT);
+                
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dsyrk, dplasma_dsyrk_Destruct,
+            2, small_descA, small_descT);
+            
+    return PARSEC_HOOK_RETURN_ASYNC;
+}
+END
+
+BODY
+{
+    /* If rank is 0, return and set communication count to 0 */
+    if( !IS_DENSE(m, k) && 0 == *((int *)Ar) ) {
+        return PARSEC_HOOK_RETURN_DONE;
+    }
+
+    hicma_parsec_core_syrk_cpu( descA, descRank, params_tlr, es,
+            p_work, NULL, NULL, p_work_mbr, p_work_rr,
+            T, A, m, k, IS_DENSE(m, k)? 0: ((int*)Ar)[0] );
+
+}
+END
+
+/**************************************************
+ *               potrf_dgemm                      *
+ **************************************************/
+/*
+ * GEMM Task - General Matrix Multiply Operation
+ * 
+ * This task performs general matrix multiply operations in the Cholesky factorization.
+ * It computes A(m,n) = A(m,n) - A(m,k) * A(n,k)^T, updating off-diagonal blocks
+ * with contributions from TRSM operations. This is the most complex task as it
+ * handles both dense and sparse TLR representations with dynamic rank adaptation.
+ */
+potrf_dgemm(m, n, k) [ make_key_fn = my_make_key_potrf_dgemm
+                       high_priority = on ]
+
+// Execution space definition
+m = 2 .. descA->mt-1  /* Row index range for GEMM operations */
+n = 1 .. m-1          /* Column index range (lower triangular) */
+
+// Number of local GEMM operations for this tile
+num_gemm = %{ return analysis->gemm_local_num[n*descA->mt+m]; %}
+
+// Execution space for k indices based on local GEMM count
+k = [ ki = 0 .. %{ return num_gemm-1; %} ] %{ return analysis->gemm_local[n*descA->mt+m][ki]; %}
+
+// Control message size to send (contains new rank information)
+size = 1
+
+// Last local GEMM iteration (used for dependency chain termination)
+last_gemm = %{ return (num_gemm > 0 && descDist->super.myrank == descDist->super.rank_of(&descDist->super, m, n)) ? analysis->gemm_local[n*descA->mt+m][num_gemm-1] : -1; %}
+
+// Local GEMM iteration index (used for dependency chain management)
+local_ki = %{ return (descDist->super.myrank == descDist->super.rank_of(&descDist->super, m, n))? binary_search_index(analysis->gemm_local[n*descA->mt+m], k, num_gemm, m, n) : -1; %}
+
+// Get the previous and next local GEMM indices for dependency chain
+k_pre = %{ return (local_ki > 0 && descDist->super.myrank == descDist->super.rank_of(&descDist->super, m, n))? analysis->gemm_local[n*descA->mt+m][local_ki-1] : -1; %} 
+k_next = %{ return (local_ki < num_gemm-1 && descDist->super.myrank == descDist->super.rank_of(&descDist->super, m, n))? analysis->gemm_local[n*descA->mt+m][local_ki+1] : -1; %} 
+
+// Parallel partitioning - assign tasks to processors based on distribution matrix
+: descDist(m, n)
+
+// Parameters
+READ   A <- C  potrf_dtrsm(m, k)                                         [ type_remote = UV ] 
+READ  Ar <- Cr potrf_dtrsm(m, k)                                         [ type_remote = AR ]
+
+READ   B <- C  potrf_dtrsm(n, k)                                         [ type_remote = UV ]
+READ  Br <- Cr potrf_dtrsm(n, k)                                         [ type_remote = AR ]
+
+RW     C <- (local_ki == 0 && %{ return analysis->initial_rank[n*descA->mt+m]; %} > 0) ? C potrf_dgemm_READ(m, n)   [ type_remote = UV ]
+         <- (local_ki > 0) ? C potrf_dgemm(m, n, k_pre): NULL            [ type_remote = UV ]
+         -> (k == last_gemm) ? C potrf_dtrsm(m, n)                       [ layout_remote = MPI_DOUBLE count_remote = size ]
+         -> (k != last_gemm) ? C potrf_dgemm(m, n, k_next)               [ layout_remote = MPI_DOUBLE count_remote = size ]
+
+RW    Cr <- (local_ki == 0) ? NULL: Cr potrf_dgemm(m, n, k_pre)           [ type_remote = AR ]
+         -> (k == last_gemm) ? Cr potrf_dtrsm(m, n)                      [ type_remote = AR ]
+         -> (k != last_gemm) ? Cr potrf_dgemm(m, n, k_next)              [ type_remote = AR ]
+
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - m - n - 3) * (m - n) + 6 * (m - k) : PRI_MAX
+
+
+BODY [type=RECURSIVE]
+{
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* Operation count on band*/
+    if ( m-k < params_tlr->band_size_dense ) {
+        unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, tempmm, 0);
+        params_tlr->op_band[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    } else if( n-k < params_tlr->band_size_dense && m-n < params_tlr->band_size_dense ) {
+        int Arank = ((int*)Ar)[0];
+        unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, Arank, 0) * 2;
+        params_tlr->op_band[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    } else if( m-n < params_tlr->band_size_dense ) {
+        int Arank = ((int*)Ar)[0];
+        int Brank = ((int*)Br)[0];
+        unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, parsec_imin(Arank, Brank), 0)
+                                + hicma_parsec_op_counts('m', tempmm, Arank, Brank, 0) * 2;
+        params_tlr->op_band[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    }
+
+    if ( (m-k < params_tlr->band_size_dense) && (tempmm > smallnb) )
+    {
+        if(DEBUG_INFO) printf("GEMM Recursive: %d %d %d\n", m, n, k);
+        subtile_desc_t *small_descA;
+        subtile_desc_t *small_descB;
+        subtile_desc_t *small_descC;
+        parsec_taskpool_t *parsec_dgemm;
+
+        small_descA = subtile_desc_create( descA, m, k,
+                                           smallnb, smallnb, 0, 0, tempmm, descA->mb );
+        small_descA->mat = A;
+
+        small_descB = subtile_desc_create( descA, n, k,
+                                           smallnb, smallnb, 0, 0, descA->mb, descA->mb );
+        small_descB->mat = B;
+
+        small_descC = subtile_desc_create( descA, m, n,
+                                           smallnb, smallnb, 0, 0, tempmm, descA->mb );
+        small_descC->mat = C;
+
+        parsec_dgemm = dplasma_dgemm_New(PlasmaNoTrans, PlasmaTrans,
+                                        (double)-1.0,
+                                        (parsec_tiled_matrix_t *)small_descA,
+                                        (parsec_tiled_matrix_t *)small_descB,
+                                        (double) 1.0,
+                                        (parsec_tiled_matrix_t *)small_descC);
+
+        parsec_recursivecall((parsec_task_t*)this_task,
+                             parsec_dgemm, dplasma_dgemm_Destruct,
+                             3, small_descA, small_descB, small_descC );
+
+        return PARSEC_HOOK_RETURN_ASYNC;
+    }
+    else
+        /* Go to CPU sequential kernel */
+        return PARSEC_HOOK_RETURN_NEXT;
+}
+END
+
+
+BODY
+{
+    if(DEBUG_INFO) printf("GEMM (%d, %d, %d): local_ki %d k_pre %d, k_next %d\n", m, n, k, local_ki, k_pre, k_next);
+
+    /* No recursive */
+    if ( m-k < params_tlr->band_size_dense ) {
+        int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int ldam = BLKLDD( descA, m );
+        int ldan = BLKLDD( descA, n );
+
+        CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
+                   tempmm, descA->mb, descA->mb,
+                   (double)-1.0, A /*A(m, k)*/, ldam,
+                                 B /*A(n, k)*/, ldan,
+                   (double) 1.0, C /*A(m, n)*/, ldam);
+
+    } else if( n-k < params_tlr->band_size_dense && m-n < params_tlr->band_size_dense ) {
+        void *p_elem_work_mbr = parsec_private_memory_pop( p_work_mbr );
+        int Arank = ((int *)Ar)[0];
+        void *Au = (void *)A;
+        void *Av = (void *)A + descA->mb * Arank * sizeof(double);
+
+        /* tmp_mbr = trans(Av) * trans(B) */
+        CORE_dgemm(PlasmaTrans, PlasmaTrans,
+                   Arank, descA->mb, descA->mb,
+                   (double)1.0, Av /*A(m, k)*/, descA->mb,
+                                 B /*A(n, m)*/, descA->mb,
+                   (double) 0.0, p_elem_work_mbr /*A(k, n)*/, Arank);
+
+        /* C = C - Au * tmp_mbr */ 
+        CORE_dgemm(PlasmaNoTrans, PlasmaNoTrans,
+                   descA->mb, descA->mb, Arank,
+                   (double)-1.0, Au              /*A(m, k)*/, descA->mb,
+                                 p_elem_work_mbr /*A(k, n)*/, Arank,
+                   (double) 1.0, C               /*A(m, n)*/, descA->mb);
+
+        parsec_private_memory_push( p_work_mbr, p_elem_work_mbr );
+
+    } else if( m-n < params_tlr->band_size_dense ) {
+        void *p_elem_work_mbr = parsec_private_memory_pop( p_work_mbr );
+        void *p_elem_work_rr = parsec_private_memory_pop( p_work_rr );
+        int Arank = ((int *)Ar)[0];
+        int Brank = ((int *)Br)[0];
+
+        void *Au = (void *)A;
+        void *Av = (void *)A + descA->mb * Arank * sizeof(double);
+
+        void *Bu = (void *)B;
+        void *Bv = (void *)B + descA->mb * Brank * sizeof(double);
+
+        /* tmp_rr = trans(Av) * Bv */
+        CORE_dgemm(PlasmaTrans, PlasmaNoTrans,
+                   Arank, Brank, descA->mb,
+                   (double) 1.0, Av             /*A(k, m)*/, descA->mb,
+                                 Bv             /*A(k, n)*/, descA->mb,
+                   (double) 0.0, p_elem_work_rr /*A(m, n)*/, Arank);
+
+        if( Arank > Brank ) {
+            /* tmp_mbr = Au * tmp_rr */
+            CORE_dgemm(PlasmaNoTrans, PlasmaNoTrans,
+                       descA->mb, Brank, Arank,
+                       (double) 1.0, Au              /*A(m, k)*/, descA->mb,
+                                     p_elem_work_rr  /*A(k, n)*/, Arank,
+                       (double) 0.0, p_elem_work_mbr /*A(m, n)*/, descA->mb);
+
+            /* C = C - tmp_mbr * trans(Bu) */
+            CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
+                       descA->mb, descA->mb, Brank,
+                       (double)-1.0, p_elem_work_mbr /*A(m, k)*/, descA->mb,
+                                     Bu              /*A(n, k)*/, descA->mb,
+                       (double) 1.0, C               /*A(m, n)*/, descA->mb);
+        } else {
+            /* tmp_mbr = tmp_rr * trans(Bu) */
+            CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
+                       Arank, descA->mb, Brank,
+                       (double) 1.0, p_elem_work_rr  /*A(m, k)*/, Arank,
+                                     Bu              /*A(n, k)*/, descA->mb,
+                       (double) 0.0, p_elem_work_mbr /*A(m, n)*/, Arank);
+
+            /* C = C - Au * tmp_mbr */
+            CORE_dgemm(PlasmaNoTrans, PlasmaNoTrans,
+                       descA->mb, descA->mb, Arank,
+                       (double)-1.0, Au              /*A(m, k)*/, descA->mb,
+                                     p_elem_work_mbr /*A(k, n)*/, Arank,
+                       (double) 1.0, C               /*A(m, n)*/, descA->mb);
+        }
+
+        parsec_private_memory_push( p_work_mbr, p_elem_work_mbr );
+        parsec_private_memory_push( p_work_rr, p_elem_work_rr );
+
+    } else if( n-k < params_tlr->band_size_dense && m-n >= params_tlr->band_size_dense ) {
+        int tempmmu = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int ldamu = BLKLDD( descA, m );
+        int ldamv = BLKLDD( descA, m );
+        int ldanu = BLKLDD( descA, n );
+        int ldanv = BLKLDD( descA, n );
+
+        int Arank = ((int*)Ar)[0];
+        int Crank_old = ((int*)Cr)[0];
+
+        void *Au = (void *)A;
+        void *Av = (void *)A + descA->mb * Arank * sizeof(double);// FIXME descA->mb might cause problem for cleanup tiles
+
+        void *Cu = (void *)C;
+        void *Cv = (void *)C + descA->mb * Crank_old * sizeof(double);// FIXME descA->mb might cause problem for cleanup tiles
+
+        void *p_elem_work = NULL;
+        p_elem_work = parsec_private_memory_pop( p_work );
+        int new_Crank = ((int*)Cr)[0];
+
+        /** Calls two-step hcore_gemm.
+            First step reveals ACTUAL_RANK.
+            Second step constructs new CU and CV.
+            Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+        */
+        double* work_new;
+        double* _CU;
+        double* _CV;
+        int CU_ncols;
+        int new_UVrk;
+        double* newU;
+        int ld_newU;
+        double* qrtauA;
+        int CV_ncols;
+        double* newV;
+        int ld_newV;
+        double* qrtauB;
+        int use_CUV_clone;
+        double* CUclone;
+        int ld_CUclone;
+        double *_CU_save;
+        double* CVclone;
+        int ld_CVclone;
+        double* _CV_save;
+        flop_counter flops;
+        HCORE_dgemm_qr_svd_b_dense( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                B, ldamv,
+                (double)1.0,
+                Cu, Cv, &new_Crank, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                &flops,
+                /** parameters that will be passed to HCORE_dgemm_ormqr */
+                &work_new,
+                &_CU,
+                &_CV,
+                &CU_ncols,
+                &new_UVrk,
+                &newU,
+                &ld_newU,
+                &qrtauA,
+                &CV_ncols,
+                &newV,
+                &ld_newV,
+                &qrtauB,
+                &use_CUV_clone,
+                &CUclone,
+                &ld_CUclone,
+                &_CU_save,
+                &CVclone,
+                &ld_CVclone,
+                &_CV_save
+                    );
+
+        /* If new_UVrk > Crank_old, re-allocate */
+        if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+            if( DEBUG_INFO ) printf("\nReallocate %d %d %d : new_rank %d old_rank %d\n\n", m, n, k, new_UVrk, Crank_old);
+
+            /* Free memory when  */
+            if( (Crank_old != 0 && descA->super.rank_of(&descA->super, m, n) == descDist->super.rank_of(&descDist->super, m, n)) 
+                    || analysis->gemm_local_memory_arena_indicator[n*descA->lmt+m] != 0 ) {
+                free( this_task->data._f_C.data_out->device_private );  
+            } 
+
+            if( descA->super.rank_of(&descA->super, m, n) == descDist->super.rank_of(&descDist->super, m, n) )
+                this_task->data._f_C.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_potrf_L_sparse_tlr_dp_balance_UV_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED); 
+            else {
+                parsec_data_t *my_data = parsec_data_new();
+                this_task->data._f_C.data_out = parsec_data_copy_new(my_data, 0, PARSEC_potrf_L_sparse_tlr_dp_balance_UV_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED); 
+            }   
+
+            this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
+            this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+
+            /* Make sure this allocated memory will be freed in future when rank grows */
+            analysis->gemm_local_memory_arena_indicator[n*descA->lmt+m] = 1;
+        }
+
+        /* Address for Cu and Cv to be copied to */
+        _CU_save = this_task->data._f_C.data_out->device_private;
+        _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(double);
+
+        HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                (double)1.0,
+                Cu, Cv, &new_Crank, ldamu,
+                params_tlr->fixedrk, 2*params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                &flops,
+                /** parameters coming from HCORE_dgemm_qr_svd */
+                _CU,
+                _CV,
+                CU_ncols,
+                new_UVrk,
+                newU,
+                ld_newU,
+                qrtauA,
+                CV_ncols,
+                newV,
+                ld_newV,
+                qrtauB,
+                use_CUV_clone,
+                CUclone,
+                ld_CUclone,
+                _CU_save,
+                CVclone,
+                ld_CVclone,
+                _CV_save
+                    );
+
+        ((int*)Cr)[0] = new_Crank;
+        parsec_private_memory_push( p_work, p_elem_work );
+
+        /* Operation count */
+        int Crank_old__Arank = Crank_old + Arank;
+        unsigned long int cnt = 0;
+
+        /// QR([CU AU])
+        unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);///ASSUMPTION:tempmmv is not totally correct if nrowsC<ncolsC
+        unsigned long int qrbflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);
+        /// Au * B
+        qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, tempmmv, 0);
+        int rA_nrows  = tempmmv < Crank_old__Arank ? tempmmv : Crank_old__Arank;
+        unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0);// trmm is used
+        svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
+        svdflop += Crank_old__Arank * new_Crank;
+        unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, new_Crank, Crank_old__Arank, 1);
+        unsigned long int newvflop = hicma_parsec_op_counts('o', new_Crank, tempmmv, Crank_old__Arank, 2);
+
+        cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
+        params_tlr->op_offband[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+
+    } else {
+
+        /* If rank is 0, return */
+        if( 0 == *((int *)Ar) || 0 == *((int *)Br) ) {
+            this_task->locals.size.value = ((int *)Cr)[0] * descA->mb;
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+
+        int tempmmu = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int ldamu = BLKLDD( descA, m );
+        int ldamv = BLKLDD( descA, m );
+        int ldanu = BLKLDD( descA, n );
+        int ldanv = BLKLDD( descA, n );
+
+        int Arank = ((int*)Ar)[0];
+        int Brank = ((int*)Br)[0];
+        int Crank_old;
+        /* Allocate memory for the first local GEMM to store Cr */
+        if( 0 == local_ki ) {
+            parsec_data_t *my_data0 = parsec_data_new();
+            this_task->data._f_Cr.data_out = parsec_data_copy_new(my_data0, 0, PARSEC_potrf_L_sparse_tlr_dp_balance_AR_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+            this_task->data._f_Cr.data_out->device_private = calloc(1, sizeof(int));
+            Crank_old = analysis->initial_rank[n*descA->mt+m]; 
+            ((int *)this_task->data._f_Cr.data_out->device_private)[0] = Crank_old;
+        } else {
+            Crank_old = ((int*)Cr)[0];
+        }
+        void *Au = (void *)A;
+        void *Av = (void *)A + descA->mb * Arank * sizeof(double);// FIXME descA->mb might cause problem for cleanup tiles
+
+        void *Bu = (void *)B;
+        void *Bv = (void *)B + descA->mb * Brank * sizeof(double); // FIXME descA->mb might cause problem for cleanup tiles
+
+        void *Cu = (void *)C;
+        void *Cv = (void *)C + descA->mb * Crank_old * sizeof(double);// FIXME descA->mb might cause problem for cleanup tiles
+
+        void *p_elem_work = NULL;
+        p_elem_work = parsec_private_memory_pop( p_work );
+
+        /** Calls two-step hcore_gemm.
+            First step reveals ACTUAL_RANK.
+            Second step constructs new CU and CV.
+            Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+         */
+        double* work_new;
+        double* _CU;
+        double* _CV;
+        int CU_ncols;
+        int new_UVrk;
+        double* newU;
+        int ld_newU;
+        double* qrtauA;
+        int CV_ncols;
+        double* newV;
+        int ld_newV;
+        double* qrtauB;
+        int use_CUV_clone;
+        double* CUclone;
+        int ld_CUclone;
+        double *_CU_save;
+        double* CVclone;
+        int ld_CVclone;
+        double* _CV_save;
+        flop_counter flops;
+        HCORE_dgemm_qr_svd( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                Bu, Bv, Br, ldamv,
+                (double)1.0,
+                Cu, Cv, this_task->data._f_Cr.data_out->device_private, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                &flops,
+                /** parameters that will be passed to HCORE_dgemm_ormqr */
+                &work_new,
+                &_CU,
+                &_CV,
+                &CU_ncols,
+                &new_UVrk,
+                &newU,
+                &ld_newU,
+                &qrtauA,
+                &CV_ncols,
+                &newV,
+                &ld_newV,
+                &qrtauB,
+                &use_CUV_clone,
+                &CUclone,
+                &ld_CUclone,
+                &_CU_save,
+                &CVclone,
+                &ld_CVclone,
+                &_CV_save
+                    );
+
+        /* If new_UVrk > Crank_old, re-allocate */
+        if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+            if( DEBUG_INFO ) printf("\nReallocate %d %d %d : new_rank %d old_rank %d\n\n", m, n, k, new_UVrk, Crank_old);
+
+            /* Free memory when  */
+            if( (Crank_old != 0 && descA->super.rank_of(&descA->super, m, n) == descDist->super.rank_of(&descDist->super, m, n))
+                    || analysis->gemm_local_memory_arena_indicator[n*descA->lmt+m] != 0 ) {
+                free( this_task->data._f_C.data_out->device_private );
+            }
+
+            if( descA->super.rank_of(&descA->super, m, n) == descDist->super.rank_of(&descDist->super, m, n) )
+                this_task->data._f_C.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_potrf_L_sparse_tlr_dp_balance_UV_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+            else {
+                parsec_data_t *my_data = parsec_data_new();
+                this_task->data._f_C.data_out = parsec_data_copy_new(my_data, 0, PARSEC_potrf_L_sparse_tlr_dp_balance_UV_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+            }
+
+            this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
+            this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+
+            /* Make sure this allocated memory will be freed in future when rank grows */
+            analysis->gemm_local_memory_arena_indicator[n*descA->lmt+m] = 1;
+        }
+
+        /* Address for Cu and Cv to be copied to */
+        _CU_save = this_task->data._f_C.data_out->device_private;
+        _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(double);
+
+        HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                (double)1.0,
+                Cu, Cv, this_task->data._f_Cr.data_out->device_private, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                &flops,
+                /** parameters coming from HCORE_dgemm_qr_svd */
+                _CU,
+                _CV,
+                CU_ncols,
+                new_UVrk,
+                newU,
+                ld_newU,
+                qrtauA,
+                CV_ncols,
+                newV,
+                ld_newV,
+                qrtauB,
+                use_CUV_clone,
+                CUclone,
+                ld_CUclone,
+                _CU_save,
+                CVclone,
+                ld_CVclone,
+                _CV_save
+                    );
+
+        Cu = _CU_save;
+        Cv = _CV_save;
+
+        /* Update new rank */
+        parsec_private_memory_push( p_work, p_elem_work );
+        int Crank_new = ((int*)this_task->data._f_Cr.data_out->device_private)[0];
+        if(DEBUG_INFO) printf("Cr value in DGEMM (%d, %d, %d): %d\n", m, n, k, ((int *)this_task->data._f_Cr.data_out->device_private)[0]);
+
+        /* Pass Cr value to size */
+        if(params_tlr->send_full_tile == 1){
+            this_task->locals.size.value = descA->mb * params_tlr->maxrank * 2;
+        } else {
+            this_task->locals.size.value = descA->mb * ((int *)this_task->data._f_Cr.data_out->device_private)[0] * 2;
+        }
+
+        /* Operation count */
+        int Crank_old__Arank = Crank_old + Arank;
+        unsigned long int cnt = 0;
+        /// QR([CU AU])
+        unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);///ASSUMPTION:tempmmv is not totally correct if nrowsC<ncolsC
+        /// AV*BV^T
+        unsigned long int qrbflop = hicma_parsec_op_counts('m', Arank, Brank, tempmmv, 0);
+        /// (AV*BV^T) * BU^T
+        qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, Brank, 0);
+        qrbflop += hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);  
+        int rA_nrows  = tempmmv < Crank_old__Arank ? tempmmv : Crank_old__Arank;
+        unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0);// trmm is used
+        svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
+        svdflop += Crank_old__Arank * Crank_new; 
+        unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, Crank_new, Crank_old__Arank, 1);  
+        unsigned long int newvflop = hicma_parsec_op_counts('o', Crank_new, tempmmv, Crank_old__Arank, 2); 
+
+        cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
+
+        params_tlr->op_offband[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    }
+
+}
+END
+
+extern "C" %{
+
+/*
+ * Custom Task Management Function Implementations
+ * 
+ * These functions implement the custom task scheduling and key generation
+ * for optimized load balancing in the Cholesky factorization with sparse TLR support.
+ */
+
+/* Define the number of local tasks for each process based on TLR parameters */
+static uint32_t my_defined_nb_tasks_fn(struct __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_s *__tp)
+{
+    return __tp->super._g_params_tlr->nb_local_tasks;
+}
+
+/* Generate unique key for POTRF tasks based on diagonal block index */
+static parsec_key_t my_make_key_potrf_dpotrf(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dpotrf_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_balance_potrf_dpotrf_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int k = assignment->k.value;  /* Diagonal block index */
+    int k_min = 0;
+    __parsec_id += k - k_min;  /* Simple linear key based on k index */
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+static parsec_key_t my_make_key_potrf_dtrsm(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dtrsm_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_balance_potrf_dtrsm_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int k = assignment->k.value;
+    const int m = assignment->m.value;
+    int m_min = 1;
+    int k_min = 0;
+    int k_range = __parsec_tp->super._g_descA->mt-1;  
+    __parsec_id += (k - k_min);
+    __parsec_id += (m - m_min) * k_range;
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+static parsec_key_t my_make_key_potrf_dtrsm_READ(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dtrsm_READ_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_balance_potrf_dtrsm_READ_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int k = assignment->k.value;
+    const int m = assignment->m.value;
+    int m_min = 1;
+    int k_min = 0;
+    int k_range = __parsec_tp->super._g_descA->mt-1;
+    __parsec_id += (k - k_min);
+    __parsec_id += (m - m_min) * k_range;
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+static parsec_key_t my_make_key_potrf_dtrsm_WRITE(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dtrsm_WRITE_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_balance_potrf_dtrsm_WRITE_parsec_assignment_t));
+    
+    uintptr_t __parsec_id = 0;
+    const int k = assignment->k.value;
+    const int m = assignment->m.value;
+    int m_min = 1;
+    int k_min = 0;
+    int k_range = __parsec_tp->super._g_descA->mt-1;
+    __parsec_id += (k - k_min);
+    __parsec_id += (m - m_min) * k_range;
+    (void) __parsec_tp; 
+    return (parsec_key_t) __parsec_id;
+}
+
+static parsec_key_t my_make_key_potrf_dsyrk(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dsyrk_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_balance_potrf_dsyrk_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int m = assignment->m.value;
+    const int k = assignment->k.value;
+    int m_min = 1;
+    int k_min = 0;
+    int m_range = __parsec_tp->super._g_descA->mt-1;
+    __parsec_id += (m - m_min);
+    __parsec_id += (k - k_min) * m_range;
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const parsec_assignment_t * as) {
+    const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dgemm_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_balance_potrf_dgemm_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int m = assignment->m.value;
+    const int n = assignment->n.value;
+    const int k = assignment->k.value;
+    hicma_parsec_int64_t m_min = 2;
+    hicma_parsec_int64_t n_min = 1;
+    hicma_parsec_int64_t k_min = 0;
+    hicma_parsec_int64_t m_range = (hicma_parsec_int64_t)__parsec_tp->super._g_descA->mt-2;
+    hicma_parsec_int64_t n_range = (hicma_parsec_int64_t)__parsec_tp->super._g_descA->mt-3;
+    __parsec_id += ((hicma_parsec_int64_t)m - m_min);
+    __parsec_id += ((hicma_parsec_int64_t)n - n_min) * m_range;
+    __parsec_id += ((hicma_parsec_int64_t)k - k_min) * m_range * n_range;
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+static parsec_key_t my_make_key_potrf_dgemm_READ(const parsec_taskpool_t * tp, const parsec_assignment_t * as) {
+    const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_balance_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_balance_potrf_dgemm_READ_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_balance_potrf_dgemm_READ_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int m = assignment->m.value;
+    const int n = assignment->n.value;
+    int m_min = 2;
+    int n_min = 1;
+    int m_range = __parsec_tp->super._g_descA->mt-2;
+    __parsec_id += (m - m_min);
+    __parsec_id += (n - n_min) * m_range;
+
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+%}

@@ -1,0 +1,171 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default Configuration",
+      "description": "Default build configuration with shared libraries",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release Build",
+      "description": "Optimized release build",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug Build",
+      "description": "Debug build with symbols",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "static",
+      "displayName": "Static Libraries",
+      "description": "Build with static libraries",
+      "binaryDir": "${sourceDir}/build-static",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_SHARED_LIBS": "OFF",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "cuda",
+      "displayName": "CUDA Support",
+      "description": "Build with CUDA support",
+      "binaryDir": "${sourceDir}/build-cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_TESTING": "ON",
+        "HICMA_PARSEC_HAVE_CUDA": "ON"
+      }
+    },
+    {
+      "name": "cuda-cutlass",
+      "displayName": "CUDA with CUTLASS",
+      "description": "Build with CUDA and CUTLASS support",
+      "binaryDir": "${sourceDir}/build-cuda-cutlass",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_TESTING": "ON",
+        "HICMA_PARSEC_HAVE_CUDA": "ON",
+        "ENABLE_CUTLASS": "ON"
+      }
+    },
+    {
+      "name": "hip",
+      "displayName": "HIP Support",
+      "description": "Build with HIP support",
+      "binaryDir": "${sourceDir}/build-hip",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_TESTING": "ON",
+        "HICMA_PARSEC_HAVE_HIP": "ON"
+      }
+    },
+    {
+      "name": "fugaku",
+      "displayName": "Fugaku Configuration",
+      "description": "Build optimized for Fugaku supercomputer",
+      "binaryDir": "${sourceDir}/build-fugaku",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_TESTING": "ON",
+        "ON_FUGAKU": "ON"
+      }
+    },
+    {
+      "name": "sanitizer",
+      "displayName": "AddressSanitizer",
+      "description": "Build with AddressSanitizer for debugging",
+      "binaryDir": "${sourceDir}/build-sanitizer",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_SHARED_LIBS": "ON",
+        "BUILD_TESTING": "ON",
+        "ENABLE_SANITIZER": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "static",
+      "configurePreset": "static"
+    },
+    {
+      "name": "cuda",
+      "configurePreset": "cuda"
+    },
+    {
+      "name": "cuda-cutlass",
+      "configurePreset": "cuda-cutlass"
+    },
+    {
+      "name": "hip",
+      "configurePreset": "hip"
+    },
+    {
+      "name": "fugaku",
+      "configurePreset": "fugaku"
+    },
+    {
+      "name": "sanitizer",
+      "configurePreset": "sanitizer"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+} 

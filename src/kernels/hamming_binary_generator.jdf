@@ -1,0 +1,204 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+/**
+ * @file hamming_binary_generator.jdf
+ * @brief Binary Data Generator for Hamming Distance Computation
+ * 
+ * This JDF (Just Data Flow) file implements a distributed binary data generator
+ * that creates random binary matrices for Hamming distance computation testing
+ * and benchmarking. The generator creates tiles of binary data across multiple
+ * processes using a deterministic random number generator.
+ * 
+ * Key Features:
+ * - Deterministic random number generation for reproducible results
+ * - Distributed generation across multiple processes
+ * - Configurable binary value range (0 to upper_set)
+ * - Integration with PaRSEC runtime for parallel execution
+ * - Memory-efficient tile-based generation
+ */
+
+#include "hicma_parsec.h"
+#include <time.h>
+
+/** @brief Global seed for deterministic random number generation */
+#define globalseed 1619477613
+
+/**
+ * @brief Generate binary data for a matrix tile
+ * 
+ * This function generates random binary values for a specific tile of the matrix.
+ * The values are generated deterministically based on the global seed and tile
+ * position, ensuring reproducible results across different runs.
+ * 
+ * @param A Pointer to the matrix tile data (column-major format)
+ * @param mb Number of rows in the tile
+ * @param nb Number of columns in the tile
+ * @param lda Leading dimension of the matrix
+ * @param m Row tile index (for seed variation)
+ * @param mt Total number of row tiles (for seed variation)
+ * @param upper_set Upper bound for binary values (typically 1 for binary data)
+ */
+static void generate_binary(int8_t *A, int mb, int nb, int lda, int m, int mt, int upper_set){
+    int i,j;
+    int lower = 0, upper = upper_set;
+    unsigned int seed=globalseed;
+    rand_r(&seed);
+
+    //printf("print %d %d\n", m, mt);
+    for(i=0;i<mb;i++){
+        for(j=0;j<nb;j++){
+            A[j*lda+i]=(int8_t)(rand_r(&seed) % (upper - lower + 1)) + lower;
+            //printf(" %d %d : %d\n", i, j, A[j*lda+i]);
+        }
+        //printf("\n");
+    }
+}
+
+
+%}
+
+/** @brief Descriptor for the output matrix A (binary data) */
+descA           [ type = "parsec_tiled_matrix_t*" ]
+
+/** @brief HICMA PaRSEC parameters including algorithm settings */
+params_tlr      [ type = "hicma_parsec_params_t *" ]
+
+/**
+ * @brief Task to generate binary data for a specific matrix tile
+ * 
+ * This task generates random binary data for a specific tile (m,n) of the matrix.
+ * The generation is distributed across multiple processes, with each process
+ * responsible for generating its assigned tiles.
+ * 
+ * @param m Row tile index
+ * @param n Column tile index
+ */
+hamming_binary_generator(m, n)
+
+m = 0 .. descA->mt-1
+n = 0 .. descA->nt-1
+
+: descA(m, n)
+
+RW A <- descA(m, n)              
+     -> descA(m, n)        
+
+READ A1 <- NULL                       [ type_remote = FULL_SP ]
+READ A2 <- NULL                       [ type_remote = FULL_I8 ]
+
+BODY
+{
+    // Calculate actual tile dimensions (handle edge cases for last tiles)
+    int tempmm, tempnn, ldam, ldbm;
+    int i, j;
+    tempmm = ((m)==((descA->mt)-1)) ? ((descA->m)-(m*(descA->mb))) : (descA->mb);
+    tempnn = ((n)==((descA->nt)-1)) ? ((descA->n)-(n*(descA->nb))) : (descA->nb);
+    ldam = BLKLDD( descA, m );
+
+    // Generate binary data for this tile using the configured upper bound
+    generate_binary(A, tempmm, tempnn, ldam, m, descA->mt-1, params_tlr->fixedrk);
+}
+END
+
+extern "C" %{
+
+    /**
+     * @brief Create a new Hamming binary generator taskpool
+     * 
+     * This function creates and initializes a new PaRSEC taskpool for generating
+     * binary data matrices. The taskpool is configured with appropriate data types
+     * and memory arenas for efficient distributed execution.
+     * 
+     * @param A The tiled matrix descriptor for the output binary data
+     * @param params HICMA PaRSEC parameters including algorithm settings
+     * @return The parsec taskpool object to schedule, or NULL on failure
+     */
+    parsec_taskpool_t*
+        parsec_hamming_binary_generator_New(parsec_tiled_matrix_t *A, hicma_parsec_params_t *params) 
+        {
+            parsec_taskpool_t* band_hamming_binary_generator_taskpool;
+            parsec_hamming_binary_generator_taskpool_t* taskpool = NULL;
+
+            // Create the internal taskpool structure
+            taskpool = parsec_hamming_binary_generator_new(A, params);
+            band_hamming_binary_generator_taskpool = (parsec_taskpool_t*)taskpool;
+
+            // Configure arena for float data type (unused but required for compatibility)
+            parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_hamming_binary_generator_FULL_SP_ADT_IDX],
+                    parsec_datatype_float_t, PARSEC_MATRIX_FULL,
+                    1, A->mb, A->nb, A->mb,
+                    PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+            // Configure arena for int8_t data type (used for binary data)
+            parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_hamming_binary_generator_FULL_I8_ADT_IDX],
+                    parsec_datatype_int8_t, PARSEC_MATRIX_FULL,
+                    1, A->mb, A->nb, A->mb,
+                    PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+            return band_hamming_binary_generator_taskpool;
+        }
+
+    /**
+     * @brief Destroy a Hamming binary generator taskpool
+     * 
+     * This function properly cleans up and destroys a Hamming binary generator
+     * taskpool, including freeing all associated memory arenas and resources.
+     * 
+     * @param taskpool The parsec taskpool object to destroy
+     */
+void parsec_hamming_binary_generator_Destruct(parsec_taskpool_t *taskpool)
+{
+
+    parsec_hamming_binary_generator_taskpool_t *hamming_binary_generator_taskpool = (parsec_hamming_binary_generator_taskpool_t *)taskpool;
+    
+    // Clean up memory arenas
+    parsec_del2arena(&hamming_binary_generator_taskpool->arenas_datatypes[PARSEC_hamming_binary_generator_FULL_SP_ADT_IDX]);
+    parsec_del2arena(&hamming_binary_generator_taskpool->arenas_datatypes[PARSEC_hamming_binary_generator_FULL_I8_ADT_IDX]);
+    
+    // Free the taskpool
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief High-level function to generate binary data matrix
+ * 
+ * This function provides a high-level interface for generating binary data matrices
+ * using the distributed Hamming binary generator. It creates the taskpool, executes
+ * the generation tasks, and properly cleans up resources.
+ * 
+ * @param parsec The PaRSEC context for distributed execution
+ * @param A The tiled matrix descriptor for the output binary data
+ * @param params HICMA PaRSEC parameters including algorithm settings
+ * @return 0 on success, non-zero on failure
+ */
+int parsec_hamming_binary_generator(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params) 
+{
+    parsec_taskpool_t *parsec_hamming_binary_generator = NULL;
+
+    // Create the generator taskpool
+    parsec_hamming_binary_generator = parsec_hamming_binary_generator_New(A, params);
+
+    if( parsec_hamming_binary_generator != NULL ){
+        // Execute the generation tasks
+        parsec_context_add_taskpool(parsec, parsec_hamming_binary_generator);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        
+        // Clean up resources
+        parsec_hamming_binary_generator_Destruct(parsec_hamming_binary_generator);
+    }
+
+    return 0;
+}
+
+%}

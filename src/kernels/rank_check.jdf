@@ -1,0 +1,182 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/* ============================================================================
+ * Parameter declarations for rank checking operations
+ * ============================================================================ */
+
+/** Matrix descriptor containing rank information for each tile */
+descAr                [ type = "parsec_tiled_matrix_t*" ]
+
+/** Size of the dense band in the matrix (tiles within this band are dense) */
+band_size_dense       [ type = "int" ]
+
+/* ============================================================================
+ * Task: off_band - Check rank correctness for off-band tiles
+ * ============================================================================ */
+
+/**
+ * @brief Validates rank values for tiles outside the dense band
+ * 
+ * This task checks that rank values for tiles outside the dense band are valid
+ * (non-negative). It processes only the upper triangular region above the dense
+ * band where low-rank approximations are expected.
+ * 
+ * @param m Row index of the matrix tile
+ * @param n Column index of the matrix tile
+ */
+off_band(m, n)
+
+/* Execution space: process tiles above the dense band */
+m = band_size_dense .. descAr->mt-1
+n = 0 .. m-band_size_dense
+
+/* Parallel partitioning: bind to matrix tile */
+:descAr(m, n)
+
+/* Data flow: read rank information from tile */
+READ Ar <- descAr(m, n) 
+
+BODY
+{
+    /* Check if rank is negative (invalid) and tile is in upper triangular region */
+    if( ((int *)Ar)[0] < 0 && n < m )
+        fprintf(stderr, "ERROR rank of (%d, %d) : %d\n", m, n, ((int *)Ar)[0]);
+}
+END
+
+/* ============================================================================
+ * Task: on_band - Set rank to -1 for tiles on the dense band
+ * ============================================================================ */
+
+/**
+ * @brief Sets rank values to -1 for tiles within the dense band
+ * 
+ * This task marks tiles within the dense band by setting their rank values to -1.
+ * This serves as a flag to indicate that these tiles should be treated as dense
+ * rather than low-rank in subsequent computations.
+ * 
+ * @param m Row index of the matrix tile
+ * @param n Column index of the matrix tile
+ */
+on_band(m, n)
+
+/* Execution space: process tiles within and below the dense band */
+m = 0 .. descAr->mt-1
+n = %{ return parsec_imax(m-band_size_dense+1, 0); %} .. m
+
+/* Parallel partitioning: bind to matrix tile */
+:descAr(m, n)
+
+/* Data flow: read and write rank information */
+RW Ar <- descAr(m, n)
+      -> descAr(m, n)
+
+BODY
+{
+    /* Set rank to -1 to mark this tile as dense */
+    ((int *)Ar)[0] = -1; 
+}
+END
+
+
+extern "C" %{
+
+/* ============================================================================
+ * C Interface Functions for Rank Checking Operations
+ * ============================================================================ */
+
+/**
+ * @brief Creates a new taskpool for rank checking and band marking
+ * 
+ * This function initializes a new PaRSEC taskpool for checking rank correctness
+ * and marking tiles within the dense band. It sets up the necessary data types
+ * and arenas for integer rank data.
+ * 
+ * @param [inout] dcAr:              The rank data matrix, already distributed and allocated
+ * @param [in] band_size_dense:      Size of the dense band in the matrix
+ * @return the parsec taskpool object to schedule, or NULL on failure
+ */
+parsec_taskpool_t*
+parsec_rank_check_New(parsec_tiled_matrix_t *dcAr,
+		int band_size_dense)
+{
+    parsec_rank_check_taskpool_t* taskpool = NULL;
+    
+    /* Create the rank check taskpool with the given parameters */
+    taskpool = parsec_rank_check_new(dcAr, band_size_dense);
+    
+    /* Set up data type arena for integer rank data */
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_rank_check_DEFAULT_ADT_IDX],
+                            parsec_datatype_int_t, PARSEC_MATRIX_FULL,
+                            1, dcAr->mb, dcAr->nb, dcAr->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+    
+    return (parsec_taskpool_t*)taskpool; 
+}
+
+/**
+ * @brief Destroys the rank checking taskpool
+ * 
+ * This function properly cleans up the taskpool and frees all associated
+ * resources including data type arenas.
+ * 
+ * @param [inout] taskpool:    The parsec taskpool object to destroy
+ */
+void parsec_rank_check_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_rank_check_taskpool_t *rank_check_taskpool = (parsec_rank_check_taskpool_t *)taskpool;
+    
+    /* Clean up data type arena */
+    parsec_del2arena(&rank_check_taskpool->arenas_datatypes[PARSEC_rank_check_DEFAULT_ADT_IDX]);
+    
+    /* Free the taskpool */
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Executes rank checking and band marking operations
+ * 
+ * This function performs rank validation for off-band tiles and marks tiles
+ * within the dense band with rank value -1. It ensures data consistency
+ * before proceeding with low-rank computations.
+ * 
+ * @param [in] parsec:           PaRSEC context for task scheduling
+ * @param [inout] dcAr:          The rank data matrix, already distributed and allocated
+ * @param [in] band_size_dense:  Size of the dense band in the matrix
+ * @return 0 on success, non-zero on failure
+ */
+int hicma_parsec_rank_check(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcAr,
+        int band_size_dense)
+{
+    parsec_taskpool_t *parsec_rank_check = NULL;
+
+    /* Create the rank check taskpool */
+    parsec_rank_check = parsec_rank_check_New(dcAr, band_size_dense);
+
+    if( parsec_rank_check != NULL ){
+        /* Schedule and execute the rank checking tasks */
+        parsec_context_add_taskpool(parsec, parsec_rank_check);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        
+        /* Clean up the taskpool */
+        parsec_rank_check_Destruct(parsec_rank_check);
+    }
+
+    return 0;
+}
+
+%}

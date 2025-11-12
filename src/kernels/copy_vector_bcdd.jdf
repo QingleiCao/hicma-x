@@ -1,0 +1,135 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/**
+ * @brief Task parameters for vector copy operation
+ * 
+ * This task copies data from a distributed matrix column to a local array.
+ * The matrix is assumed to be a single row (vector) distributed across tiles.
+ */
+descA              [ type = "parsec_tiled_matrix_t *" ]  // Source matrix descriptor
+copy_array         [ type = "float *" ]                  // Destination array for gathered data
+
+/**************************************************
+ *                   my_task                      *
+ * Copy vector data from distributed matrix to   *
+ * local array for reduction operations          *
+ **************************************************/
+my_task(n)
+
+// Process all column tiles in the matrix
+n = 0 .. descA->nt-1 
+
+// Data dependency: read from the first row of each column tile
+: descA(0, n)
+
+// Read access to matrix tile
+READ A <- descA(0, n)
+
+BODY
+{
+    // Calculate actual size of this tile (handle last tile)
+    int size =((n)==((descA->nt)-1)) ? ((descA->n)-(n*(descA->nb))) : (descA->nb);
+    
+    // Copy tile data to the appropriate position in the destination array
+    // Each tile contributes to a contiguous section of the copy_array
+    memcpy((void *)(copy_array+n*descA->nb), A, size*sizeof(float)); 
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create a new vector copy taskpool for gathering distributed data
+ *
+ * This function creates a PaRSEC taskpool that copies data from a distributed
+ * matrix (assumed to be a single row vector) to a local array for reduction operations.
+ *
+ * @param [in] dcA: the distributed matrix data, already distributed and allocated
+ * @param [in] copy_array: local array to store the gathered data
+ * @return the parsec object to schedule
+ */
+parsec_taskpool_t*
+parsec_copy_vector_bcdd_New(parsec_tiled_matrix_t *dcA, float *copy_array)
+{
+    parsec_taskpool_t* copy_vector_bcdd_taskpool;
+    parsec_copy_vector_bcdd_taskpool_t* taskpool = NULL;
+
+    // Create the taskpool with the given parameters
+    taskpool = parsec_copy_vector_bcdd_new(dcA, copy_array);
+    copy_vector_bcdd_taskpool = (parsec_taskpool_t*)taskpool;
+
+    // Set up the arena for float datatype with appropriate dimensions
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_copy_vector_bcdd_DEFAULT_ADT_IDX],
+                            parsec_datatype_float_t, PARSEC_MATRIX_FULL,
+                            1, 1, dcA->nb, 1,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return copy_vector_bcdd_taskpool;
+}
+
+/**
+ * @brief Destroy the vector copy taskpool and free associated resources
+ * @param [inout] taskpool: the parsec object to destroy
+ */
+void parsec_copy_vector_bcdd_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_copy_vector_bcdd_taskpool_t *copy_vector_bcdd_taskpool = (parsec_copy_vector_bcdd_taskpool_t *)taskpool;
+    
+    // Clean up the arena datatypes
+    parsec_del2arena(&copy_vector_bcdd_taskpool->arenas_datatypes[PARSEC_copy_vector_bcdd_DEFAULT_ADT_IDX]);
+    
+    // Free the taskpool memory
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Gather distributed matrix data to local array and perform reduction
+ *
+ * This function copies data from a distributed matrix (assumed to be a single row vector)
+ * to a local array, then performs an MPI reduction to sum the contributions from all ranks.
+ *
+ * @param [in] parsec: the PaRSEC context
+ * @param [in] dcA: the distributed matrix data, already distributed and allocated
+ * @param [in] copy_array: local array to store the gathered and reduced data
+ * @return 0 on success
+ */
+int parsec_copy_vector_bcdd(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcA,
+        float *copy_array)
+{
+    parsec_taskpool_t *parsec_copy_vector_bcdd = NULL;
+
+    // Ensure the matrix is a single row vector
+    assert(dcA->lm == 1);  // Only one row in the matrix
+    assert(dcA->mb == 1);  // Block size of 1 row
+
+    /* Initialize the copy array to zero for reduction */
+    memset(copy_array, 0, dcA->ln*sizeof(float)); 
+    
+    // Create and execute the copy taskpool
+    parsec_copy_vector_bcdd = parsec_copy_vector_bcdd_New( dcA, copy_array );
+
+    parsec_context_add_taskpool(parsec, parsec_copy_vector_bcdd);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+    parsec_copy_vector_bcdd_Destruct(parsec_copy_vector_bcdd);
+
+    /* Perform MPI reduction to sum contributions from all ranks */
+    MPI_Allreduce(MPI_IN_PLACE, copy_array, dcA->ln, MPI_FLOAT, MPI_SUM, (MPI_Comm)parsec->comm_ctx); 
+
+    return 0;
+}
+
+%}

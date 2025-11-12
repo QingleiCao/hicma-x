@@ -1,0 +1,1766 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+/**
+ * @file potrf_L_sparse_tlr_dp_general.jdf
+ * @brief Cholesky factorization (POTRF) implementation for sparse TLR (Tile Low-Rank) matrices
+ * 
+ * This file implements the Cholesky factorization algorithm for sparse Tile Low-Rank (TLR) 
+ * matrices using PaRSEC runtime system. The implementation supports both dense and sparse 
+ * tile representations with adaptive rank management.
+ * 
+ * The algorithm consists of four main computational kernels:
+ * 1. POTRF: Cholesky factorization of diagonal blocks
+ * 2. TRSM: Triangular solve for off-diagonal blocks  
+ * 3. SYRK: Symmetric rank-k update for diagonal blocks
+ * 4. GEMM: General matrix-matrix multiplication for off-diagonal blocks
+ * 
+ * Each kernel supports both recursive (for large tiles) and direct CPU execution paths.
+ * 
+ * ALGORITHM OVERVIEW:
+ * ==================
+ * The Cholesky factorization decomposes a symmetric positive definite matrix A into A = L*L^T,
+ * where L is a lower triangular matrix. For sparse TLR matrices, this is performed tile-wise
+ * with the following computational pattern:
+ * 
+ * 1. POTRF(k,k): Factorize diagonal block A(k,k) = L(k,k) * L(k,k)^T
+ * 2. TRSM(m,k): Solve L(k,k) * X = A(m,k) for off-diagonal blocks (m > k)
+ * 3. SYRK(m,m): Update diagonal block A(m,m) = A(m,m) - X * X^T (where X comes from TRSM)
+ * 4. GEMM(m,n): Update off-diagonal block A(m,n) = A(m,n) - X1 * X2^T (where X1,X2 from TRSM)
+ * 
+ * SPARSE TILE REPRESENTATION:
+ * ==========================
+ * Sparse tiles are represented in low-rank format: A = U * V^T, where U and V are tall matrices
+ * with rank << min(m,n). This significantly reduces memory usage and computational complexity
+ * for tiles that can be well-approximated by low-rank matrices.
+ * 
+ * RANK ADAPTATION:
+ * ===============
+ * The algorithm dynamically adapts tile ranks during computation using QR-SVD decomposition
+ * to maintain numerical accuracy while minimizing computational cost. Ranks are updated
+ * based on tolerance thresholds and maximum rank constraints.
+ * 
+ * TASK PRIORITY SYSTEM:
+ * ====================
+ * Priorities used in this jdf:
+ *      - potrf_dpotrf(k)    : (MT-k)**3
+ *      - potrf_dsyrk(k,m)   : (MT-m)**3 + 3 * (m - k)
+ *      - potrf_dtrsm(m,k)   : (MT-m)**3 + 3 * (m - k) * (2 * MT - k - m - 1)
+ *      - potrf_dgemm(m,n,k) : (MT-m)**3 + 3 * (m - n) * (2 * MT - m - n - 1) + 6 * (m - k)
+ *
+ * So max priority is:
+ *      (MT - PRI_CHANGE)**3 + 3 * MT * (2 * MT - PRI_CHANGE - 1) + 6 * MT  < (MT**3 + 6 MT**2 + 3 MT)
+ *
+ * WARNING: If mt is greater than 1200, we might get integer overflow.
+ */
+
+
+/**
+ * ============================================================================
+ * TASK MANAGEMENT FUNCTIONS
+ * ============================================================================
+ * 
+ * These functions optimize task initialization and scheduling by providing
+ * direct access to task counts and custom key generation for each task class.
+ * This eliminates the need for expensive iteration during task pool initialization.
+ * 
+ * TASK COUNTING OPTIMIZATION:
+ * ==========================
+ * Instead of iterating through all possible task indices during initialization,
+ * these functions provide direct access to the number of tasks that will be
+ * executed on each process, significantly reducing startup overhead.
+ * 
+ * KEY GENERATION OPTIMIZATION:
+ * ===========================
+ * Custom key generation functions create unique identifiers for each task
+ * that are optimized for the specific iteration patterns of each kernel.
+ * This enables efficient task lookup and scheduling by the PaRSEC runtime.
+ * 
+ * PERFORMANCE IMPACT:
+ * ==================
+ * - Reduces initialization time from O(n²) to O(1) for task counting
+ * - Enables efficient task-to-process mapping
+ * - Optimizes memory allocation and task scheduling
+ */
+
+/* Function to return the number of local tasks for each process */
+static uint32_t my_defined_nb_tasks_fn(struct __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_s *__tp);
+
+/* Custom key generation functions for each task class */
+static parsec_key_t my_make_key_potrf_dpotrf(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dtrsm(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dsyrk(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const parsec_assignment_t * as);
+
+%}
+
+%option nb_local_tasks_fn = my_defined_nb_tasks_fn
+
+/**
+ * ============================================================================
+ * GLOBAL VARIABLES AND PARAMETERS
+ * ============================================================================
+ * 
+ * These variables define the matrix descriptors, algorithm parameters, and runtime
+ * configuration for the Cholesky factorization algorithm.
+ * 
+ * MATRIX DESCRIPTORS:
+ * ==================
+ * The algorithm operates on multiple matrix descriptors to handle both the main
+ * computational data and the rank information for sparse tiles.
+ * 
+ * MEMORY MANAGEMENT:
+ * =================
+ * Memory pools are used to efficiently manage temporary workspace allocations
+ * for different types of computations, reducing memory fragmentation.
+ * 
+ * TASK PRIORITY SYSTEM:
+ * ====================
+ * Dynamic priority assignment ensures optimal task scheduling and load balancing
+ * across the distributed system.
+ */
+
+/* ============================================================================
+ * MATRIX DESCRIPTORS AND ALGORITHM PARAMETERS
+ * ============================================================================ */
+
+/* Main matrix descriptor for the input matrix A */
+descA        [ type = "parsec_tiled_matrix_t *" ]
+
+/* Rank matrix descriptor for sparse tiles - aligned with descA for efficiency */
+descAr       [ type = "parsec_tiled_matrix_t *" aligned = descA ]
+
+/* Rank information matrix for tracking tile ranks - aligned with descA */
+descRank     [ type = "parsec_tiled_matrix_t *" aligned = descA ]
+
+/* TLR algorithm parameters and configuration */
+params_tlr   [ type = "hicma_parsec_params_t *" ]
+
+/* Pre-computed analysis data for task scheduling and dependency management */
+analysis     [ type = "hicma_parsec_matrix_analysis_t *" ]
+
+/* ============================================================================
+ * HIDDEN GLOBAL VARIABLES - INTERNAL RUNTIME MANAGEMENT
+ * ============================================================================ */
+
+/* Memory pool handlers for efficient memory management */
+p_work       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]   /* General work memory pool */
+p_work_rr    [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]   /* Rank-rank computation memory pool */
+p_work_mbr   [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]   /* Matrix-block-rank computation memory pool */
+
+/* Task priority management variables */
+PRI_CHANGE   [ type = "int" hidden = on default = 0 ]    /* Priority change threshold for task scheduling */
+PRI_MAX      [ type = "int" hidden = on default = "(descA->mt * ( 3 + descA->mt * ( 2 + descA->mt )))" ]  /* Maximum priority value */
+
+
+/**
+ * ============================================================================
+ * POTRF_DPOTRF KERNEL - CHOLESKY FACTORIZATION OF DIAGONAL BLOCKS
+ * ============================================================================
+ * 
+ * This kernel performs the Cholesky factorization A = L*L^T for diagonal blocks.
+ * It is the fundamental operation that enables all subsequent computations.
+ * 
+ * COMPUTATIONAL COMPLEXITY: O(n³) per diagonal block
+ * MEMORY ACCESS PATTERN: Sequential access to diagonal blocks
+ * PARALLELIZATION: Each diagonal block can be processed independently
+ */
+
+/**
+ * @brief Cholesky factorization kernel for diagonal blocks
+ * 
+ * This kernel performs the Cholesky factorization A = L*L^T for diagonal blocks.
+ * It supports both recursive execution (for large tiles) and direct CPU execution.
+ * The kernel manages dependencies with SYRK and TRSM operations.
+ * 
+ * COMPUTATIONAL PATTERN:
+ * ====================
+ * For each diagonal block A(k,k), this kernel computes the Cholesky factorization:
+ * A(k,k) = L(k,k) * L(k,k)^T
+ * 
+ * The resulting lower triangular factor L(k,k) is then used by:
+ * - TRSM operations to solve L(k,k) * X = A(m,k) for m > k
+ * - SYRK operations to update diagonal blocks A(m,m) = A(m,m) - X * X^T
+ * 
+ * DEPENDENCY MANAGEMENT:
+ * ====================
+ * This kernel has complex dependencies:
+ * - It depends on previous SYRK operations that have updated A(k,k)
+ * - It produces data for all TRSM operations in iteration k
+ * - The last SYRK operation for block k must complete before POTRF can start
+ * 
+ * @param k Block index (0 <= k < descA->mt)
+ */
+potrf_dpotrf(k) [ make_key_fn = my_make_key_potrf_dpotrf
+                  high_priority = on ]
+
+/* ============================================================================
+ * EXECUTION SPACE AND PARAMETERS
+ * ============================================================================ */
+
+// Execution space: iterate over all diagonal blocks
+k = 0 .. descA->mt-1
+
+// Return code for recursive calls (0 = success)
+info = 0  /* For the info in the case of recursive calls */
+
+/* ============================================================================
+ * ANALYSIS DATA FOR TASK SCHEDULING AND DEPENDENCY MANAGEMENT
+ * ============================================================================ */
+
+// Number of local SYRK operations for block k
+num_syrk = %{ return analysis->syrk_local_num[k]; %}
+
+// Last SYRK index with dependency to POTRF
+last_syrk = %{ return (num_syrk > 0) ? analysis->syrk_local[k][num_syrk-1] : -1; %}
+
+// Number of TRSM operations for iteration k
+num_trsm = %{ return analysis->trsm_num[k]; %}
+
+// Number of TRSM operations for previous iteration
+num_trsm_prev = %{ return (k > 0)? analysis->trsm_num[k-1] : -1; %}
+
+/* ============================================================================
+ * PARALLEL PARTITIONING AND DATA FLOW
+ * ============================================================================ */
+
+// Parallel partitioning: each task operates on diagonal block (k,k)
+:descA(k, k)
+
+/* ============================================================================
+ * DATA FLOW AND DEPENDENCIES
+ * ============================================================================ */
+
+// Data flow: Read initial data from matrix or previous SYRK, then produce for TRSM
+RW T <- ( k == 0 || num_syrk == 0 ) ? descA(k, k)          /* Read initial data from matrix or previous SYRK */
+     <- (1)? T potrf_dsyrk(last_syrk, k)                                                                         [ type_remote = FULL ]
+     -> (num_trsm > 0) ? [ mi = 0 .. num_trsm-1 ] T potrf_dtrsm( %{ return analysis->trsm[k][mi]; %}, k )        [ type_remote = FULL ]
+     -> descA(k, k)                                                                                             
+
+/* ============================================================================
+ * TASK PRIORITY CALCULATION
+ * ============================================================================ */
+
+// Priority calculation: higher priority for blocks closer to diagonal
+; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
+
+
+/**
+ * ============================================================================
+ * RECURSIVE EXECUTION PATH FOR LARGE TILES
+ * ============================================================================
+ * 
+ * For tiles larger than the threshold (HNB), this path creates a recursive
+ * PaRSEC task pool to handle the factorization using the standard DPLASMA
+ * implementation. This provides better load balancing and cache efficiency.
+ * 
+ * PERFORMANCE BENEFITS:
+ * - Better load balancing across multiple cores
+ * - Improved cache locality for large tiles
+ * - Reduced memory overhead through recursive decomposition
+ */
+BODY [type=RECURSIVE]
+{
+    /* ========================================================================
+     * TILE DIMENSION CALCULATION
+     * ======================================================================== */
+    
+    // Calculate actual tile dimensions (handle last tile which may be smaller)
+    int tempkm = k == descA->mt-1 ? descA->m - k*descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;  // Threshold for recursive vs direct execution
+
+    /* ========================================================================
+     * THRESHOLD CHECK
+     * ======================================================================== */
+    
+    /* Go for the sequential CPU version if tile is small enough */
+    if( tempkm <= smallnb ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* ========================================================================
+     * DEBUG AND PERFORMANCE MONITORING
+     * ======================================================================== */
+    
+    if(DEBUG_INFO) printf("POTRF_Recursive: %d\n", k);
+
+    /* Operation count tracking for performance analysis */
+    unsigned long int cnt = hicma_parsec_op_counts('c', tempkm, 0, 0, 0);
+    params_tlr->op_band[es->th_id] += cnt;
+    params_tlr->op_path[es->th_id] += cnt;
+
+    /* Print the progress for monitoring */
+    hicma_parsec_print_process( descA->mt, k, params_tlr->start_time_potrf );
+
+    /* ========================================================================
+     * RECURSIVE TASK POOL CREATION
+     * ======================================================================== */
+    
+    subtile_desc_t *small_descT;
+    parsec_taskpool_t *parsec_dpotrf;
+
+    // Create subtile descriptor for recursive execution
+    small_descT = subtile_desc_create( descA, k, k,
+            smallnb, smallnb, 0, 0, tempkm, tempkm );
+    small_descT->mat = T;
+
+    // Create recursive DPLASMA POTRF task pool
+    parsec_dpotrf = dplasma_dpotrf_New(params_tlr->uplo, (parsec_tiled_matrix_t *)small_descT, &this_task->locals.info.value);
+
+    // Execute recursive call with proper cleanup
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dpotrf, dplasma_dpotrf_Destruct,
+            1, small_descT);
+
+    return PARSEC_HOOK_RETURN_ASYNC;
+}
+END
+
+/**
+ * ============================================================================
+ * DIRECT CPU EXECUTION PATH FOR SMALL TILES
+ * ============================================================================
+ * 
+ * For tiles smaller than the threshold, this path directly calls the optimized
+ * CPU kernel without creating additional task pools, reducing overhead.
+ * 
+ * PERFORMANCE BENEFITS:
+ * - Minimal overhead for small tiles
+ * - Direct access to optimized BLAS kernels
+ * - Reduced memory allocation and task management overhead
+ */
+BODY
+{
+    /* Direct CPU kernel execution for small tiles */
+    hicma_parsec_core_potrf_cpu( descA, params_tlr, es, T, k );
+}
+END
+
+
+/**
+ * ============================================================================
+ * POTRF_DTRSM KERNEL - TRIANGULAR SOLVE FOR OFF-DIAGONAL BLOCKS
+ * ============================================================================
+ * 
+ * This kernel performs the triangular solve operation: C = L^{-1} * C
+ * where L is the lower triangular factor from POTRF and C is an off-diagonal block.
+ * It supports both dense and sparse tile representations with rank management.
+ * 
+ * COMPUTATIONAL COMPLEXITY: O(mn²) per off-diagonal block
+ * MEMORY ACCESS PATTERN: Sequential access to off-diagonal blocks
+ * PARALLELIZATION: Each off-diagonal block can be processed independently
+ */
+
+/**
+ * @brief Triangular solve kernel for off-diagonal blocks
+ * 
+ * This kernel performs the triangular solve operation: C = L^{-1} * C
+ * where L is the lower triangular factor from POTRF and C is an off-diagonal block.
+ * It supports both dense and sparse tile representations with rank management.
+ * 
+ * COMPUTATIONAL PATTERN:
+ * ====================
+ * For each off-diagonal block A(m,k) where m > k, this kernel solves:
+ * L(k,k) * X = A(m,k)
+ * 
+ * The solution X is then used by:
+ * - SYRK operations to update diagonal block A(m,m) = A(m,m) - X * X^T
+ * - GEMM operations to update off-diagonal blocks A(m,n) = A(m,n) - X1 * X2^T
+ * 
+ * SPARSE TILE HANDLING:
+ * ====================
+ * For sparse tiles, the operation is performed on the low-rank representation:
+ * L(k,k) * (U * V^T) = (L(k,k) * U) * V^T
+ * This maintains the low-rank structure while performing the triangular solve.
+ * 
+ * @param m Row block index (m > k)
+ * @param k Column block index (0 <= k < descA->mt-1)
+ */
+potrf_dtrsm(m, k) [ make_key_fn = my_make_key_potrf_dtrsm
+                    high_priority = on ]
+
+/* ============================================================================
+ * EXECUTION SPACE AND PARAMETERS
+ * ============================================================================ */
+
+// Execution space: iterate over all off-diagonal blocks
+k = 0 .. descA->mt-2 
+
+/* ============================================================================
+ * ANALYSIS DATA FOR TASK SCHEDULING
+ * ============================================================================ */
+
+// Number of TRSM operations in iteration k
+num_trsm = %{ return analysis->trsm_num[k]; %}
+
+// Execution space for off-diagonal blocks
+m = [ mi = 0 .. %{ return num_trsm-1; %} ] %{ return analysis->trsm[k][mi]; %}
+
+/* ============================================================================
+ * LOCAL TASK INDEX CALCULATION
+ * ============================================================================ */
+
+// Store the local index mi for this task using binary search
+local_mi = %{ return binary_search_index(analysis->trsm[k], m, num_trsm, k, k); %}
+
+/* ============================================================================
+ * COMMUNICATION AND DEPENDENCY MANAGEMENT
+ * ============================================================================ */
+
+// Control message size to send, it's the new Cr
+size = 1
+
+// Local number of GEMM operations for this block
+num_local_gemm = %{ return analysis->gemm_local_num[k*descA->mt+m]; %}
+
+// Last local GEMM index for dependency management
+last_local_gemm = %{ return (num_local_gemm > 0 && descA->super.myrank == descA->super.rank_of(&descA->super, m, k)) ? analysis->gemm_local[k*descA->mt+m][num_local_gemm-1] : -1; %}
+
+/* ============================================================================
+ * PARALLEL PARTITIONING
+ * ============================================================================ */
+
+// Parallel partitioning: each task operates on off-diagonal block (m,k)
+: descA(m, k)
+
+/* ============================================================================
+ * DATA FLOW AND DEPENDENCIES
+ * ============================================================================ */
+
+// Read triangular factor from POTRF kernel
+READ  T <- T potrf_dpotrf(k)                                                                                   [ type_remote = FULL ]
+
+/* ============================================================================
+ * MAIN DATA FLOW FOR DENSE TILES
+ * ============================================================================ */
+
+// Main data flow: Read from matrix or previous GEMM, produce for SYRK and subsequent GEMMs
+RW    C <- (k == 0 || num_local_gemm == 0) ? descA(m, k)
+        <- C potrf_dgemm(m, k, last_local_gemm)                                                                [ type_remote = UV ]
+        -> A potrf_dsyrk(k, m)                                                                                 [ layout_remote = MPI_DOUBLE count_remote = size ]
+        -> (local_mi > 0) ? [ ni_1 = 0 .. local_mi-1 ] A potrf_dgemm(m, %{ return analysis->trsm[k][ni_1]; %}, k)                             [ layout_remote = MPI_DOUBLE count_remote = size ]
+        -> (num_trsm-1 >= local_mi+1) ? [ mi_1 = local_mi+1 .. num_trsm-1 ] B potrf_dgemm(%{ return analysis->trsm[k][mi_1]; %}, m, k)        [ layout_remote = MPI_DOUBLE count_remote = size ]
+        -> descA(m, k)                                                                                         [ layout_remote = MPI_DOUBLE count_remote = size ]
+
+/* ============================================================================
+ * RANK DATA FLOW FOR SPARSE TILES
+ * ============================================================================ */
+
+// Rank data flow: Read rank information from matrix or previous GEMM, produce for SYRK and subsequent GEMMs
+READ  Cr <- (k == 0 || num_local_gemm == 0) ? descAr(m, k)
+         <- Cr potrf_dgemm(m, k, last_local_gemm)                                                              [ type_remote = AR ]
+         -> Ar potrf_dsyrk(k, m)                                                                               [ type_remote = AR ]
+         -> (local_mi > 0) ? [ ni_2 = 0 .. local_mi-1 ] Ar potrf_dgemm(m, %{ return analysis->trsm[k][ni_2]; %}, k)                           [ type_remote = AR ] 
+         -> (num_trsm-1 >= local_mi+1) ? [ mi_2 = local_mi+1 .. num_trsm-1 ] Br potrf_dgemm(%{ return analysis->trsm[k][mi_2]; %}, m, k)      [ type_remote = AR ] 
+         -> descAr(m, k)                                                                                      
+
+/* ============================================================================
+ * CONTROL FLOW FOR LOOKAHEAD OPTIMIZATION
+ * ============================================================================ */
+
+// Control flow for lookahead optimization to improve pipeline efficiency
+CTL ctl <- (params_tlr->lookahead == 1 && num_trsm > 0 && m > k+params_tlr->lookahead && %{ return analysis->trsm[k][0]; %} == k+1)? ctl potrf_dsyrk(k, k+1)
+
+/* ============================================================================
+ * TASK PRIORITY CALCULATION
+ * ============================================================================ */
+
+// Priority calculation: higher priority for blocks closer to diagonal
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
+
+
+/**
+ * ============================================================================
+ * RECURSIVE EXECUTION PATH FOR LARGE DENSE TILES
+ * ============================================================================
+ * 
+ * For large dense tiles, this path creates a recursive PaRSEC task pool
+ * to handle the triangular solve using the standard DPLASMA implementation.
+ * This provides better load balancing and cache efficiency for large tiles.
+ */
+BODY [type=RECURSIVE]
+{
+    /* ========================================================================
+     * TILE DIMENSION CALCULATION
+     * ======================================================================== */
+    
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* ========================================================================
+     * THRESHOLD AND DENSITY CHECK
+     * ======================================================================== */
+    
+    /* Go for the sequential CPU version if tile is small or sparse */
+    if( tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* ========================================================================
+     * DEBUG AND PERFORMANCE MONITORING
+     * ======================================================================== */
+    
+    if(DEBUG_INFO) printf("TRSM Recursive: %d %d ; mb %d, nb: %d, band_size_dense: %d\n", m, k, descA->mb, descA->nb, params_tlr->band_size_dense);
+    
+    /* ========================================================================
+     * RECURSIVE TASK POOL CREATION
+     * ======================================================================== */
+    
+    subtile_desc_t *small_descT;
+    subtile_desc_t *small_descC;
+    parsec_taskpool_t* parsec_dtrsm;
+
+    // Create subtile descriptor for triangular factor T
+    small_descT = subtile_desc_create( descA, k, k,
+            smallnb, smallnb, 0, 0, descA->mb, descA->mb );
+    small_descT->mat = T;
+
+    // Create subtile descriptor for off-diagonal block C
+    small_descC = subtile_desc_create( descA, m, k,
+            smallnb, smallnb, 0, 0, tempmm, descA->mb );
+    small_descC->mat = C;
+
+    // Create recursive DPLASMA TRSM task pool
+    parsec_dtrsm = dplasma_dtrsm_New(PlasmaRight, PlasmaLower,
+            PlasmaTrans, PlasmaNonUnit,
+            (double)1.0,
+            (parsec_tiled_matrix_t *)small_descT,
+            (parsec_tiled_matrix_t *)small_descC );
+
+    // Execute recursive call with proper cleanup
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dtrsm, dplasma_dtrsm_Destruct,
+            2, small_descT, small_descC );
+
+    /* ========================================================================
+     * COMMUNICATION SIZE AND PERFORMANCE TRACKING
+     * ======================================================================== */
+    
+    /* Update send size for communication optimization */
+    this_task->locals.size.value = descA->mb * descA->mb;
+    
+    /* Operation count tracking for performance analysis */
+    hicma_parsec_op_count_trsm( descA, params_tlr, m, k, es->th_id, tempmm, IS_DENSE(m, k)? 0: ((int*)Cr)[0] );
+
+    return PARSEC_HOOK_RETURN_ASYNC;
+}
+END
+
+/**
+ * ============================================================================
+ * DIRECT CPU EXECUTION PATH FOR SMALL OR SPARSE TILES
+ * ============================================================================
+ * 
+ * For small tiles or sparse tiles, this path directly calls the optimized
+ * CPU kernel without creating additional task pools, reducing overhead.
+ * 
+ * SPARSE TILE HANDLING:
+ * - Checks for zero-rank tiles and skips computation
+ * - Handles both dense and sparse tile representations
+ * - Optimizes communication size based on tile type
+ */
+BODY
+{
+    /* ========================================================================
+     * SPARSE TILE RANK CHECK
+     * ======================================================================== */
+    
+    /* If rank is 0, return and set communication count to 0 */
+    if( !IS_DENSE(m, k) && 0 == *((int *)Cr) ) {
+        this_task->locals.size.value = 0;
+        return PARSEC_HOOK_RETURN_DONE;
+    }
+
+    /* ========================================================================
+     * CORE TRSM COMPUTATION
+     * ======================================================================== */
+    
+    /* Execute the core TRSM computation on CPU */
+    hicma_parsec_core_trsm_cpu( descA, descRank, params_tlr, es,
+            NULL, T, C, m, k, IS_DENSE(m, k)? 0: ((int*)Cr)[0] );
+
+    /* ========================================================================
+     * COMMUNICATION SIZE OPTIMIZATION
+     * ======================================================================== */
+    
+    /* Update send size based on tile type for communication optimization */
+    if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+        // Dense tile: send full tile data
+        this_task->locals.size.value = descA->mb * descA->mb;
+    } else {
+        // Sparse tile: send only low-rank representation
+        if(params_tlr->send_full_tile == 1){
+            // Send full rank representation
+            this_task->locals.size.value = descA->mb * params_tlr->maxrank * 2;
+        } else {
+            // Send actual rank representation
+            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2;
+        }
+    }
+
+}
+END
+
+
+/**
+ * ============================================================================
+ * POTRF_DSYRK KERNEL - SYMMETRIC RANK-K UPDATE FOR DIAGONAL BLOCKS
+ * ============================================================================
+ * 
+ * This kernel performs the symmetric rank-k update: C = C - A * A^T
+ * where A is the result from TRSM and C is a diagonal block.
+ * It supports both dense and sparse tile representations with rank management.
+ * 
+ * COMPUTATIONAL COMPLEXITY: O(m²k) per diagonal block
+ * MEMORY ACCESS PATTERN: Sequential access to diagonal blocks
+ * PARALLELIZATION: Each diagonal block can be processed independently
+ */
+potrf_dsyrk(k, m) [ make_key_fn = my_make_key_potrf_dsyrk
+                    high_priority = on ]
+
+/* ============================================================================
+ * EXECUTION SPACE AND PARAMETERS
+ * ============================================================================ */
+
+// Execution space: iterate over all diagonal blocks (excluding first)
+m = 1 .. descA->mt-1
+
+/* ============================================================================
+ * ANALYSIS DATA FOR TASK SCHEDULING
+ * ============================================================================ */
+
+// Number of local SYRK operations for diagonal block m
+num_syrk = %{ return analysis->syrk_local_num[m]; %}
+
+// Execution space for SYRK operations on diagonal block m
+k = [ ki = 0 .. %{ return num_syrk-1; %} ] %{ return analysis->syrk_local[m][ki]; %}
+
+// Number of TRSM operations for iteration k
+num_trsm = %{ return analysis->trsm_num[k]; %}
+
+/* ============================================================================
+ * LOCAL TASK INDEX CALCULATION
+ * ============================================================================ */
+
+// Local SYRK iteration index using binary search for efficiency
+local_ki = %{ return binary_search_index(analysis->syrk_local[m], k, num_syrk, m, m); %}
+
+// Last local SYRK index that has dependency to POTRF
+last_syrk = %{ return (num_syrk > 0) ? analysis->syrk_local[m][num_syrk-1] : -1; %}
+
+/* ============================================================================
+ * PARALLEL PARTITIONING
+ * ============================================================================ */
+
+// Parallel partitioning: each task operates on diagonal block (m,m)
+: descA(m, m)
+
+/* ============================================================================
+ * DATA FLOW AND DEPENDENCIES
+ * ============================================================================ */
+
+// Read data from TRSM kernel (both dense and rank information)
+READ  A  <- C  potrf_dtrsm(m, k)               [ type_remote = UV ]
+READ  Ar <- Cr potrf_dtrsm(m, k)               [ type_remote = AR ]
+
+/* ============================================================================
+ * MAIN DATA FLOW FOR DIAGONAL BLOCKS
+ * ============================================================================ */
+
+// Main data flow: Read from matrix or previous SYRK, produce for next SYRK or POTRF
+RW    T <- (local_ki == 0) ? descA(m, m)
+        <- T potrf_dsyrk(%{ return analysis->syrk_local[m][local_ki-1]; %}, m)                                         [ type_remote = FULL ] 
+        -> (k == last_syrk) ? T potrf_dpotrf(m) : T potrf_dsyrk(%{ return analysis->syrk_local[m][local_ki+1]; %}, m)  [ type_remote = FULL ]
+
+/* ============================================================================
+ * CONTROL FLOW FOR LOOKAHEAD OPTIMIZATION
+ * ============================================================================ */
+
+// Control flow for lookahead optimization to improve pipeline efficiency
+CTL ctl -> (params_tlr->lookahead == 1 && m == k+1 && num_trsm > 1)? [ mi = 1 .. num_trsm-1 ] ctl potrf_dtrsm(%{ return analysis->trsm[k][mi]; %}, k)
+
+/* ============================================================================
+ * TASK PRIORITY CALCULATION
+ * ============================================================================ */
+
+// Priority calculation: higher priority for blocks closer to diagonal
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * (m - k) : PRI_MAX
+
+
+/**
+ * ============================================================================
+ * RECURSIVE EXECUTION PATH FOR LARGE DENSE TILES
+ * ============================================================================
+ * 
+ * For large dense tiles, this path creates a recursive PaRSEC task pool
+ * to handle the symmetric rank-k update using the standard DPLASMA implementation.
+ * This provides better load balancing and cache efficiency for large tiles.
+ */
+BODY [type=RECURSIVE]
+{
+    /* ========================================================================
+     * TILE DIMENSION CALCULATION
+     * ======================================================================== */
+    
+    int tempmm = m == descA->mt-1 ? descA->m - m*descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* ========================================================================
+     * THRESHOLD AND DENSITY CHECK
+     * ======================================================================== */
+    
+    /* Go for the sequential CPU version if tile is small or sparse */
+    if( tempmm <= smallnb || DENSE_DP != params_tlr->decisions[k*descA->lmt+m] ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* ========================================================================
+     * PERFORMANCE MONITORING
+     * ======================================================================== */
+    
+    /* Operation count tracking for performance analysis */
+    hicma_parsec_op_count_syrk( descA, params_tlr, m, k, es->th_id, tempmm, IS_DENSE(m, k)? 0: ((int*)Ar)[0] );
+    
+    if(DEBUG_INFO) printf("SYRK Recursive %d %d \n", k, m); 
+    
+    /* ========================================================================
+     * RECURSIVE TASK POOL CREATION
+     * ======================================================================== */
+    
+    subtile_desc_t *small_descT;
+    subtile_desc_t *small_descA;
+    parsec_taskpool_t* parsec_dsyrk;
+    void *A_d;
+        
+    // Create subtile descriptor for diagonal block T
+    small_descT = subtile_desc_create( descA, m, m,
+            smallnb, smallnb, 0, 0, tempmm, tempmm );
+    small_descT->mat = T;
+        
+    // Create subtile descriptor for off-diagonal block A
+    small_descA = subtile_desc_create( descA, m, k,
+            smallnb, smallnb, 0, 0, tempmm, descA->mb );
+    small_descA->mat = A;
+            
+    // Create recursive DPLASMA SYRK task pool
+    parsec_dsyrk = dplasma_dsyrk_New( PlasmaLower, PlasmaNoTrans,
+            (double)-1.0, (parsec_tiled_matrix_t*) small_descA,
+            (double)1.0,  (parsec_tiled_matrix_t*) small_descT);
+                
+    // Execute recursive call with proper cleanup
+    parsec_recursivecall((parsec_task_t*)this_task,
+            parsec_dsyrk, dplasma_dsyrk_Destruct,
+            2, small_descA, small_descT);
+            
+    return PARSEC_HOOK_RETURN_ASYNC;
+}
+END
+
+/**
+ * ============================================================================
+ * DIRECT CPU EXECUTION PATH FOR SMALL OR SPARSE TILES
+ * ============================================================================
+ * 
+ * For small tiles or sparse tiles, this path directly calls the optimized
+ * CPU kernel without creating additional task pools, reducing overhead.
+ * 
+ * SPARSE TILE HANDLING:
+ * - Checks for zero-rank tiles and skips computation
+ * - Handles both dense and sparse tile representations
+ * - Uses memory pools for efficient workspace management
+ */
+BODY
+{
+    /* ========================================================================
+     * SPARSE TILE RANK CHECK
+     * ======================================================================== */
+    
+    /* If rank is 0, return and set communication count to 0 */
+    if( !IS_DENSE(m, k) && 0 == *((int *)Ar) ) {
+        return PARSEC_HOOK_RETURN_DONE;
+    }
+
+    /* ========================================================================
+     * CORE SYRK COMPUTATION
+     * ======================================================================== */
+    
+    /* Execute the core SYRK computation on CPU with memory pool management */
+    hicma_parsec_core_syrk_cpu( descA, descRank, params_tlr, es,
+            p_work, NULL, NULL, p_work_mbr, p_work_rr,
+            T, A, m, k, IS_DENSE(m, k)? 0: ((int*)Ar)[0] );
+}
+END
+
+/**
+ * ============================================================================
+ * POTRF_DGEMM KERNEL - GENERAL MATRIX-MATRIX MULTIPLICATION FOR OFF-DIAGONAL BLOCKS
+ * ============================================================================
+ * 
+ * This kernel performs the general matrix-matrix multiplication: C = C - A * B^T
+ * where A and B are results from TRSM and C is an off-diagonal block.
+ * It supports both dense and sparse tile representations with adaptive rank management.
+ * 
+ * COMPUTATIONAL COMPLEXITY: O(mnk) per off-diagonal block
+ * MEMORY ACCESS PATTERN: Sequential access to off-diagonal blocks
+ * PARALLELIZATION: Each off-diagonal block can be processed independently
+ * 
+ * RANK ADAPTATION:
+ * - Dynamically adapts tile ranks during computation
+ * - Uses QR-SVD decomposition for rank management
+ * - Maintains numerical accuracy while minimizing computational cost
+ */
+potrf_dgemm(m, n, k) [ make_key_fn = my_make_key_potrf_dgemm
+                       high_priority = on ]
+
+/* ============================================================================
+ * EXECUTION SPACE AND PARAMETERS
+ * ============================================================================ */
+
+// Execution space: iterate over all off-diagonal blocks (upper triangle)
+m = 2 .. descA->mt-1
+n = 1 .. m-1
+
+/* ============================================================================
+ * ANALYSIS DATA FOR TASK SCHEDULING
+ * ============================================================================ */
+
+// Number of local GEMM operations for off-diagonal block (m,n)
+num_gemm = %{ return analysis->gemm_local_num[n*descA->mt+m]; %}
+
+// Execution space for GEMM operations on off-diagonal block (m,n)
+k = [ ki = 0 .. %{ return num_gemm-1; %} ] %{ return analysis->gemm_local[n*descA->mt+m][ki]; %}
+
+/* ============================================================================
+ * COMMUNICATION AND DEPENDENCY MANAGEMENT
+ * ============================================================================ */
+
+// Control message size to send, it's the new Cr
+size = 1
+
+// Last local GEMM iteration for dependency management
+last_gemm = %{ return (num_gemm > 0 && descA->super.myrank == descA->super.rank_of(&descA->super, m, n)) ? analysis->gemm_local[n*descA->mt+m][num_gemm-1] : -1; %}
+
+/* ============================================================================
+ * LOCAL TASK INDEX CALCULATION
+ * ============================================================================ */
+
+// Local GEMM iteration index using binary search for efficiency
+local_ki = %{ return (descA->super.myrank == descA->super.rank_of(&descA->super, m, n))? binary_search_index(analysis->gemm_local[n*descA->mt+m], k, num_gemm, m, n) : -1; %}
+
+// Get the previous and next local GEMM for dependency chain management
+k_pre = %{ return (local_ki > 0 && descA->super.myrank == descA->super.rank_of(&descA->super, m, n))? analysis->gemm_local[n*descA->mt+m][local_ki-1] : -1; %} 
+k_next = %{ return (local_ki < num_gemm-1 && descA->super.myrank == descA->super.rank_of(&descA->super, m, n))? analysis->gemm_local[n*descA->mt+m][local_ki+1] : -1; %} 
+
+/* ============================================================================
+ * PARALLEL PARTITIONING
+ * ============================================================================ */
+
+// Parallel partitioning: each task operates on off-diagonal block (m,n)
+: descA(m, n)
+
+/* ============================================================================
+ * DATA FLOW AND DEPENDENCIES
+ * ============================================================================ */
+
+// Read data from TRSM kernels (both dense and rank information for matrix A)
+READ   A <- C  potrf_dtrsm(m, k)                                         [ type_remote = UV ] 
+READ  Ar <- Cr potrf_dtrsm(m, k)                                         [ type_remote = AR ]
+
+// Read data from TRSM kernels (both dense and rank information for matrix B)
+READ   B <- C  potrf_dtrsm(n, k)                                         [ type_remote = UV ]
+READ  Br <- Cr potrf_dtrsm(n, k)                                         [ type_remote = AR ]
+
+/* ============================================================================
+ * MAIN DATA FLOW FOR DENSE TILES
+ * ============================================================================ */
+
+// Main data flow: Read from matrix or previous GEMM, produce for next GEMM or TRSM
+RW     C <- (local_ki == 0) ? descA(m, n)
+         <- C potrf_dgemm(m, n, k_pre)                                   [ type_remote = UV ]
+         -> (k == last_gemm) ? C potrf_dtrsm(m, n)                       [ layout_remote = MPI_DOUBLE count_remote = size ]
+         -> (k != last_gemm) ? C potrf_dgemm(m, n, k_next)               [ layout_remote = MPI_DOUBLE count_remote = size ]
+
+/* ============================================================================
+ * RANK DATA FLOW FOR SPARSE TILES
+ * ============================================================================ */
+
+// Rank data flow: Read rank information from matrix or previous GEMM, produce for next GEMM or TRSM
+RW    Cr <- (local_ki == 0) ? descAr(m, n)
+         <- Cr potrf_dgemm(m, n, k_pre)                                  [ type_remote = AR ]
+         -> (k == last_gemm) ? Cr potrf_dtrsm(m, n)                      [ type_remote = AR ]
+         -> (k != last_gemm) ? Cr potrf_dgemm(m, n, k_next)              [ type_remote = AR ]
+
+/* ============================================================================
+ * TASK PRIORITY CALCULATION
+ * ============================================================================ */
+
+// Priority calculation: higher priority for blocks closer to diagonal
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - m - n - 3) * (m - n) + 6 * (m - k) : PRI_MAX
+
+
+/**
+ * ============================================================================
+ * RECURSIVE EXECUTION PATH FOR LARGE DENSE TILES
+ * ============================================================================
+ * 
+ * For large dense tiles, this path creates a recursive PaRSEC task pool
+ * to handle the general matrix-matrix multiplication using the standard DPLASMA
+ * implementation. This provides better load balancing and cache efficiency.
+ * 
+ * BAND SIZE OPTIMIZATION:
+ * - Different operation counting based on band size
+ * - Optimized memory access patterns for different tile configurations
+ */
+BODY [type=RECURSIVE]
+{
+    /* ========================================================================
+     * TILE DIMENSION CALCULATION
+     * ======================================================================== */
+    
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int smallnb = params_tlr->HNB;
+
+    /* ========================================================================
+     * OPERATION COUNT TRACKING BASED ON BAND SIZE
+     * ======================================================================== */
+    
+    /* Operation count on band for performance analysis */
+    if ( m-k < params_tlr->band_size_dense ) {
+        // Dense band: full matrix multiplication
+        unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, tempmm, 0);
+        params_tlr->op_band[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    } else if( n-k < params_tlr->band_size_dense && m-n < params_tlr->band_size_dense ) {
+        // Mixed band: A dense, B sparse
+        int Arank = ((int*)Ar)[0];
+        unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, Arank, 0) * 2;
+        params_tlr->op_band[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    } else if( m-n < params_tlr->band_size_dense ) {
+        // Mixed band: both A and B sparse
+        int Arank = ((int*)Ar)[0];
+        int Brank = ((int*)Br)[0];
+        unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, parsec_imin(Arank, Brank), 0)
+                                + hicma_parsec_op_counts('m', tempmm, Arank, Brank, 0) * 2;
+        params_tlr->op_band[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    }
+
+    /* ========================================================================
+     * RECURSIVE EXECUTION FOR DENSE BAND
+     * ======================================================================== */
+    
+    if ( (m-k < params_tlr->band_size_dense) && (tempmm > smallnb) )
+    {
+        if(DEBUG_INFO) printf("GEMM Recursive: %d %d %d\n", m, n, k);
+        
+        subtile_desc_t *small_descA;
+        subtile_desc_t *small_descB;
+        subtile_desc_t *small_descC;
+        parsec_taskpool_t *parsec_dgemm;
+
+        // Create subtile descriptor for matrix A
+        small_descA = subtile_desc_create( descA, m, k,
+                                           smallnb, smallnb, 0, 0, tempmm, descA->mb );
+        small_descA->mat = A;
+
+        // Create subtile descriptor for matrix B
+        small_descB = subtile_desc_create( descA, n, k,
+                                           smallnb, smallnb, 0, 0, descA->mb, descA->mb );
+        small_descB->mat = B;
+
+        // Create subtile descriptor for matrix C
+        small_descC = subtile_desc_create( descA, m, n,
+                                           smallnb, smallnb, 0, 0, tempmm, descA->mb );
+        small_descC->mat = C;
+
+        // Create recursive DPLASMA GEMM task pool
+        parsec_dgemm = dplasma_dgemm_New(PlasmaNoTrans, PlasmaTrans,
+                                        (double)-1.0,
+                                        (parsec_tiled_matrix_t *)small_descA,
+                                        (parsec_tiled_matrix_t *)small_descB,
+                                        (double) 1.0,
+                                        (parsec_tiled_matrix_t *)small_descC);
+
+        // Execute recursive call with proper cleanup
+        parsec_recursivecall((parsec_task_t*)this_task,
+                             parsec_dgemm, dplasma_dgemm_Destruct,
+                             3, small_descA, small_descB, small_descC );
+
+        return PARSEC_HOOK_RETURN_ASYNC;
+    }
+    else
+        /* Go to CPU sequential kernel for small or sparse tiles */
+        return PARSEC_HOOK_RETURN_NEXT;
+}
+END
+
+/**
+ * ============================================================================
+ * DIRECT CPU EXECUTION PATH FOR SMALL OR SPARSE TILES
+ * ============================================================================
+ * 
+ * For small tiles or sparse tiles, this path directly calls the optimized
+ * CPU kernel without creating additional task pools, reducing overhead.
+ * 
+ * SPARSE TILE HANDLING:
+ * - Handles multiple tile configurations (dense, mixed, sparse)
+ * - Uses adaptive rank management with QR-SVD decomposition
+ * - Optimizes memory access patterns for different tile types
+ */
+BODY
+{
+    /* ========================================================================
+     * RANK GATHERING AND DEBUG INFORMATION
+     * ======================================================================== */
+    
+#if PRINT_RANK
+    /* Gather rank information for analysis */
+    int Crank = IS_DENSE(m, n)? 0: ((int*)Cr)[0];
+    if( 0 == local_ki ) { 
+        hicma_parsec_gather_rank_initial( descA, descRank, params_tlr, m, n, k, Crank );
+    }
+#endif
+
+    if(DEBUG_INFO) printf("GEMM (%d, %d, %d): local_ki %d k_pre %d, k_next %d\n", m, n, k, local_ki, k_pre, k_next);
+
+    /* ========================================================================
+     * DENSE BAND COMPUTATION
+     * ======================================================================== */
+    
+    /* Direct dense computation for tiles in the dense band */
+    if ( m-k < params_tlr->band_size_dense ) {
+        int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int ldam = BLKLDD( descA, m );
+        int ldan = BLKLDD( descA, n );
+
+        // Direct BLAS GEMM call for dense tiles
+        CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
+                   tempmm, descA->mb, descA->mb,
+                   (double)-1.0, A /*A(m, k)*/, ldam,
+                                 B /*A(n, k)*/, ldan,
+                   (double) 1.0, C /*A(m, n)*/, ldam);
+
+    /* ========================================================================
+     * MIXED BAND COMPUTATION (A DENSE, B SPARSE)
+     * ======================================================================== */
+    
+    } else if( n-k < params_tlr->band_size_dense && m-n < params_tlr->band_size_dense ) {
+        /* ====================================================================
+         * MEMORY ALLOCATION AND POINTER SETUP
+         * ==================================================================== */
+        
+        void *p_elem_work_mbr = parsec_private_memory_pop( p_work_mbr );
+        int Arank = ((int *)Ar)[0];
+        void *Au = (void *)A;                    // U factor of A
+        void *Av = (void *)A + descA->mb * Arank * sizeof(double);  // V factor of A
+
+        /* ====================================================================
+         * SPARSE MATRIX MULTIPLICATION: A * B^T = Au * (Av^T * B^T)
+         * ==================================================================== */
+        
+        /* Step 1: tmp_mbr = trans(Av) * trans(B) */
+        CORE_dgemm(PlasmaTrans, PlasmaTrans,
+                   Arank, descA->mb, descA->mb,
+                   (double)1.0, Av /*A(m, k)*/, descA->mb,
+                                 B /*A(n, m)*/, descA->mb,
+                   (double) 0.0, p_elem_work_mbr /*A(k, n)*/, Arank);
+
+        /* Step 2: C = C - Au * tmp_mbr */ 
+        CORE_dgemm(PlasmaNoTrans, PlasmaNoTrans,
+                   descA->mb, descA->mb, Arank,
+                   (double)-1.0, Au              /*A(m, k)*/, descA->mb,
+                                 p_elem_work_mbr /*A(k, n)*/, Arank,
+                   (double) 1.0, C               /*A(m, n)*/, descA->mb);
+
+        /* Return workspace to memory pool */
+        parsec_private_memory_push( p_work_mbr, p_elem_work_mbr );
+
+    /* ========================================================================
+     * MIXED BAND COMPUTATION (BOTH A AND B SPARSE)
+     * ======================================================================== */
+    
+    } else if( m-n < params_tlr->band_size_dense ) {
+        /* ====================================================================
+         * MEMORY ALLOCATION AND POINTER SETUP
+         * ==================================================================== */
+        
+        void *p_elem_work_mbr = parsec_private_memory_pop( p_work_mbr );
+        void *p_elem_work_rr = parsec_private_memory_pop( p_work_rr );
+        int Arank = ((int *)Ar)[0];
+        int Brank = ((int *)Br)[0];
+
+        void *Au = (void *)A;                    // U factor of A
+        void *Av = (void *)A + descA->mb * Arank * sizeof(double);  // V factor of A
+
+        void *Bu = (void *)B;                    // U factor of B
+        void *Bv = (void *)B + descA->mb * Brank * sizeof(double);  // V factor of B
+
+        /* ====================================================================
+         * SPARSE MATRIX MULTIPLICATION: A * B^T = Au * (Av^T * Bv) * Bu^T
+         * ==================================================================== */
+        
+        /* Step 1: tmp_rr = trans(Av) * Bv (rank-rank multiplication) */
+        CORE_dgemm(PlasmaTrans, PlasmaNoTrans,
+                   Arank, Brank, descA->mb,
+                   (double) 1.0, Av             /*A(k, m)*/, descA->mb,
+                                 Bv             /*A(k, n)*/, descA->mb,
+                   (double) 0.0, p_elem_work_rr /*A(m, n)*/, Arank);
+
+        /* ====================================================================
+         * RANK-ADAPTIVE COMPUTATION BASED ON RELATIVE RANKS
+         * ==================================================================== */
+        
+        if( Arank > Brank ) {
+            /* Case 1: A has higher rank - compute Au * (Av^T * Bv) first */
+            
+            /* Step 2a: tmp_mbr = Au * tmp_rr */
+            CORE_dgemm(PlasmaNoTrans, PlasmaNoTrans,
+                       descA->mb, Brank, Arank,
+                       (double) 1.0, Au              /*A(m, k)*/, descA->mb,
+                                     p_elem_work_rr  /*A(k, n)*/, Arank,
+                       (double) 0.0, p_elem_work_mbr /*A(m, n)*/, descA->mb);
+
+            /* Step 3a: C = C - tmp_mbr * trans(Bu) */
+            CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
+                       descA->mb, descA->mb, Brank,
+                       (double)-1.0, p_elem_work_mbr /*A(m, k)*/, descA->mb,
+                                     Bu              /*A(n, k)*/, descA->mb,
+                       (double) 1.0, C               /*A(m, n)*/, descA->mb);
+        } else {
+            /* Case 2: B has higher or equal rank - compute (Av^T * Bv) * Bu^T first */
+            
+            /* Step 2b: tmp_mbr = tmp_rr * trans(Bu) */
+            CORE_dgemm(PlasmaNoTrans, PlasmaTrans,
+                       Arank, descA->mb, Brank,
+                       (double) 1.0, p_elem_work_rr  /*A(m, k)*/, Arank,
+                                     Bu              /*A(n, k)*/, descA->mb,
+                       (double) 0.0, p_elem_work_mbr /*A(m, n)*/, Arank);
+
+            /* Step 3b: C = C - Au * tmp_mbr */
+            CORE_dgemm(PlasmaNoTrans, PlasmaNoTrans,
+                       descA->mb, descA->mb, Arank,
+                       (double)-1.0, Au              /*A(m, k)*/, descA->mb,
+                                     p_elem_work_mbr /*A(k, n)*/, Arank,
+                       (double) 1.0, C               /*A(m, n)*/, descA->mb);
+        }
+
+        /* Return workspaces to memory pools */
+        parsec_private_memory_push( p_work_mbr, p_elem_work_mbr );
+        parsec_private_memory_push( p_work_rr, p_elem_work_rr );
+
+    /* ========================================================================
+     * SPARSE BAND COMPUTATION WITH RANK ADAPTATION (A SPARSE, B DENSE)
+     * ======================================================================== */
+    
+    } else if( n-k < params_tlr->band_size_dense && m-n >= params_tlr->band_size_dense ) {
+        /* ====================================================================
+         * TILE DIMENSION AND LEADING DIMENSION CALCULATION
+         * ==================================================================== */
+        
+        int tempmmu = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int ldamu = BLKLDD( descA, m );
+        int ldamv = BLKLDD( descA, m );
+        int ldanu = BLKLDD( descA, n );
+        int ldanv = BLKLDD( descA, n );
+
+        /* ====================================================================
+         * RANK INFORMATION AND POINTER SETUP
+         * ==================================================================== */
+        
+        int Arank = ((int*)Ar)[0];
+        int Crank_old = ((int*)Cr)[0];
+
+        void *Au = (void *)A;                    // U factor of A
+        void *Av = (void *)A + descA->mb * Arank * sizeof(double);  // V factor of A
+        // FIXME: descA->mb might cause problem for cleanup tiles
+
+        void *Cu = (void *)C;                    // U factor of C
+        void *Cv = (void *)C + descA->mb * Crank_old * sizeof(double);  // V factor of C
+        // FIXME: descA->mb might cause problem for cleanup tiles
+
+        /* ====================================================================
+         * WORKSPACE ALLOCATION
+         * ==================================================================== */
+        
+        void *p_elem_work = NULL;
+        p_elem_work = parsec_private_memory_pop( p_work );
+        int new_Crank = ((int*)Cr)[0];
+
+        /* ====================================================================
+         * TWO-STEP QR-SVD RANK ADAPTATION
+         * ==================================================================== */
+        
+        /**
+         * Two-step hcore_gemm with rank adaptation:
+         * 1. First step reveals ACTUAL_RANK through QR-SVD decomposition
+         * 2. Second step constructs new CU and CV with optimal rank
+         * 
+         * Note: Provided CU and CV buffers must have at least ACTUAL_RANK columns
+         */
+        
+        /* Variables for QR-SVD decomposition and rank adaptation */
+        double* work_new;
+        double* _CU;
+        double* _CV;
+        int CU_ncols;
+        int new_UVrk;
+        double* newU;
+        int ld_newU;
+        double* qrtauA;
+        int CV_ncols;
+        double* newV;
+        int ld_newV;
+        double* qrtauB;
+        int use_CUV_clone;
+        double* CUclone;
+        int ld_CUclone;
+        double *_CU_save;
+        double* CVclone;
+        int ld_CVclone;
+        double* _CV_save;
+        flop_counter flops;
+        
+        /* ====================================================================
+         * STEP 1: QR-SVD DECOMPOSITION TO REVEAL ACTUAL RANK
+         * ==================================================================== */
+        
+        HCORE_dgemm_qr_svd_b_dense( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                B, ldamv,
+                (double)1.0,
+                Cu, Cv, &new_Crank, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                &flops,
+                /** parameters that will be passed to HCORE_dgemm_ormqr */
+                &work_new,
+                &_CU,
+                &_CV,
+                &CU_ncols,
+                &new_UVrk,
+                &newU,
+                &ld_newU,
+                &qrtauA,
+                &CV_ncols,
+                &newV,
+                &ld_newV,
+                &qrtauB,
+                &use_CUV_clone,
+                &CUclone,
+                &ld_CUclone,
+                &_CU_save,
+                &CVclone,
+                &ld_CVclone,
+                &_CV_save
+                    );
+
+        /* ====================================================================
+         * MEMORY REALLOCATION FOR RANK INCREASE
+         * ==================================================================== */
+        
+        /* If new rank is larger than old rank, re-allocate memory */
+        if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+            if( DEBUG_INFO ) printf("Reallocate %d %d %d\n", m, n, k);
+            
+            // Free old memory if it exists
+            if( NULL != this_task->data._f_C.data_out->device_private )
+                free( this_task->data._f_C.data_out->device_private ); 
+            
+            // Allocate new memory for increased rank
+            this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
+            this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+        }
+
+        /* ====================================================================
+         * SETUP ADDRESSES FOR FINAL RESULT STORAGE
+         * ==================================================================== */
+        
+        /* Address for Cu and Cv to be copied to */
+        _CU_save = this_task->data._f_C.data_out->device_private;
+        _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(double);
+
+        /* ====================================================================
+         * STEP 2: ORTHOGONAL MATRIX MULTIPLICATION TO CONSTRUCT FINAL RESULT
+         * ==================================================================== */
+        
+        HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                (double)1.0,
+                Cu, Cv, &new_Crank, ldamu,
+                params_tlr->fixedrk, 2*params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                &flops,
+                /** parameters coming from HCORE_dgemm_qr_svd */
+                _CU,
+                _CV,
+                CU_ncols,
+                new_UVrk,
+                newU,
+                ld_newU,
+                qrtauA,
+                CV_ncols,
+                newV,
+                ld_newV,
+                qrtauB,
+                use_CUV_clone,
+                CUclone,
+                ld_CUclone,
+                _CU_save,
+                CVclone,
+                ld_CVclone,
+                _CV_save
+                    );
+
+        /* ====================================================================
+         * FINALIZATION AND PERFORMANCE TRACKING
+         * ==================================================================== */
+        
+        /* Update rank information */
+        ((int*)Cr)[0] = new_Crank;
+        
+        /* Return workspace to memory pool */
+        parsec_private_memory_push( p_work, p_elem_work );
+
+        /* ====================================================================
+         * OPERATION COUNT TRACKING FOR PERFORMANCE ANALYSIS
+         * ==================================================================== */
+        
+        int Crank_old__Arank = Crank_old + Arank;
+        unsigned long int cnt = 0;
+
+        /* QR decomposition of [CU AU] */
+        unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);
+        // ASSUMPTION: tempmmv is not totally correct if nrowsC<ncolsC
+        
+        /* QR decomposition and Au * B computation */
+        unsigned long int qrbflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);
+        qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, tempmmv, 0);
+        
+        /* SVD decomposition and rank adaptation */
+        int rA_nrows  = tempmmv < Crank_old__Arank ? tempmmv : Crank_old__Arank;
+        unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0); // trmm is used
+        svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
+        svdflop += Crank_old__Arank * new_Crank;
+        
+        /* Orthogonal matrix multiplication for new U and V factors */
+        unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, new_Crank, Crank_old__Arank, 1);
+        unsigned long int newvflop = hicma_parsec_op_counts('o', new_Crank, tempmmv, Crank_old__Arank, 2);
+
+        /* Total operation count */
+        cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
+        params_tlr->op_offband[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+
+    /* ========================================================================
+     * SPARSE BAND COMPUTATION WITH RANK ADAPTATION (BOTH A AND B SPARSE)
+     * ======================================================================== */
+    
+    } else {
+
+        /* ====================================================================
+         * ZERO RANK CHECK
+         * ==================================================================== */
+        
+        /* If rank is 0, return early */
+        if( 0 == *((int *)Ar) || 0 == *((int *)Br) ) {
+            this_task->locals.size.value = ((int *)Cr)[0] * descA->mb;
+            return PARSEC_HOOK_RETURN_DONE;
+        }
+
+        /* ====================================================================
+         * TILE DIMENSION AND LEADING DIMENSION CALCULATION
+         * ==================================================================== */
+        
+        int tempmmu = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+        int ldamu = BLKLDD( descA, m );
+        int ldamv = BLKLDD( descA, m );
+        int ldanu = BLKLDD( descA, n );
+        int ldanv = BLKLDD( descA, n );
+
+        /* ====================================================================
+         * RANK INFORMATION AND POINTER SETUP
+         * ==================================================================== */
+        
+        int Arank = ((int*)Ar)[0];
+        int Brank = ((int*)Br)[0];
+        int Crank_old = ((int*)Cr)[0];
+
+        void *Au = (void *)A;                    // U factor of A
+        void *Av = (void *)A + descA->mb * Arank * sizeof(double);  // V factor of A
+        // FIXME: descA->mb might cause problem for cleanup tiles
+
+        void *Bu = (void *)B;                    // U factor of B
+        void *Bv = (void *)B + descA->mb * Brank * sizeof(double);  // V factor of B
+        // FIXME: descA->mb might cause problem for cleanup tiles
+
+        void *Cu = (void *)C;                    // U factor of C
+        void *Cv = (void *)C + descA->mb * Crank_old * sizeof(double);  // V factor of C
+        // FIXME: descA->mb might cause problem for cleanup tiles
+
+        /* ====================================================================
+         * WORKSPACE ALLOCATION
+         * ==================================================================== */
+        
+        void *p_elem_work = NULL;
+        p_elem_work = parsec_private_memory_pop( p_work );
+
+        /* ====================================================================
+         * TWO-STEP QR-SVD RANK ADAPTATION FOR SPARSE-SPARSE MULTIPLICATION
+         * ==================================================================== */
+        
+        /**
+         * Two-step hcore_gemm with rank adaptation for sparse-sparse multiplication:
+         * 1. First step reveals ACTUAL_RANK through QR-SVD decomposition
+         * 2. Second step constructs new CU and CV with optimal rank
+         * 
+         * Note: Provided CU and CV buffers must have at least ACTUAL_RANK columns
+         */
+        
+        /* Variables for QR-SVD decomposition and rank adaptation */
+        double* work_new;
+        double* _CU;
+        double* _CV;
+        int CU_ncols;
+        int new_UVrk;
+        double* newU;
+        int ld_newU;
+        double* qrtauA;
+        int CV_ncols;
+        double* newV;
+        int ld_newV;
+        double* qrtauB;
+        int use_CUV_clone;
+        double* CUclone;
+        int ld_CUclone;
+        double *_CU_save;
+        double* CVclone;
+        int ld_CVclone;
+        double* _CV_save;
+        flop_counter flops;
+        
+        /* ====================================================================
+         * STEP 1: QR-SVD DECOMPOSITION TO REVEAL ACTUAL RANK
+         * ==================================================================== */
+        
+        HCORE_dgemm_qr_svd( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                Bu, Bv, Br, ldamv,
+                (double)1.0,
+                Cu, Cv, Cr, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                &flops,
+                /** parameters that will be passed to HCORE_dgemm_ormqr */
+                &work_new,
+                &_CU,
+                &_CV,
+                &CU_ncols,
+                &new_UVrk,
+                &newU,
+                &ld_newU,
+                &qrtauA,
+                &CV_ncols,
+                &newV,
+                &ld_newV,
+                &qrtauB,
+                &use_CUV_clone,
+                &CUclone,
+                &ld_CUclone,
+                &_CU_save,
+                &CVclone,
+                &ld_CVclone,
+                &_CV_save
+                    );
+
+        /* ====================================================================
+         * MEMORY REALLOCATION FOR RANK INCREASE
+         * ==================================================================== */
+        
+        /* If new rank is larger than old rank, re-allocate memory */
+        if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+            if( DEBUG_INFO ) printf("\nReallocate %d %d %d\n\n", m, n, k);
+            
+            // Free old memory if it exists
+            if( NULL != this_task->data._f_C.data_out->device_private )
+                free( this_task->data._f_C.data_out->device_private ); 
+            
+            // Allocate new memory for increased rank
+            this_task->data._f_C.data_out->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
+            this_task->data._f_C.data_out->original->nb_elts = descA->mb * new_UVrk * 2 * sizeof(double);
+        }
+
+        /* ====================================================================
+         * SETUP ADDRESSES FOR FINAL RESULT STORAGE
+         * ==================================================================== */
+        
+        /* Address for Cu and Cv to be copied to */
+        _CU_save = this_task->data._f_C.data_out->device_private;
+        _CV_save = this_task->data._f_C.data_out->device_private + descA->mb * new_UVrk * sizeof(double);
+
+        /* ====================================================================
+         * STEP 2: ORTHOGONAL MATRIX MULTIPLICATION TO CONSTRUCT FINAL RESULT
+         * ==================================================================== */
+        
+        HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                (double)1.0,
+                Cu, Cv, Cr, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                &flops,
+                /** parameters coming from HCORE_dgemm_qr_svd */
+                _CU,
+                _CV,
+                CU_ncols,
+                new_UVrk,
+                newU,
+                ld_newU,
+                qrtauA,
+                CV_ncols,
+                newV,
+                ld_newV,
+                qrtauB,
+                use_CUV_clone,
+                CUclone,
+                ld_CUclone,
+                _CU_save,
+                CVclone,
+                ld_CVclone,
+                _CV_save
+                    );
+
+        /* ====================================================================
+         * FINALIZATION AND COMMUNICATION SIZE OPTIMIZATION
+         * ==================================================================== */
+        
+        /* Update pointers to final result */
+        Cu = _CU_save;
+        Cv = _CV_save;
+
+        /* Update new rank and return workspace to memory pool */
+        parsec_private_memory_push( p_work, p_elem_work );
+        int Crank_new = ((int*)Cr)[0];
+        if(DEBUG_INFO) printf("GEMM (%d, %d, %d) : Old_Cr %d new_Cr %d\n", m, n, k, Crank_old, ((int *)Cr)[0]);
+
+        /* ====================================================================
+         * COMMUNICATION SIZE OPTIMIZATION
+         * ==================================================================== */
+        
+        /* Pass Cr value to size for communication optimization */
+        if(params_tlr->send_full_tile == 1){
+            // Send full rank representation
+            this_task->locals.size.value = descA->mb * params_tlr->maxrank * 2;
+        } else {
+            // Send actual rank representation
+            this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2;
+        }
+
+        /* ====================================================================
+         * OPERATION COUNT TRACKING FOR PERFORMANCE ANALYSIS
+         * ==================================================================== */
+        
+        int Crank_old__Arank = Crank_old + Arank;
+        unsigned long int cnt = 0;
+        
+        /* QR decomposition of [CU AU] */
+        unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);
+        // ASSUMPTION: tempmmv is not totally correct if nrowsC<ncolsC
+        
+        /* Sparse matrix multiplication: AV*BV^T and (AV*BV^T) * BU^T */
+        unsigned long int qrbflop = hicma_parsec_op_counts('m', Arank, Brank, tempmmv, 0);
+        qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, Brank, 0);
+        qrbflop += hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);  
+        
+        /* SVD decomposition and rank adaptation */
+        int rA_nrows  = tempmmv < Crank_old__Arank ? tempmmv : Crank_old__Arank;
+        unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0); // trmm is used
+        svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
+        svdflop += Crank_old__Arank * Crank_new; 
+        
+        /* Orthogonal matrix multiplication for new U and V factors */
+        unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, Crank_new, Crank_old__Arank, 1);  
+        unsigned long int newvflop = hicma_parsec_op_counts('o', Crank_new, tempmmv, Crank_old__Arank, 2); 
+
+        /* Total operation count */
+        cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
+
+        params_tlr->op_offband[es->th_id] += cnt;
+        params_tlr->op_offpath[es->th_id] += cnt;
+    }
+
+    /* ========================================================================
+     * FINAL RANK GATHERING FOR ANALYSIS
+     * ======================================================================== */
+    
+#if PRINT_RANK
+    /* Gather final rank information for analysis */
+    Crank = IS_DENSE(m, n)? 0: ((int*)Cr)[0];
+    hicma_parsec_gather_rank_final( descA, descRank, params_tlr, m, n, k, Crank );
+#endif
+}
+END
+
+/**
+ * ============================================================================
+ * TASK MANAGEMENT FUNCTION IMPLEMENTATIONS
+ * ============================================================================
+ * 
+ * These functions implement the optimized task counting and key generation
+ * for the Cholesky factorization algorithm, providing direct access to
+ * task information without expensive iteration.
+ */
+extern "C" %{
+
+/**
+ * @brief Return the number of local tasks for each process
+ * 
+ * This function provides direct access to the number of tasks that will be
+ * executed on each process, eliminating the need for expensive iteration
+ * during task pool initialization.
+ * 
+ * @param __tp Pointer to the internal task pool structure
+ * @return Number of local tasks for this process
+ */
+static uint32_t my_defined_nb_tasks_fn(struct __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_s *__tp)
+{
+    return __tp->super._g_params_tlr->nb_local_tasks;
+}
+
+/**
+ * @brief Generate unique key for POTRF tasks
+ * 
+ * Creates a unique identifier for each POTRF task based on the diagonal
+ * block index k. This enables efficient task lookup and scheduling.
+ * 
+ * @param tp Pointer to the task pool
+ * @param as Pointer to the task assignment
+ * @return Unique key for the POTRF task
+ */
+static parsec_key_t my_make_key_potrf_dpotrf(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_general_potrf_dpotrf_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_general_potrf_dpotrf_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int k = assignment->k.value;
+    int k_min = 0;
+    __parsec_id += k - k_min;
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+/**
+ * @brief Generate unique key for TRSM tasks
+ * 
+ * Creates a unique identifier for each TRSM task based on the iteration
+ * index k and row block index m. This enables efficient task lookup and scheduling.
+ * 
+ * @param tp Pointer to the task pool
+ * @param as Pointer to the task assignment
+ * @return Unique key for the TRSM task
+ */
+static parsec_key_t my_make_key_potrf_dtrsm(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_general_potrf_dtrsm_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_general_potrf_dtrsm_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int k = assignment->k.value;
+    const int m = assignment->m.value;
+    int m_min = 1;
+    int k_min = 0;
+    int k_range = __parsec_tp->super._g_descA->mt-1;  
+    __parsec_id += (k - k_min);
+    __parsec_id += (m - m_min) * k_range;
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+/**
+ * @brief Generate unique key for SYRK tasks
+ * 
+ * Creates a unique identifier for each SYRK task based on the diagonal
+ * block index m and iteration index k. This enables efficient task lookup and scheduling.
+ * 
+ * @param tp Pointer to the task pool
+ * @param as Pointer to the task assignment
+ * @return Unique key for the SYRK task
+ */
+static parsec_key_t my_make_key_potrf_dsyrk(const parsec_taskpool_t * tp, const parsec_assignment_t * as)
+{
+    const __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_general_potrf_dsyrk_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_general_potrf_dsyrk_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int m = assignment->m.value;
+    const int k = assignment->k.value;
+    int m_min = 1;
+    int k_min = 0;
+    int m_range = __parsec_tp->super._g_descA->mt-1;
+    __parsec_id += (m - m_min);
+    __parsec_id += (k - k_min) * m_range;
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+/**
+ * @brief Generate unique key for GEMM tasks
+ * 
+ * Creates a unique identifier for each GEMM task based on the row block
+ * index m, column block index n, and iteration index k. This enables
+ * efficient task lookup and scheduling for the most complex kernel.
+ * 
+ * @param tp Pointer to the task pool
+ * @param as Pointer to the task assignment
+ * @return Unique key for the GEMM task
+ */
+static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const parsec_assignment_t * as) {
+    const __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_t *__parsec_tp =
+    (const __parsec_potrf_L_sparse_tlr_dp_general_internal_taskpool_t *) tp;
+    __parsec_potrf_L_sparse_tlr_dp_general_potrf_dgemm_parsec_assignment_t ascopy, *assignment = &ascopy;
+    memcpy(assignment, as, sizeof(__parsec_potrf_L_sparse_tlr_dp_general_potrf_dgemm_parsec_assignment_t));
+
+    uintptr_t __parsec_id = 0;
+    const int m = assignment->m.value;
+    const int n = assignment->n.value;
+    const int k = assignment->k.value;
+    hicma_parsec_int64_t m_min = 2;
+    hicma_parsec_int64_t n_min = 1;
+    hicma_parsec_int64_t k_min = 0;
+    hicma_parsec_int64_t m_range = (hicma_parsec_int64_t)__parsec_tp->super._g_descA->mt-2;
+    hicma_parsec_int64_t n_range = (hicma_parsec_int64_t)__parsec_tp->super._g_descA->mt-3;
+    __parsec_id += ((hicma_parsec_int64_t)m - m_min);
+    __parsec_id += ((hicma_parsec_int64_t)n - n_min) * m_range;
+    __parsec_id += ((hicma_parsec_int64_t)k - k_min) * m_range * n_range;
+    (void) __parsec_tp;
+    return (parsec_key_t) __parsec_id;
+}
+
+
+%}

@@ -1,0 +1,211 @@
+extern "C" %{
+/*
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+
+#include "hicma_parsec.h"
+
+%}
+
+
+/* Global parameters for norm difference checking */
+descA           [ type = "parsec_tiled_matrix_t*" ]  /* Matrix descriptor */
+descAr          [ type = "parsec_tiled_matrix_t*" ]  /* Rank matrix descriptor */
+params_tlr      [ type = "hicma_parsec_params_t *" ] /* TLR parameters */
+params_kernel   [ type = "starsh_params_t *" ]       /* Kernel parameters */
+norm            [ type = "double *" hidden = on ]    /* Norm accumulation array */
+d_work          [ type = "parsec_memory_pool_t *" hidden = on default = NULL] /* Double precision work space */
+s_work          [ type = "parsec_memory_pool_t *" hidden = on default = NULL] /* Single precision work space */
+
+
+/**
+ * @brief Task to check norm difference between original and computed matrices
+ * Computes the Frobenius norm of the difference between the original matrix
+ * and the computed matrix for each tile
+ */
+Task(m, n)
+
+m = 0 .. descA->lmt-1
+n = 0 .. m
+
+: descA(m, n)
+
+READ D <- descA(m, n)
+
+
+BODY
+{
+    // Calculate actual tile dimensions (handle edge tiles)
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int tempnn = n == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    void *tmp_D = parsec_private_memory_pop(d_work);
+    
+    // Generate reference matrix using kernel function
+    #if !GENOMICS
+    params_kernel->kernel(tempmm, tempnn, params_kernel->index + m*descA->mb,
+            params_kernel->index + n*descA->mb, params_kernel->data, params_kernel->data, tmp_D,
+            tempmm);
+    #else
+        memcpy((void *)tmp_D,
+               (void *)this_task->data._f_D.data_out->device_private, descA->mb * descA->mb * sizeof(double));
+    #endif
+
+    /* Calculate the global norm difference */
+    int tid = es->th_id;
+    double current_value = 0.0;
+
+    // Compute norm difference based on precision type
+    if( DENSE_DP == params_tlr->decisions[n*params_tlr->NT+m] ) {
+        // Double precision: compare with original double precision matrix
+        for(int j = 0; j < descA->nb; j++) {
+            for(int i = 0; i < descA->mb; i++) {
+                current_value = ((double *)tmp_D)[j*descA->mb+i] - ((double *)D)[j*descA->mb+i];
+                norm[tid] += current_value * current_value;
+            }
+        }
+    } else if( DENSE_SP == params_tlr->decisions[n*params_tlr->NT+m] ) {
+        // Single precision: compare with truncated double precision matrix
+        for(int j = 0; j < descA->nb; j++) {
+            for(int i = 0; i < descA->mb; i++) {
+                current_value = ((double *)tmp_D)[j*descA->mb+i] - (float)((double *)tmp_D)[j*descA->mb+i]; 
+                norm[tid] += current_value * current_value;
+            }
+        }
+    } else if( DENSE_HP == params_tlr->decisions[n*params_tlr->NT+m] ) {
+        // Half precision: compare with half precision matrix
+        void *tmp_S = parsec_private_memory_pop(s_work);
+        hicma_parsec_convert_2h_bit( params_tlr, D, tmp_S, m, n, descA->mb, descA->nb );
+        for(int j = 0; j < descA->nb; j++) {
+            for(int i = 0; i < descA->mb; i++) {
+                current_value = ((double *)tmp_D)[j*descA->mb+i] - (float)((float *)tmp_S)[j*descA->mb+i];
+                norm[tid] += current_value * current_value;
+            }
+        }
+        parsec_private_memory_push(s_work, tmp_S);
+    } else if( DENSE_FP8 == params_tlr->decisions[n*params_tlr->NT+m] ) {
+        // TODO: FP8 precision support
+    }else {
+        // TODO: only support dense now
+        printf("only support dense now! %d %d : %d\n", m, n, params_tlr->decisions[n*params_tlr->NT+m]);
+    }
+
+    parsec_private_memory_push(d_work, tmp_D);
+}
+END
+
+extern "C" %{
+
+    /**
+     * @brief Create a new matrix norm difference checking taskpool
+     * @param parsec PaRSEC context
+     * @param data HICMA data structure
+     * @param params_tlr TLR parameters
+     * @param params_kernel Kernel parameters
+     * @param norm_tmp Temporary norm array
+     * @return the parsec object to schedule
+     */
+    parsec_taskpool_t*
+        parsec_matrix_check_norm_diff_New(parsec_context_t *parsec,
+                hicma_parsec_data_t *data,
+                hicma_parsec_params_t *params_tlr,
+        starsh_params_t *params_kernel,
+        double *norm_tmp)
+{
+    parsec_matrix_check_norm_diff_taskpool_t* taskpool = NULL;
+
+    // Select appropriate matrix descriptor based on band size and memory settings
+    parsec_tiled_matrix_t *A = (parsec_tiled_matrix_t *)&data->dcA;;
+    if( params_tlr->band_size_dense >= params_tlr->NT && params_tlr->auto_band == 0 && !params_tlr->adaptive_memory ) {
+        A = (parsec_tiled_matrix_t *)&data->dcAd;
+    }
+    parsec_tiled_matrix_t *Ar = (parsec_tiled_matrix_t *)&data->dcAr;
+
+    taskpool = parsec_matrix_check_norm_diff_new( A, Ar, params_tlr, params_kernel );
+    taskpool->_g_norm = norm_tmp;
+    
+    // Initialize memory pools for double and single precision work spaces
+    taskpool->_g_d_work = malloc(sizeof(parsec_memory_pool_t));
+    parsec_private_memory_init(taskpool->_g_d_work, (A->mb*A->mb)*sizeof(double));
+    taskpool->_g_s_work = malloc(sizeof(parsec_memory_pool_t));
+    parsec_private_memory_init(taskpool->_g_s_work, (A->mb*A->mb)*sizeof(float));
+
+    /* Set up arena for double precision datatype */
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_matrix_check_norm_diff_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, A->mb, A->mb, A->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)taskpool;
+}
+
+/**
+ * @brief Destructor for matrix norm difference checking taskpool
+ * @param taskpool Pointer to the taskpool to destroy
+ */
+void parsec_matrix_check_norm_diff_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_matrix_check_norm_diff_taskpool_t *matrix_check_norm_diff_taskpool = (parsec_matrix_check_norm_diff_taskpool_t *)taskpool;
+    // Remove arena for double precision datatype
+    parsec_del2arena(&matrix_check_norm_diff_taskpool->arenas_datatypes[PARSEC_matrix_check_norm_diff_DEFAULT_ADT_IDX]);
+    // Finalize memory pools
+    parsec_private_memory_fini( matrix_check_norm_diff_taskpool->_g_d_work );
+    parsec_private_memory_fini( matrix_check_norm_diff_taskpool->_g_s_work );
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Check norm difference between original and computed matrices
+ * Computes the global Frobenius norm of the difference between the original
+ * matrix and the computed matrix across all processes
+ * 
+ * @param parsec PaRSEC context
+ * @param data HICMA data structure
+ * @param params_tlr TLR parameters
+ * @param params_kernel Kernel parameters
+ * @return 0 on success
+ */
+int hicma_parsec_matrix_check_norm_diff(parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params_tlr,
+        starsh_params_t *params_kernel )
+{
+    parsec_taskpool_t *parsec_matrix_check_norm_diff = NULL;
+
+    /* Only for 1 virtual process */
+    assert( parsec->nb_vp == 1 );
+    int nb_threads = parsec->virtual_processes[0]->nb_cores;
+    double *norm_tmp = (double *)calloc(sizeof(double), nb_threads);
+
+    parsec_matrix_check_norm_diff = parsec_matrix_check_norm_diff_New(parsec, data, params_tlr, params_kernel, norm_tmp ); 
+
+    if( parsec_matrix_check_norm_diff != NULL ){
+        parsec_context_add_taskpool(parsec, parsec_matrix_check_norm_diff);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        parsec_matrix_check_norm_diff_Destruct(parsec_matrix_check_norm_diff);
+    }
+
+    // Sum up norm contributions from all threads
+    double norm_process = 0.0;
+    for( int i = 0; i < nb_threads; i++ ) {
+        norm_process += norm_tmp[i];
+    }
+
+    // Reduce norm across all MPI processes and compute square root
+    MPI_Allreduce(&norm_process, &params_tlr->norm_global_diff, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    params_tlr->norm_global_diff = sqrt(params_tlr->norm_global_diff);
+
+    // Print norm difference information if verbose mode is enabled
+    VERBOSE_PRINT(params_tlr->rank, params_tlr->verbose, (GRN "||A-A'||= %e <= tol*||A||= %e\n" RESET, params_tlr->norm_global_diff, params_tlr->fixedacc * params_tlr->norm_global));
+
+    free( norm_tmp );
+
+    return 0;
+}
+
+%}

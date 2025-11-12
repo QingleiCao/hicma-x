@@ -1,0 +1,44 @@
+name: CI
+on:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # Basic build toolchain
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gfortran cmake ninja-build git pkg-config \
+            libopenblas-dev libgsl-dev liblapacke-dev \
+            libopenmpi-dev openmpi-bin
+
+      - name: Configure (CMake + Ninja)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DHICMA_PARSEC_HAVE_CUDA=OFF \
+            -DHICMA_PARSEC_HAVE_HIP=OFF \
+            -DMPIEXEC_PREFLAGS='--bind-to;none;--oversubscribe' \
+            -DMPI_CXX_SKIP_MPICXX=ON \
+
+      - name: Build
+        run: |
+          cmake --build build -- -v
+
+      - name: Run test suite (scripts/test_run.sh)
+        working-directory: build
+        env:
+          OMPI_ALLOW_RUN_AS_ROOT: 1
+          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
+        run: |
+          bash ../scripts/test_CI.sh
+
+

@@ -1,0 +1,340 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+#include "hicma_parsec.h"
+
+/**
+ * Hook function that always executes the task
+ * @param task The parsec task to evaluate
+ * @return PARSEC_HOOK_RETURN_DONE indicating task should be executed
+ */
+static inline parsec_hook_return_t
+always_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_DONE;
+}
+
+/**
+ * Hook function that never executes the task (skips it)
+ * @param task The parsec task to evaluate
+ * @return PARSEC_HOOK_RETURN_NEXT indicating task should be skipped
+ */
+static inline parsec_hook_return_t
+never_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_NEXT;
+}
+
+%}
+
+/* SYRK operation parameters */
+uplo      [type = "dplasma_enum_t"]     /* Upper or lower triangular storage */
+trans     [type = "dplasma_enum_t"]     /* Transpose operation on matrix A */
+alpha     [type = "double"]             /* Scalar multiplier for A*A^T */
+descA     [type = "const parsec_tiled_matrix_t*"]  /* Input matrix A descriptor */
+beta      [type = "double"]             /* Scalar multiplier for matrix C */
+descC     [type = "parsec_tiled_matrix_t*"]        /* Output matrix C descriptor */
+inttype   [type = "int"]                /* Integer type for mixed precision (0=double, 8=int8) */
+params_tlr   [ type = "hicma_parsec_params_t *" ]  /* HiCMA parameters for TLR operations */
+
+/* GPU workspace and device management */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]  /* GPU workspace pointer */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]     /* Number of CUDA devices */
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"] /* CUDA device indices array */
+
+/** 
+ * Handle-globals for compatibility with other GEMM kernels
+ * P and Q are unused in SYRK but kept for consistency
+ */
+P      [type = "int" hidden=on default="-1"]  /* Unused parameter for compatibility */
+Q      [type = "int" hidden=on default="-1"]  /* Unused parameter for compatibility */
+
+/* Look-ahead parameters for data prefetching optimization */
+lookP  [type = "int" hidden=on default="dplasma_aux_getGEMMLookahead(descC)"]  /* Look-ahead in P dimension */
+lookQ  [type = "int" hidden=on default="dplasma_aux_getGEMMLookahead(descC)"]  /* Look-ahead in Q dimension */
+
+/**************************************************
+ *               Define Arena                     *
+ * Arena for managing data types and memory layout
+ **************************************************/
+my_arena(k)
+
+// Execution space - single iteration for arena setup
+k = 0 .. 0
+
+// Parallel partitioning - reference to matrix C tile (0,0)
+:descC(0, 0)
+
+// Parameters - placeholder for 8-bit integer data type
+READ A1 <- NULL       [ type = FULL_I8 ]
+
+BODY
+{
+    /* Arena initialization - no computation needed */
+}
+END
+
+/**
+ * SYRK (Symmetric Rank-K update) task for lower triangular matrices
+ * Computes: C = alpha * A * A^T + beta * C
+ * 
+ * @param n Row/column index of the diagonal block in matrix C
+ * @param k Row index of the block in matrix A
+ */
+dsyrk(n, k) 
+  /* Execution Space - iterate over all diagonal blocks of C and all rows of A */
+  n = 0..(descC->nt-1)    /* All diagonal blocks of symmetric matrix C */
+  k = 0..(descA->mt-1)    /* All row blocks of matrix A */
+
+  /* Locality - computation is performed on the diagonal block (n,n) of C */
+  : descC(n,n)
+
+  /* Data dependencies for SYRK operation */
+  READ  A    <- A dsyrk_in_data_A0(n, k) [type_remote=FULL_I8]  /* Read block A(k,n) */
+  RW    C    <- ((0==k)) ? descC(n,n)                           /* First iteration: read from original C */
+             <- ((k>=1)) ? C dsyrk(n, k-1)                      /* Subsequent iterations: read from previous SYRK result */
+             -> ((descA->mt>=(2+k))) ? C dsyrk(n, k+1)          /* Pass result to next iteration if more rows exist */
+             -> ((descA->mt==(1+k))) ? descC(n,n)               /* Last iteration: write back to original C */
+
+BODY [type=CUDA] 
+{
+    /* Calculate actual block dimensions (handle edge cases for last blocks) */
+    int tempnn = (n==(descC->nt-1)) ? (descC->n-(n*descC->nb)) : descC->nb;  /* Block size in C (n dimension) */
+    int tempkm = (k==(descA->mt-1)) ? (descA->m-(k*descA->mb)) : descA->mb;  /* Block size in A (k dimension) */
+    int ldak = BLKLDD( descA, k );    /* Leading dimension of A block */
+    double zbeta = (k==0) ? beta : (double)1.;  /* Beta coefficient: use input beta for first iteration, 1.0 for others */
+    int ldcn = BLKLDD( descC, n );    /* Leading dimension of C block */
+
+    /* Get CUDA workspace and cuBLAS handle for GPU computation */
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+     
+    /* Convert double precision scalars to integers for 8-bit integer computation */
+    int ialpha=(int)alpha;   /* Alpha coefficient as integer */
+    int izbeta=(int)zbeta;   /* Beta coefficient as integer */
+
+        //fprintf(stderr, "CUDA SYRK %d %d\n", n, k);
+
+/* Alternative implementation using cuBLASLt (currently disabled) */
+#if 0
+        cublasLtHandle_t lightHandle = stream_found->lightHandle;
+        cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
+        cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
+        cublasLtMatrixLayout_t Bdesc = stream_found->Adesc;
+        cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc;
+        size_t workspaceSize = stream_found->workspaceSize;
+        void *workspace = stream_found->workspace;
+        cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;
+
+        cublasSetStream(lightHandle, cuda_stream->cuda_stream);
+
+        /* FP8 precision SYRK using cuBLASLt */
+        cublasLtMatmul(lightHandle, matmulDesc,
+                &ialpha, A, Adesc, A, Adesc,
+                &izbeta, C, Cdesc, C, Cdesc,
+                &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+#endif
+    
+     cublasStatus_t status;
+
+    /* Current implementation: Mixed precision SYRK using cuBLAS GEMM */
+    /* Input: A as 8-bit integer, Output: C as 32-bit integer */
+    /* TODO: Need to convert A to 8-bit int and C to 32-bit int */
+#if 1
+    /* Perform SYRK as GEMM: C = alpha * A^T * A + beta * C */
+    /* Using 8-bit integer input (A) and 32-bit integer output (C) */
+    status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                                   tempnn, tempnn, tempkm,           /* Dimensions: C is tempnn x tempnn, A is tempkm x tempnn */
+                                   &ialpha, A, CUDA_R_8I, ldak,      /* Alpha * A^T (8-bit integer) */
+                                            A, CUDA_R_8I, ldak,      /* A (8-bit integer) */
+                                   &izbeta, C, CUDA_R_32I, ldcn,     /* Beta * C (32-bit integer) */
+                                               CUDA_R_32I, CUBLAS_GEMM_DEFAULT); 
+  HiCMA_CUDA_CHECK_ERROR( "cublasGemmEx0 \n", status);
+
+#endif
+}
+END
+
+
+/**
+ * Data input task for SYRK operation - handles data movement for matrix A
+ * This task is responsible for reading matrix A blocks and passing them to SYRK tasks
+ * 
+ * @param n Column index of the block in matrix A
+ * @param k Row index of the block in matrix A
+ */
+dsyrk_in_data_A0(n, k) [profile = off]
+  /* Execution Space - iterate over all blocks of matrix A */
+  n = 0..(descC->nt-1)    /* All column blocks (matching C's column dimension) */
+  k = 0..(descA->mt-1)    /* All row blocks of matrix A */
+
+  /* Locality - data is located at block (k,n) of matrix A */
+  : descA(k,n)
+
+  /* Data flow: read from original matrix A and pass to SYRK computation */
+  READ  A    <- descA(k,n)                    /* Read block A(k,n) from original matrix */
+             -> A dsyrk(n, k) [type_remote=FULL_I8]  /* Pass to SYRK task as 8-bit integer */
+
+BODY
+{
+    /* No computation - this is a pure data movement task */
+}
+END
+
+/**
+ * GEMM (General Matrix Multiply) task for off-diagonal blocks in SYRK
+ * Computes: C = alpha * A^T * B + beta * C for off-diagonal blocks
+ * This handles the triangular structure where only lower triangular blocks are computed
+ * 
+ * @param n Column index of the block in matrix C (n < m for lower triangular)
+ * @param m Row index of the block in matrix C (m > n for lower triangular)
+ * @param k Row index of the block in matrix A
+ */
+dgemm(n, m, k) 
+  /* Execution Space - iterate over off-diagonal blocks of C and all rows of A */
+  n = 0..(descC->mt-2)        /* Column blocks: 0 to mt-2 (avoid diagonal) */
+  m = (n+1)..(descC->mt-1)    /* Row blocks: n+1 to mt-1 (lower triangular) */
+  k = 0..(descA->mt-1)        /* All row blocks of matrix A */
+
+  /* Locality - computation is performed on the off-diagonal block (m,n) of C */
+  : descC(m,n)
+
+  /* Data dependencies for GEMM operation */
+  READ  A    <- A dgemm_in_data_A0(m, k) [type_remote=FULL_I8]  /* Read block A(k,m) */
+  READ  B    <- B dgemm_in_data_A1(n, k) [type_remote=FULL_I8]  /* Read block A(k,n) */
+  RW    C    <- ((k>=1)) ? C dgemm(n, m, k-1)                   /* Read from previous GEMM result */
+             <- ((0==k)) ? descC(m,n)                           /* First iteration: read from original C */
+             -> ((descA->mt==(k+1))) ? descC(m,n)               /* Last iteration: write back to original C */
+             -> ((descA->mt>=(2+k))) ? C dgemm(n, m, k+1)       /* Pass result to next iteration */
+
+/* Look-ahead control flow (currently commented out) */
+//CTL ctla -> (k < (descA->mt-lookQ)) ? ctla dgemm_in_data_A0(k+lookQ, m)
+//CTL ctlb -> (k < (descA->mt-lookP)) ? ctlb dgemm_in_data_A1(k+lookP, n)
+
+BODY [type=CUDA] 
+{
+    /* Calculate actual block dimensions (handle edge cases for last blocks) */
+    int tempmm = ((m)==(descC->mt-1)) ? (descC->m-(m*descC->mb)) : descC->mb;  /* Block size in C (m dimension) */
+    int tempnn = (n==(descC->nt-1)) ? (descC->n-(n*descC->nb)) : descC->nb;    /* Block size in C (n dimension) */
+    int tempkm = (k==(descA->mt-1)) ? (descA->m-(k*descA->mb)) : descA->mb;    /* Block size in A (k dimension) */
+    int ldak = BLKLDD( descA, k );    /* Leading dimension of A block */
+    double zbeta = (k==0) ? beta : ((double)1.);  /* Beta coefficient: use input beta for first iteration, 1.0 for others */
+    int ldcm = BLKLDD( descC, m );    /* Leading dimension of C block */
+
+	//fprintf(stderr, "CUDA GEMM %d %d %d\n", m, n, k);
+
+    /* Convert double precision scalars to integers for 8-bit integer computation */
+    int ialpha=(int)alpha;   /* Alpha coefficient as integer */
+    int izbeta=(int)zbeta;   /* Beta coefficient as integer */
+
+    /* Get CUDA workspace and cuBLAS handle for GPU computation */
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+
+/* Alternative implementation using cuBLASLt (currently disabled) */
+#if 0
+        cublasLtHandle_t lightHandle = stream_found->lightHandle;
+        cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
+        cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
+        cublasLtMatrixLayout_t Bdesc = stream_found->Bdesc;
+        cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc;
+        size_t workspaceSize = stream_found->workspaceSize;
+        void *workspace = stream_found->workspace;
+        cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;
+
+       cublasSetStream(lightHandle, cuda_stream->cuda_stream);
+
+        /* FP8 precision GEMM using cuBLASLt */
+        cublasLtMatmul(lightHandle, matmulDesc,
+                &ialpha, A, Adesc, B, Bdesc,
+                &izbeta, C, Cdesc, C, Cdesc,
+                &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+#endif
+
+/* Current implementation: Mixed precision GEMM using cuBLAS */
+#if 1 
+   cublasStatus_t status;
+   
+   /* Perform GEMM: C = alpha * A^T * B + beta * C */
+   /* Using 8-bit integer input (A, B) and 32-bit integer output (C) */
+   /* A8I_C32I_OP32I: 8-bit integer inputs, 32-bit integer output, 32-bit integer operations */
+    status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                                   tempmm, tempnn, tempkm,           /* Dimensions: C is tempmm x tempnn, A is tempkm x tempmm, B is tempkm x tempnn */
+                                   &ialpha, A, CUDA_R_8I, ldak,      /* Alpha * A^T (8-bit integer) */
+                                            B, CUDA_R_8I, ldak,      /* B (8-bit integer) */
+                                   &izbeta, C, CUDA_R_32I, ldcm,     /* Beta * C (32-bit integer) */
+                                               CUDA_R_32I, CUBLAS_GEMM_DEFAULT);
+
+    HiCMA_CUDA_CHECK_ERROR( "cublasGemmEx1 \n", status);
+#endif
+}
+END
+
+
+/**
+ * Data input task for GEMM operation - handles data movement for matrix B (second operand)
+ * This task reads blocks from matrix A and passes them as matrix B to GEMM tasks
+ * 
+ * @param n Column index of the block in matrix A (used as B in GEMM)
+ * @param k Row index of the block in matrix A
+ */
+dgemm_in_data_A1(n, k) [profile = off]
+  /* Execution Space - iterate over blocks needed for GEMM operations */
+  n = 0..(descC->mt-2)        /* Column blocks: 0 to mt-2 (avoid diagonal) */
+  k = 0..(descA->mt-1)        /* All row blocks of matrix A */
+
+  /* Locality - data is located at block (k,n) of matrix A */
+  : descA(k,n)
+
+  /* Data flow: read from original matrix A and pass to GEMM tasks as matrix B */
+  READ  B    <- descA(k,n)                                                    /* Read block A(k,n) from original matrix */
+             -> B dgemm(n, (n+1)..(descC->mt-1), k) [type_remote=FULL_I8]    /* Pass to GEMM tasks as 8-bit integer */
+
+/* Look-ahead control flow (currently commented out) */
+//CTL ctlb <- (k >= lookP) ? ctlb dgemm(n, (n+1)..(descC->mt-1), k-lookP)
+BODY
+{
+    /* No computation - this is a pure data movement task */
+}
+END
+
+/**
+ * Data input task for GEMM operation - handles data movement for matrix A (first operand)
+ * This task reads blocks from matrix A and passes them as matrix A to GEMM tasks
+ * 
+ * @param m Row index of the block in matrix A (used as A in GEMM)
+ * @param k Row index of the block in matrix A
+ */
+dgemm_in_data_A0(m, k) [profile = off]
+  /* Execution Space - iterate over blocks needed for GEMM operations */
+  m = 1..(descC->mt-1)        /* Row blocks: 1 to mt-1 (avoid diagonal) */
+  k = 0..(descA->mt-1)        /* All row blocks of matrix A */
+  /* Note: tight bound would be (n+1)..(descC->mt-1) but using 1..(descC->mt-1) for simplicity */
+
+  /* Locality - data is located at block (k,m) of matrix A */
+  : descA(k,m)
+
+  /* Data flow: read from original matrix A and pass to GEMM tasks as matrix A */
+  READ  A    <- descA(k,m)                                                    /* Read block A(k,m) from original matrix */
+             -> A dgemm(0..(descC->mt-2), m, k) [type_remote=FULL_I8]        /* Pass to GEMM tasks as 8-bit integer */
+
+/* Look-ahead control flow (currently commented out) */
+//CTL ctla <- (k >= lookQ) ? ctla dgemm(0..(descC->mt-2), m, k-lookQ) 
+BODY
+{
+    /* No computation - this is a pure data movement task */
+}
+END
+

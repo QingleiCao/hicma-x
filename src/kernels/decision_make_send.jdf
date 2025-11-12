@@ -1,0 +1,178 @@
+extern "C" %{
+/*
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+
+#include "hicma_parsec.h"
+
+%}
+
+// Input parameters for the decision making for send operations
+descA           [ type = "parsec_tiled_matrix_t*" ]  // Matrix descriptor for the tiled matrix
+params_tlr      [ type = "hicma_parsec_params_t *" ] // TLR parameters containing precision decisions and conversion settings
+new_decisions   [ type = "uint16_t *" ]              // Output array to store new send decisions
+
+// Task definition for computing send decisions for each matrix tile
+Task(m, n)
+
+// Iterate over lower triangular matrix tiles (m >= n)
+m = 0 .. descA->lmt-1  // Row index from 0 to number of tiles in rows - 1
+n = 0 .. m             // Column index from 0 to current row (lower triangular)
+
+: descA(m, n)  // Depend on the matrix tile at position (m,n)
+
+
+BODY
+{
+    int NT = params_tlr->NT;
+    
+    // Handle different datatype conversion strategies
+    if( RECEIVER_CONVERT == params_tlr->datatype_convert ) {
+        // Receiver-side conversion: copy decisions and convert HP/FP8 to SP
+        new_decisions[n*NT+m] = params_tlr->decisions[n*NT+m];
+        if( DENSE_HP == params_tlr->decisions[n*NT+m] || DENSE_FP8 == params_tlr->decisions[n*NT+m] ) 
+            new_decisions[n*NT+m] = DENSE_SP;
+    } else if( SENDER_CONVERT == params_tlr->datatype_convert ) {
+        // Sender-side conversion: not implemented for decisions_send
+        if( 0 == params_tlr->rank ) printf(RED "decisions_send is not used for datatype_convert == 1\n");
+    } else if( ADAPTIVE_CONVERT == params_tlr->datatype_convert ) {
+        // Adaptive conversion: only supports dense tiles with mixed precision
+        if( !IS_DENSE(m, n) ) {
+            fprintf(stderr, "Sender conversion only support Dense+MP now\n");
+            return PARSEC_HOOK_RETURN_DONE; 
+        }
+
+        /* Handle diagonal tiles */
+        if( m == n ) {
+            new_decisions[n*NT+m] = DENSE_SP;
+#if !GENOMICS
+            // Check if any off-diagonal tile in the same row requires DP
+            for( int k = m+1; k < NT; k++ ) {
+                if( params_tlr->decisions[m*NT+k] == DENSE_DP ) {
+                    new_decisions[n*NT+m] = DENSE_DP;
+                    goto done_check_this_tile;
+                }
+            }
+#endif
+            goto done_check_this_tile;
+        }
+
+        /* Set to highest precision by default */
+        new_decisions[n*NT+m] = DENSE_HP;
+#if HAVE_FP8
+        new_decisions[n*NT+m] = DENSE_FP8;
+#endif
+
+        /* Store minimum precision requirement for this tile */
+        uint16_t precision_tile = hicma_parsec_min( DENSE_SP,  params_tlr->decisions[n*NT+m] );
+
+        /* Check dependencies in matrix A (lower triangular part) */
+        for( int k = n+1; k < m; k++ ) {
+            new_decisions[n*NT+m] = hicma_parsec_min(new_decisions[n*NT+m], params_tlr->decisions[k*NT+m]);
+
+            if( new_decisions[n*NT+m] <= precision_tile ) {
+                new_decisions[n*NT+m] = precision_tile;
+                goto done_check_this_tile;
+            }
+        }
+
+        /* Check dependencies in matrix B (upper triangular part) */
+        for( int k = m+1; k < NT; k++ ) {
+            new_decisions[n*NT+m] = hicma_parsec_min(new_decisions[n*NT+m], params_tlr->decisions[m*NT+k]);
+
+            if( new_decisions[n*NT+m] <= precision_tile ) {
+                new_decisions[n*NT+m] = precision_tile;
+                goto done_check_this_tile;
+            }
+        }
+
+done_check_this_tile:
+        ;
+
+        /* Special handling for the last two POTRF tiles */
+        if( (n == NT-2 && m == NT-1) || (n == NT-1 && m == NT-1) ) {
+            new_decisions[n*NT+m] = params_tlr->decisions[n*NT+m];
+        }
+    }
+}
+END
+
+extern "C" %{
+
+    /**
+     * @brief Create a new taskpool for decision making for send operations
+     * @param [in] A: the tiled matrix data, already distributed and allocated
+     * @param [in] params: TLR parameters containing precision decisions and conversion settings
+     * @param [in] new_decisions: output array to store new send decisions
+     * @return the parsec taskpool object to schedule
+     */
+    parsec_taskpool_t*
+parsec_decision_make_send_New(parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        uint16_t *new_decisions )
+{
+    /* Validate datatype conversion parameter */
+    if( params->datatype_convert != 0 && params->datatype_convert != 2 ) {
+        if( 0 == params->rank ) printf(RED "datatype_convert is wrong, which should be 0 or 2; set it to 2\n");
+        params->datatype_convert = 2;
+    }
+
+    parsec_taskpool_t* decision_make_send_taskpool;
+    parsec_decision_make_send_taskpool_t* taskpool = NULL;
+
+    // Create the taskpool for decision making for send operations
+    taskpool = parsec_decision_make_send_new( A, params, new_decisions );
+    decision_make_send_taskpool = (parsec_taskpool_t*)taskpool;
+
+    return decision_make_send_taskpool;
+}
+
+/**
+ * @brief Destroy the decision making for send operations taskpool
+ * @param [inout] taskpool: the parsec taskpool object to destroy
+ */
+void parsec_decision_make_send_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_decision_make_send_taskpool_t *decision_make_send_taskpool = (parsec_decision_make_send_taskpool_t *)taskpool;
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Main function to make send decisions for all matrix tiles
+ * @param [in] parsec: parsec context for task scheduling
+ * @param [in] A: tiled matrix descriptor
+ * @param [inout] params: TLR parameters containing send decisions to be updated
+ * @return 0 on success
+ */
+int hicma_parsec_decision_make_send(parsec_context_t *parsec,
+                         parsec_tiled_matrix_t *A,
+                         hicma_parsec_params_t *params )
+{
+    parsec_taskpool_t *parsec_decision_make_send = NULL;
+    // Allocate array to store new send decisions
+    uint16_t *new_decisions = (uint16_t *)calloc( sizeof(uint16_t), A->lmt * A->lnt );
+
+    // Create and schedule the decision making for send operations taskpool
+    parsec_decision_make_send = parsec_decision_make_send_New( A, params, new_decisions );
+
+    if( parsec_decision_make_send != NULL ){
+        parsec_context_add_taskpool(parsec, parsec_decision_make_send);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        parsec_decision_make_send_Destruct(parsec_decision_make_send);
+    }
+
+    // Reduce send decisions across all MPI processes and update parameters
+    MPI_Allreduce(MPI_IN_PLACE, new_decisions, A->lmt * A->lnt, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
+    memcpy( (void *)params->decisions_send, (void *)new_decisions, A->lmt * A->lnt * sizeof(uint16_t) ); 
+    free( new_decisions );
+
+    return 0;
+}
+
+%}

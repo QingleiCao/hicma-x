@@ -1,0 +1,218 @@
+extern "C" %{
+/**
+ * @file climate_emulator_matrix_norm_get.jdf
+ * @brief Matrix norm computation for triangular matrices
+ * 
+ * This file implements a PaRSEC task for computing matrix norms (Frobenius norm)
+ * on triangular matrices. It supports both upper and lower triangular matrices
+ * and handles different data types through the datatype_str parameter.
+ * 
+ * The computation is performed tile-wise in parallel, with each tile computing
+ * its local norm contribution. The results are accumulated across threads and
+ * processes to obtain the global matrix norm.
+ * 
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/* Global parameters for the matrix norm computation task
+ * uplo:         Specifies whether to compute norm for upper or lower triangular part
+ * descA:        The tiled matrix descriptor containing the matrix data
+ * params_tlr:   TLR (Tile Low Rank) parameters including norm storage arrays
+ * datatype_str: String specifying the data type for norm computation
+ * norm:         Array to store per-thread norm contributions
+ */
+uplo            [ type = "dplasma_enum_t" ]
+descA           [ type = "parsec_tiled_matrix_t*" ]
+params_tlr      [ type = "hicma_parsec_params_t *" ]
+datatype_str    [ type = "char *"]
+norm            [ type = "double *" ]
+
+
+/**************************************************
+ *        Matrix norm computation task            *
+ *        Computes Frobenius norm for each tile   *
+ **************************************************/
+task(m, n)
+
+// Execution space: iterate over matrix tiles
+// For upper triangular: process tiles (m,n) where n >= m
+// For lower triangular: process tiles (m,n) where n <= m
+m = 0 .. descA->mt-1
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
+
+// Parallel partitioning: each tile is processed by one task
+:descA(m, n)
+
+// Parameters: read the matrix tile data
+RW D <- descA(m, n)               
+     -> descA(m, n)
+
+BODY
+{
+    // Calculate actual tile dimensions (handle edge tiles that may be smaller)
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int tempnn = n == descA->nt-1 ? descA->n - n * descA->nb : descA->nb;
+    int lda = BLKLDD(descA, m);  // Leading dimension for this tile
+
+    // Get thread ID for per-thread accumulation
+    int tid = es->th_id;
+    double norm_squared = 0.0;
+
+    // Add noise to the diagonal, Only double is needed 
+    if(m == n) {
+        for(int i = 0; i < descA->mb; i++) {
+            ((double *)this_task->data._f_D.data_out->device_private)[i*descA->mb+i] += params_tlr->add_diag;
+        }
+    }
+
+    // Compute norm based on matrix structure and tile position
+    if(m == n && uplo == dplasmaLower) {
+        // Diagonal tile in lower triangular matrix: compute full norm
+        norm_squared = hicma_parsec_core_matrix_norm_get(this_task->data._f_D.data_out->device_private, tempmm, tempnn, lda, datatype_str, false, true, false, true);
+    } else if(m == n && uplo == dplasmaUpper) {
+        // Diagonal tile in upper triangular matrix: compute full norm
+        norm_squared = hicma_parsec_core_matrix_norm_get(this_task->data._f_D.data_out->device_private, tempmm, tempnn, lda, datatype_str, false, false, true, true);
+    } else { 
+        // Off-diagonal tile: compute full norm
+        norm_squared = hicma_parsec_core_matrix_norm_get(this_task->data._f_D.data_out->device_private, tempmm, tempnn, lda, datatype_str, false, false, false, false);
+    }
+
+    // Accumulate norm contribution for this thread
+    norm[tid] += norm_squared; 
+    
+    // Store per-tile norm for analysis/debugging
+    params_tlr->norm_tile[n*params_tlr->NT+m] = sqrt(norm_squared);
+    
+#if DEBUG_INFO_CLIMATE_EMULATOR
+    printf("norm_tile %d %d : %lf\n", m, n, params_tlr->norm_tile[n*params_tlr->NT+m]);
+#endif
+
+    // Reset thread norm accumulation periodically to prevent overflow
+    // This is a memory optimization for large matrices
+    if( m - n >= params_tlr->NT*PORTION_NORM )
+        norm[tid] = 0.0;
+}
+END
+
+
+
+extern "C" %{
+
+/**
+ * @brief Create a new matrix norm computation taskpool
+ * 
+ * This function creates and initializes a PaRSEC taskpool for computing
+ * matrix norms on triangular matrices. The taskpool will schedule tasks
+ * to compute the Frobenius norm of each tile in parallel.
+ * 
+ * @param [in] parsec:       PaRSEC context (unused but required for interface)
+ * @param [in] uplo:         Specifies upper or lower triangular part
+ * @param [in] A:            The tiled matrix descriptor
+ * @param [in] params_tlr:   TLR parameters including norm storage arrays
+ * @param [in] datatype_str: String specifying the data type for computation
+ * @param [in] norm_tmp:     Array to store per-thread norm contributions
+ * @return the parsec object to schedule, or NULL on error
+ */
+parsec_taskpool_t*
+climate_emulator_matrix_norm_get_New( parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params_tlr,
+        char *datatype_str,
+        double *norm_tmp)
+{
+    /* Validate input arguments */
+    if (params_tlr->uplo != PlasmaLower) {
+        dplasma_error("STARSH_appr_New", "illegal value of uplo, should be PlasmaLower\n");
+        return NULL /*-1*/;
+    }
+
+    // Create the taskpool with the specified parameters
+    parsec_climate_emulator_matrix_norm_get_taskpool_t *starsh_gen = parsec_climate_emulator_matrix_norm_get_new(uplo, A, params_tlr, datatype_str, norm_tmp);
+
+    return (parsec_taskpool_t*)starsh_gen;
+}
+
+/**
+ * @brief Destroy the matrix norm computation taskpool
+ * 
+ * @param [inout] taskpool: The PaRSEC taskpool to destroy
+ */
+void climate_emulator_matrix_norm_get_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_climate_emulator_matrix_norm_get_taskpool_t *climate_emulator_matrix_norm_get_taskpool = (parsec_climate_emulator_matrix_norm_get_taskpool_t *)taskpool;
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Compute the Frobenius norm of a (triangular) matrix
+ * 
+ * This function computes the Frobenius norm of a triangular matrix by:
+ * 1. Creating a taskpool to compute norms of individual tiles in parallel
+ * 2. Accumulating per-thread norm contributions
+ * 3. Performing MPI reduction to get the global norm across all processes
+ * 4. Add noise to diagonal if set
+ * 
+ * @param [in] parsec:       PaRSEC context for task scheduling
+ * @param [in] uplo:         Specifies upper or lower triangular part
+ * @param [in] A:            The tiled matrix descriptor
+ * @param [inout] params_tlr: TLR parameters (norm_global and norm_tile will be updated)
+ * @param [in] datatype_str: String specifying the data type for computation
+ * @return The computed Frobenius norm of the matrix
+ */
+double climate_emulator_matrix_norm_get( parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params_tlr,
+        char *datatype_str)
+{
+    parsec_taskpool_t *parsec_climate_emulator_matrix_norm_get = NULL;
+
+    /* Ensure single virtual process (simplified parallelization model) */
+    assert( parsec->nb_vp == 1 );
+    int nb_threads = parsec->virtual_processes[0]->nb_cores;
+    
+    // Allocate per-thread norm accumulation array
+    double *norm_tmp = (double *)calloc(sizeof(double), nb_threads);
+
+    /* Initialize norm storage arrays */
+    params_tlr->norm_global = 0.0;
+    memset( params_tlr->norm_tile, 0, params_tlr->NT * params_tlr->NT * sizeof(double) );
+
+    // Create and execute the norm computation taskpool
+    parsec_climate_emulator_matrix_norm_get = climate_emulator_matrix_norm_get_New( parsec, uplo, A, params_tlr, datatype_str, norm_tmp ); 
+
+    parsec_context_add_taskpool(parsec, parsec_climate_emulator_matrix_norm_get);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+    climate_emulator_matrix_norm_get_Destruct(parsec_climate_emulator_matrix_norm_get);
+
+    /* Reduce per-thread contributions to get process-level norm */
+    double norm_process = 0.0;
+    for( int i = 0; i < nb_threads; i++ ) {
+        norm_process += norm_tmp[i];
+    }
+
+    /* Perform MPI reduction to get global norm across all processes */
+    // Reduce per-tile norms (for analysis/debugging)
+    MPI_Allreduce(MPI_IN_PLACE, params_tlr->norm_tile, params_tlr->NT * params_tlr->NT, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    // Reduce global norm
+    MPI_Allreduce(&norm_process, &params_tlr->norm_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    params_tlr->norm_global = sqrt(params_tlr->norm_global);
+
+    // Clean up temporary storage
+    free( norm_tmp );
+
+    return params_tlr->norm_global;
+}
+
+%}

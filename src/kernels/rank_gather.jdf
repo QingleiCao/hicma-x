@@ -1,0 +1,164 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/* ============================================================================
+ * Parameter declarations for rank gathering operations
+ * ============================================================================ */
+
+/** Matrix descriptor containing rank information for each tile */
+descAr              [ type = "parsec_tiled_matrix_t *" ]
+
+/** Output array to store gathered rank information */
+rank_array          [ type = "int *" ]
+
+/** Size of the dense band in the matrix (tiles within this band are dense) */
+band_size_dense     [ type = "int" ]
+
+/* ============================================================================
+ * Task: my_task - Gather rank information from distributed tiles
+ * ============================================================================ */
+
+/**
+ * @brief Gathers rank information from distributed matrix tiles into a local array
+ * 
+ * This task collects rank information from tiles outside the dense band and stores
+ * them in a local array. It processes only the upper triangular region above the
+ * dense band where low-rank approximations are expected.
+ * 
+ * @param m Row index of the matrix tile
+ * @param n Column index of the matrix tile
+ */
+my_task(m, n)
+
+/* Execution space: process tiles above the dense band */
+m = band_size_dense .. descAr->mt-1
+n = 0 .. m-band_size_dense
+
+/* Parallel partitioning: bind to matrix tile */
+: descAr(m, n)
+
+/* Data flow: read rank information from tile */
+READ Y <- descAr(m, n)
+
+BODY
+{
+    /* Store rank information in the output array using row-major indexing */
+    rank_array[n*descAr->lmt+m] = *((int *)Y);
+}
+END
+
+extern "C" %{
+
+/* ============================================================================
+ * C Interface Functions for Rank Gathering Operations
+ * ============================================================================ */
+
+/**
+ * @brief Creates a new taskpool for gathering rank information
+ * 
+ * This function initializes a new PaRSEC taskpool for gathering rank information
+ * from distributed matrix tiles into a local array. It sets up the necessary
+ * data types and arenas for integer rank data.
+ * 
+ * @param [in] dcAr:              The rank data matrix, already distributed and allocated
+ * @param [in] rank_array:        Output array to store gathered rank information
+ * @param [in] band_size_dense:   Size of the dense band in the matrix
+ * @return the parsec taskpool object to schedule, or NULL on failure
+ */
+parsec_taskpool_t*
+parsec_rank_gather_New(parsec_tiled_matrix_t *dcAr, int *rank_array, int band_size_dense)
+{
+    parsec_taskpool_t* rank_gather_taskpool;
+    parsec_rank_gather_taskpool_t* taskpool = NULL;
+
+    /* Create the rank gather taskpool with the given parameters */
+    taskpool = parsec_rank_gather_new(dcAr, rank_array, band_size_dense);
+    rank_gather_taskpool = (parsec_taskpool_t*)taskpool;
+
+    /* Set up data type arena for integer rank data (1x1 tiles) */
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_rank_gather_DEFAULT_ADT_IDX],
+                            parsec_datatype_int_t, PARSEC_MATRIX_FULL,
+                            1, 1, 1, 1,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return rank_gather_taskpool;
+}
+
+/**
+ * @brief Destroys the rank gathering taskpool
+ * 
+ * This function properly cleans up the taskpool and frees all associated
+ * resources including data type arenas.
+ * 
+ * @param [inout] taskpool:    The parsec taskpool object to destroy
+ */
+void parsec_rank_gather_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_rank_gather_taskpool_t *rank_gather_taskpool = (parsec_rank_gather_taskpool_t *)taskpool;
+    
+    /* Clean up data type arena */
+    parsec_del2arena(&rank_gather_taskpool->arenas_datatypes[PARSEC_rank_gather_DEFAULT_ADT_IDX]);
+    
+    /* Free the taskpool */
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Gathers rank information from distributed tiles using MPI reduction
+ * 
+ * This function collects rank information from all processes and reduces them
+ * into a single array using MPI_Allreduce. It processes only tiles outside
+ * the dense band and requires 1x1 tile blocks.
+ * 
+ * @param [in] parsec:           PaRSEC context for task scheduling
+ * @param [in] dcAr:             The rank data matrix, already distributed and allocated
+ * @param [inout] rank_array:    Output array to store gathered rank information
+ * @param [in] band_size_dense:  Size of the dense band in the matrix
+ * @return 0 on success, PARSEC_ERR_BAD_PARAM on invalid parameters
+ */
+int parsec_rank_gather(parsec_context_t *parsec,
+		parsec_tiled_matrix_t *dcAr,
+		int *rank_array,
+		int band_size_dense)
+{
+    parsec_taskpool_t *parsec_rank_gather = NULL;
+
+    /* Validate that matrix uses 1x1 tile blocks (required for rank gathering) */
+    if( dcAr->mb != 1 || dcAr->nb != 1 ) {
+        if( 0 == dcAr->super.myrank )
+            fprintf(stderr, "ERROR: Only gather rank in Ar\n");
+        return PARSEC_ERR_BAD_PARAM;
+    }
+   
+    /* Allocate temporary buffer to gather rank info for each process, initialized to 0 */ 
+    int *rank_array_tmp = (int *)calloc(dcAr->lm * dcAr->ln, sizeof(int) );
+    
+    /* Create and execute the rank gathering taskpool */
+    parsec_rank_gather = parsec_rank_gather_New( dcAr, rank_array_tmp, band_size_dense );
+
+    parsec_context_add_taskpool(parsec, parsec_rank_gather);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+    parsec_rank_gather_Destruct(parsec_rank_gather);
+
+    /* Use MPI_Allreduce to combine rank information from all processes */
+    MPI_Allreduce( rank_array_tmp, rank_array, dcAr->lm * dcAr->ln, MPI_INT, MPI_SUM, (MPI_Comm)parsec->comm_ctx ); 
+
+    /* Free temporary memory */
+    free( rank_array_tmp );
+
+    return 0;
+}
+
+%}

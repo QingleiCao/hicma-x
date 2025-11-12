@@ -1,0 +1,144 @@
+extern "C" %{
+/*
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+
+#include "hicma_parsec.h"
+
+/**
+ * @brief Compute log determinant of a diagonal block
+ * For a matrix A that has been factorized as A = L*L^T, the determinant
+ * is the product of diagonal elements of L, so log(det) = sum(log(L_ii))
+ * @param A Pointer to the matrix data (lower triangular)
+ * @param m Size of the matrix block
+ * @param lda Leading dimension of matrix A
+ * @return Sum of logarithms of diagonal elements
+ */
+static double parsec_core_dmdet (double *A, int m, int lda) {
+    double res = 0.0;
+    for (int i = 0; i < m; i++) {
+        if(A[i + i * lda] > 0)
+            res += log(A[i + i * lda]);
+    }
+
+    return res;
+}
+
+%}
+
+// TODO: Make it for MP (Mixed Precision)
+descA           [ type = "parsec_tiled_matrix_t*" ]  /* Matrix descriptor */
+log_det         [ type = "double *" ]                /* Log determinant accumulation array */
+
+
+/**
+ * @brief Calculate log determinant for diagonal tiles
+ * Computes the log determinant contribution from each diagonal tile
+ * of a factorized matrix (e.g., after Cholesky factorization)
+ */
+Calculate_det_log(m)
+
+m = 0 .. descA->lmt-1
+
+: descA(m, m)
+
+READ A <- descA(m, m)
+
+BODY
+{
+    // Calculate actual tile size (handle edge tiles)
+	int tempmm = (m == descA->lmt-1) ? parsec_imin(descA->mb, descA->m-(descA->lmt-1)*descA->mb): descA->mb;
+    int tid = es->th_id;
+    // Accumulate log determinant contribution from this diagonal tile
+    log_det[tid] += parsec_core_dmdet(A, tempmm, descA->mb);
+}
+END
+
+
+extern "C" %{
+
+/**
+ * @brief Create a new matrix determinant calculation taskpool
+ * @param A Matrix descriptor (should be factorized matrix)
+ * @param log_det Array to store log determinant contributions
+ * @return the parsec object to schedule
+ */
+parsec_taskpool_t*
+hicma_parsec_matrix_det_New(parsec_tiled_matrix_t *A,
+                       double *log_det)
+{
+    parsec_matrix_det_taskpool_t* taskpool = NULL;
+
+    taskpool = parsec_matrix_det_new(A, log_det); 
+
+    // Set up arena for double precision datatype
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_matrix_det_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, A->mb, A->mb, A->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)taskpool; 
+}
+
+/**
+ * @brief Destructor for matrix determinant calculation taskpool
+ * @param taskpool Pointer to the taskpool to destroy
+ */
+void hicma_parsec_matrix_det_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_matrix_det_taskpool_t *matrix_det_taskpool = (parsec_matrix_det_taskpool_t*)taskpool;
+    // Remove arena for double precision datatype
+    parsec_del2arena(&matrix_det_taskpool->arenas_datatypes[PARSEC_matrix_det_DEFAULT_ADT_IDX]);
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Calculate log determinant of a factorized matrix
+ * Computes the log determinant by summing logarithms of diagonal elements
+ * from all diagonal tiles across all processes
+ * 
+ * @param parsec PaRSEC context
+ * @param dcA Matrix descriptor (should be factorized matrix)
+ * @param log_det Pointer to store the final log determinant result
+ * @return 0 on success
+ */
+int hicma_parsec_matrix_det(parsec_context_t *parsec,
+                       parsec_tiled_matrix_t *dcA,
+                       double *log_det)
+{
+    parsec_taskpool_t *matrix_det = NULL;
+
+    /* Only for 1 virtual process */
+    assert( parsec->nb_vp == 1 );
+    int nb_threads = parsec->virtual_processes[0]->nb_cores;
+    double *log_det_tmp = (double *)calloc(sizeof(double), nb_threads);
+
+    matrix_det = hicma_parsec_matrix_det_New(dcA, log_det_tmp); 
+
+    if( matrix_det != NULL ){
+        parsec_context_add_taskpool(parsec, matrix_det);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        hicma_parsec_matrix_det_Destruct(matrix_det);
+    }
+
+    // Sum up log determinant contributions from all threads
+    double log_det_process = 0.0;
+    for( int i = 0; i < nb_threads; i++ ) {
+        log_det_process += log_det_tmp[i];
+    }
+
+    // Reduce log determinant across all MPI processes
+    MPI_Allreduce(&log_det_process, log_det, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    free( log_det_tmp );
+
+    return 0;
+}
+
+%}

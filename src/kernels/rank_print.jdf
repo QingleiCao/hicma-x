@@ -1,0 +1,305 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2023-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+/* ============================================================================
+ * Global buffers to store gathered rank information for printing
+ * ============================================================================ */
+
+/** Buffer to store initial rank values */
+static int *buff_g0 = NULL;
+
+/** Buffer to store minimum rank values */
+static int *buff_g1 = NULL;
+
+/** Buffer to store maximum rank values */
+static int *buff_g2 = NULL;
+
+/** Buffer to store final rank values */
+static int *buff_g3 = NULL;
+
+/** Buffer to store rank difference (max - min) */
+static int *buff_g4 = NULL;
+
+%}
+
+/* ============================================================================
+ * Parameter declarations for rank printing operations
+ * ============================================================================ */
+
+/** Matrix descriptor containing rank information for each tile */
+descRank         [ type = "parsec_tiled_matrix_t*" ]
+
+/** Size of the dense band in the matrix (tiles within this band are dense) */
+band_size_dense  [ type = "int" ]
+
+/** Number of columns per batch for processing */
+num_col          [ type = "int" hidden=on default="((parsec_matrix_sym_block_cyclic_band_t *)descRank)->off_band.grid.cols * ((parsec_matrix_sym_block_cyclic_band_t *)descRank)->off_band.grid.kcols" ]
+
+/** Total number of batches needed to process all columns */
+NT               [ type = "int" hidden=on default="(descRank->lnt-1)/num_col" ]
+
+/* ============================================================================
+ * Task: send - Send rank data to gathering task
+ * ============================================================================ */
+
+/**
+ * @brief Sends rank data from distributed tiles to the gathering task
+ * 
+ * This task reads rank information from distributed matrix tiles and sends
+ * them to the gathering task for centralized processing. It processes tiles
+ * in batches to manage memory and communication efficiently.
+ * 
+ * @param m Row index of the matrix tile
+ * @param n Column index of the matrix tile
+ * @param batch Batch number for processing
+ */
+send(m, n, batch)
+
+/* Execution space: process tiles in batches above the dense band */
+batch = 0 .. NT
+m = band_size_dense .. descRank->lmt-1
+n = %{ return batch*num_col; %} .. %{ return parsec_imin((batch+1)*num_col-1, m-band_size_dense); %}
+
+/* Parallel partitioning: bind to matrix tile */
+: descRank(m, n)
+
+/* Data flow: read rank data and send to gathering task */
+READ Y <- descRank(m, n)
+       -> Y get(m, n, batch)
+
+/* Control flow: ensure sequential processing of batches */
+CTL ctl <- (batch > 0)? ctl get(m, n-num_col, batch-1)
+
+BODY
+{
+    /* No computation needed - data is passed through to get task */
+}
+END
+
+/* ============================================================================
+ * Task: get - Gather and store rank data for printing
+ * ============================================================================ */
+
+/**
+ * @brief Gathers rank data and stores it in global buffers for printing
+ * 
+ * This task receives rank information from the send tasks and stores it in
+ * global buffers. It extracts different rank statistics (initial, min, max,
+ * final, difference) and prepares them for formatted output.
+ * 
+ * @param m Row index of the matrix tile
+ * @param n Column index of the matrix tile
+ * @param batch Batch number for processing
+ */
+get(m, n, batch)
+
+/* Execution space: process tiles in batches above the dense band */
+batch = 0 .. NT
+m = band_size_dense .. descRank->lmt-1
+n = %{ return batch*num_col; %} .. %{ return parsec_imin((batch+1)*num_col-1, m-band_size_dense); %}
+
+/* Parallel partitioning: bind to root tile for centralized gathering */
+: descRank(0, 0)
+
+/* Data flow: receive rank data from send task */
+READ Y <- Y send(m, n, batch)
+
+/* Control flow: ensure sequential processing of batches */
+CTL ctl -> (batch < NT)? ctl send(m, n+num_col, batch+1)
+
+BODY
+{
+    /* Store rank information in global buffers if data is available */
+    if( NULL != Y ) {
+        /* Extract different rank statistics from the tile data */
+        buff_g0[n*descRank->lmt+m] = ((int *)Y)[0];  /* Initial rank */
+        buff_g1[n*descRank->lmt+m] = ((int *)Y)[1];  /* Minimum rank */
+        buff_g2[n*descRank->lmt+m] = ((int *)Y)[2];  /* Maximum rank */
+        buff_g3[n*descRank->lmt+m] = ((int *)Y)[3];  /* Final rank */
+        buff_g4[n*descRank->lmt+m] = ((int *)Y)[2] - ((int *)Y)[1];  /* Rank difference */
+    } else {
+        /* Initialize buffers with zeros if no data available */
+        buff_g0[n*descRank->lmt+m] = 0; 
+        buff_g1[n*descRank->lmt+m] = 0; 
+        buff_g2[n*descRank->lmt+m] = 0; 
+        buff_g3[n*descRank->lmt+m] = 0; 
+        buff_g4[n*descRank->lmt+m] = 0; 
+    }
+}
+END
+
+extern "C" %{
+
+/* ============================================================================
+ * C Interface Functions for Rank Printing Operations
+ * ============================================================================ */
+
+/**
+ * @brief Creates a new taskpool for gathering and printing rank distribution
+ * 
+ * This function initializes a new PaRSEC taskpool for gathering rank information
+ * from distributed matrix tiles and preparing it for formatted output. It sets up
+ * the necessary data types and arenas for integer rank data.
+ * 
+ * @param [inout] Rank:             The rank data matrix, already distributed and allocated
+ * @param [in] band_size_dense:     Size of the dense band in the matrix
+ * @return the parsec taskpool object to schedule, or NULL on failure
+ */
+parsec_taskpool_t*
+parsec_rank_print_New(parsec_tiled_matrix_t *Rank, int band_size_dense)
+{
+    parsec_rank_print_taskpool_t* taskpool = NULL;
+    
+    /* Create the rank print taskpool with the given parameters */
+    taskpool = parsec_rank_print_new(Rank, band_size_dense);
+    
+    /* Set up data type arena for integer rank data */
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_rank_print_DEFAULT_ADT_IDX],
+                            parsec_datatype_int_t, PARSEC_MATRIX_FULL,
+                            1, Rank->mb, Rank->nb, Rank->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+    
+    return (parsec_taskpool_t*)taskpool; 
+}
+
+/**
+ * @brief Destroys the rank printing taskpool
+ * 
+ * This function properly cleans up the taskpool and frees all associated
+ * resources including data type arenas.
+ * 
+ * @param [inout] taskpool:    The parsec taskpool object to destroy
+ */
+void parsec_rank_print_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_rank_print_taskpool_t *rank_print_taskpool = (parsec_rank_print_taskpool_t *)taskpool;
+    
+    /* Clean up data type arena */
+    parsec_del2arena(&rank_print_taskpool->arenas_datatypes[PARSEC_rank_print_DEFAULT_ADT_IDX]);
+    
+    /* Free the taskpool */
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Gathers rank information and prints formatted rank distribution
+ * 
+ * This function collects rank information from all distributed tiles and prints
+ * formatted rank distribution matrices. It supports different rank map types
+ * (initial, minimum, maximum, final, difference) and only prints on the root
+ * process to avoid duplicate output.
+ * 
+ * @param [in] parsec:           PaRSEC context for task scheduling
+ * @param [inout] dcRank:        The rank data matrix, already distributed and allocated
+ * @param [in] band_size_dense:  Size of the dense band in the matrix
+ * @return 0 on success, non-zero on failure
+ */
+int hicma_parsec_rank_print(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcRank,
+        int band_size_dense)
+{
+    parsec_taskpool_t *parsec_rank_print = NULL;
+
+    /* Allocate memory for rank buffers on the root process only */
+    if( dcRank->super.rank_of(&dcRank->super, 0, 0) == dcRank->super.myrank ) {
+        buff_g0 = (int *)calloc(dcRank->lmt * dcRank->lnt, sizeof(int));
+        buff_g1 = (int *)calloc(dcRank->lmt * dcRank->lnt, sizeof(int));
+        buff_g2 = (int *)calloc(dcRank->lmt * dcRank->lnt, sizeof(int));
+        buff_g3 = (int *)calloc(dcRank->lmt * dcRank->lnt, sizeof(int));
+        buff_g4 = (int *)calloc(dcRank->lmt * dcRank->lnt, sizeof(int));
+    }
+
+    /* Create and execute the rank printing taskpool */
+    parsec_rank_print = parsec_rank_print_New( dcRank, band_size_dense );
+
+    parsec_context_add_taskpool(parsec, parsec_rank_print);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+    parsec_rank_print_Destruct(parsec_rank_print);
+
+    /* Print rank distribution on root process and first thread only */
+    if( dcRank->super.rank_of(&dcRank->super, 0, 0) == dcRank->super.myrank && 0 == parsec->virtual_processes[0]->execution_streams[0]->th_id ) {
+        
+        /* Print initial rank distribution */
+        if( 0 == RANK_MAP_TYPE || 5 == RANK_MAP_TYPE ) {
+            printf("\nInitial Rank\n");
+            for( int i = 0; i < dcRank->lmt; i++) {
+                for( int j = 0; j < dcRank->lnt; j++)
+                    if( i >= j )  /* Only print upper triangular region */
+                        printf("%-3d ", buff_g0[j*dcRank->lmt+i]);
+                printf("\n");
+            }
+            printf("\n\n");
+        } 
+
+        /* Print minimum rank distribution */
+        if( 1 == RANK_MAP_TYPE || 5 == RANK_MAP_TYPE ) {
+            printf("\nMinimum Rank\n");
+            for( int i = 0; i < dcRank->lmt; i++) {
+                for( int j = 0; j < dcRank->lnt; j++)
+                    if( i >= j )  /* Only print upper triangular region */
+                        printf("%-3d ", buff_g1[j*dcRank->lmt+i]);
+                printf("\n");
+            }
+            printf("\n\n");
+        }
+
+        /* Print maximum rank distribution */
+        if( 2 == RANK_MAP_TYPE || 5 == RANK_MAP_TYPE ) {
+            printf("\nMaximum Rank\n");
+            for( int i = 0; i < dcRank->lmt; i++) {
+                for( int j = 0; j < dcRank->lnt; j++)
+                    if( i >= j )  /* Only print upper triangular region */
+                        printf("%-3d ", buff_g2[j*dcRank->lmt+i]);
+                printf("\n");
+            }
+            printf("\n\n");
+        }
+
+        /* Print final rank distribution */
+        if( 3 == RANK_MAP_TYPE || 5 == RANK_MAP_TYPE ) {
+            printf("\nFinal Rank\n");
+            for( int i = 0; i < dcRank->lmt; i++) {
+                for( int j = 0; j < dcRank->lnt; j++)
+                    if( i >= j )  /* Only print upper triangular region */
+                        printf("%-3d ", buff_g3[j*dcRank->lmt+i]);
+                printf("\n");
+            }
+            printf("\n\n");
+        }
+
+        /* Print rank difference distribution (max - min) */
+        if( 4 == RANK_MAP_TYPE || 5 == RANK_MAP_TYPE ) {
+            printf("\nDifference Rank, max - min\n");
+            for( int i = 0; i < dcRank->lmt; i++) {
+                for( int j = 0; j < dcRank->lnt; j++)
+                    if( i >= j )  /* Only print upper triangular region */
+                        printf("%-3d ", buff_g4[j*dcRank->lmt+i]);
+                printf("\n");
+            }
+            printf("\n\n");
+        }
+    }
+
+    /* Free allocated memory on the root process */
+    if( dcRank->super.rank_of(&dcRank->super, 0, 0) == dcRank->super.myrank ) {
+        free(buff_g0);
+        free(buff_g1);
+        free(buff_g2);
+        free(buff_g3);
+        free(buff_g4);
+    }
+
+    return 0;
+}
+
+%}

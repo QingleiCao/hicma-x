@@ -1,0 +1,223 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+#include "hicma_parsec.h"
+
+/**
+ * @file sqr_sum_vec_cyclic.jdf
+ * @brief Square sum vector computation with cyclic reduction
+ * 
+ * This kernel computes the sum of squares of vector elements using a cyclic
+ * reduction pattern. It performs symmetric rank-k updates (SSYRK) operations
+ * and accumulates results in a cyclic manner.
+ */
+
+/**
+ * @brief Hook function that always returns DONE
+ * @param task Task pointer (unused)
+ * @return PARSEC_HOOK_RETURN_DONE
+ */
+static inline parsec_hook_return_t
+always_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_DONE;
+}
+
+/**
+ * @brief Hook function that always returns NEXT
+ * @param task Task pointer (unused)
+ * @return PARSEC_HOOK_RETURN_NEXT
+ */
+static inline parsec_hook_return_t
+never_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_NEXT;
+}
+
+/**
+ * @brief Print matrix tile for debugging
+ * @param A Matrix data
+ * @param m Number of rows
+ * @param n Number of columns
+ */
+void parsec_print_tile2(float *A, int m, int n){
+    printf("\n");
+    for(int i=0;i<m;i++){
+       for(int j=0;j<n;j++){
+          printf("%f, ", A[j*m+i]);
+       }
+       printf("\n");
+    }
+}
+
+/**
+ * @brief Copy diagonal elements from matrix T to vector C
+ * @param T Source matrix
+ * @param C Destination vector
+ * @param tempnn Number of elements to copy
+ */
+void copy_diag(float *T, float *C, int tempnn) {
+    int i;
+    for (i=0; i<tempnn; i++) {
+        C[i] = T[i*tempnn+i];
+    }
+}
+%}
+
+/* Input/Output matrix descriptors */
+descA     [type = "const parsec_tiled_matrix_t*"]  /* Input matrix A */
+descC     [type = "parsec_tiled_matrix_t*"]        /* Output vector C */
+
+/**
+ * @brief Compute square sum vector using cyclic reduction
+ * 
+ * This task performs symmetric rank-k updates (SSYRK) to compute the sum of
+ * squares of vector elements. It uses a cyclic reduction pattern where each
+ * task accumulates results from previous iterations and passes them to the next.
+ */
+sqr_sum_vec(n, k)
+  /* Execution Space: process all column tiles and row tiles */
+  n = 0..(descC->nt-1)
+  k = 0..(descA->mt-1)
+
+  /* Locality: results stored in first row of output matrix */
+  : descC(0,n)
+
+  READ  A    <- A data_A0(n, k)
+  RW    T    <- ((0==k)) ? NEW
+             <- ((k>=1)) ? T sqr_sum_vec(n, k-1)
+             -> ((descA->mt>=(2+k))) ? T sqr_sum_vec(n, k+1)
+  RW C       <- ((descA->mt>=(1+k))) ?   descC(0,n)   
+             -> ((descA->mt>=(1+k))) ?   descC(0,n)             
+BODY
+{
+    /* Calculate actual tile dimensions (handle edge cases) */
+    int tempnn = (n==(descC->nt-1)) ? (descC->n-(n*descC->nb)) : descC->nb;
+    int tempkm = (k==(descA->mt-1)) ? (descA->m-(k*descA->mb)) : descA->mb;
+    int ldak = BLKLDD( descA, k );
+    float alpha = (float)1.0;
+    float zbeta = (k==0) ? 0.0 : (float)1.;  /* Initialize on first iteration */
+    int ldcn = BLKLDD( descA, n );
+
+    /* Perform symmetric rank-k update: T = alpha*A*A^T + beta*T */
+    CORE_ssyrk(PlasmaLower, PlasmaTrans, tempnn,
+               tempkm, alpha, A,
+               ldak, zbeta, T,
+               ldcn);
+    
+    /* On final iteration, copy diagonal elements to output vector */
+    if (k==descA->mt-1) {
+       copy_diag(T, C, tempnn);
+       //parsec_print_tile2(T, tempnn, tempnn);  /* Debug output */
+    }
+}
+END
+
+/**
+ * @brief Data distribution task for input matrix
+ * 
+ * This task distributes input matrix tiles to the computation tasks.
+ * It's marked as profile=off to exclude from performance profiling.
+ */
+data_A0(n, k) [profile = off]
+  /* Execution Space: process all tiles */
+  n = 0..(descC->nt-1)
+  k = 0..(descA->mt-1)
+
+  /* Locality: data comes from input matrix */
+  : descA(k,n)
+
+  READ  A    <- descA(k,n) 
+             -> A sqr_sum_vec(n, k) 
+
+BODY
+{
+    /* No computation - just data distribution */
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create new square sum vector taskpool
+ * 
+ * @param A Input matrix descriptor
+ * @param C Output vector descriptor
+ * @return New taskpool instance
+ */
+parsec_taskpool_t* hicma_parsec_sqr_sum_vec_New(parsec_tiled_matrix_t *A, parsec_tiled_matrix_t *C)
+{
+    parsec_sqr_sum_vec_cyclic_taskpool_t *taskpool = NULL;
+    
+    /* Create new taskpool instance */
+    taskpool = parsec_sqr_sum_vec_cyclic_new( A, C);
+    
+    /* Set up arena for float data types */
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_sqr_sum_vec_cyclic_DEFAULT_ADT_IDX],
+                            parsec_datatype_float_t, PARSEC_MATRIX_FULL,
+                            1, A->mb, A->nb, A->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+    
+    return (parsec_taskpool_t*)taskpool;
+}
+
+/**
+ * @brief Destroy square sum vector taskpool
+ * 
+ * @param taskpool Taskpool to destroy
+ */
+void hicma_parsec_sqr_sum_vec_Destruct( parsec_taskpool_t *taskpool )
+{
+    parsec_sqr_sum_vec_cyclic_taskpool_t *sqr_sum_vec_cyclic_taskpool = (parsec_sqr_sum_vec_cyclic_taskpool_t *)taskpool;
+    
+    /* Remove arena */
+    parsec_del2arena(&sqr_sum_vec_cyclic_taskpool->arenas_datatypes[PARSEC_sqr_sum_vec_cyclic_DEFAULT_ADT_IDX]);
+    
+    /* Free taskpool */
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Execute square sum vector computation
+ * 
+ * @param parsec PaRSEC context
+ * @param A Input matrix descriptor
+ * @param C Output vector descriptor
+ * @return 0 on success, -3 on error
+ */
+double hicma_parsec_sqr_sum_vec( parsec_context_t *parsec,
+                parsec_tiled_matrix_t *A, parsec_tiled_matrix_t *C)
+{
+    parsec_taskpool_t *parsec_sqr_sum_vec = NULL;
+
+    /* Validate input matrix type */
+    if ( !(A->dtype & parsec_matrix_block_cyclic_type) ) {
+        dplasma_error("dplasma_sqr_sum_vec", "illegal type of descriptor for A");
+        return -3.;
+    }
+
+    /* Create taskpool */
+    parsec_sqr_sum_vec = hicma_parsec_sqr_sum_vec_New(A, C);
+
+    if ( parsec_sqr_sum_vec != NULL )
+    {
+        /* Execute taskpool */
+        parsec_context_add_taskpool( parsec, (parsec_taskpool_t*)parsec_sqr_sum_vec);
+        dplasma_wait_until_completion(parsec);
+        
+        /* Clean up */
+        hicma_parsec_sqr_sum_vec_Destruct( parsec_sqr_sum_vec );
+    }
+
+    return 0;
+}
+
+%}

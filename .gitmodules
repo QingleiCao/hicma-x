@@ -1,0 +1,12 @@
+[submodule "dplasma"]
+    path = dplasma
+    url = ../../QingleiCao/dplasma.git
+    branch = hicma_parsec 
+[submodule "stars-h"]
+    path = stars-h
+    url = ../../QingleiCao/stars-h.git
+    branch = hicma_parsec 
+[submodule "hcore"]
+    path = hcore
+    url = ../../QingleiCao/hcore.git
+    branch = hicma_parsec 

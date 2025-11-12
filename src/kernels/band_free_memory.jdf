@@ -1,0 +1,148 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/*
+ * Band Memory Management Kernel
+ * 
+ * This kernel handles memory deallocation for tiles in either the band region or off-band region
+ * of a hierarchical matrix. The band region contains dense tiles that are stored in full format,
+ * while the off-band region contains low-rank tiles stored in compressed format.
+ * 
+ * Memory Management Strategy:
+ * - Band region: Dense tiles that may use GPU-optimized memory (pinned host memory)
+ * - Off-band region: Low-rank tiles stored in standard CPU memory
+ * 
+ * The indicator parameter controls which region to free:
+ * - 0: Free band region only (dense tiles)
+ * - non-zero: Free off-band region (low-rank tiles)
+ */
+// Input parameters for memory freeing
+descA           [ type = "parsec_tiled_matrix_t*" ]  // Matrix descriptor containing tile information
+params_tlr      [ type = "hicma_parsec_params_t *" ] // TLR parameters including GPU configuration
+indicator       [ type = "int" ]                     // Region selector: 0=band only, non-zero=off-band
+
+/**************************************************
+ * Memory Freeing Task                            *
+ *                                                *
+ * This task iterates over the specified region   *
+ * and safely deallocates memory for each tile    *
+ **************************************************/
+Free(m, n)
+
+// Iterate over appropriate region based on indicator
+// For band region (indicator=0): iterate over lower triangular band
+// For off-band region (indicator!=0): iterate over off-band area
+m = %{ return (indicator == 0 ? 0 : params_tlr->band_size_dense); %} .. descA->lmt-1
+n = %{ return (indicator == 0 ? parsec_imax(m-params_tlr->band_size_dense+1, 0) : 0); %} .. %{ return (indicator == 0 ? m : m-params_tlr->band_size_dense); %} 
+
+: descA(m, n)
+
+BODY
+{
+    // Safety check: verify tile data exists before attempting to free
+    if( NULL != PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)) ) {
+        // GPU-optimized memory deallocation for band tiles
+        if( 0 == indicator && params_tlr->gpus > 0 ) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+            // Free pinned host memory that was allocated for GPU operations
+            // This memory was allocated with cudaMallocHost/hipHostMalloc for faster GPU transfers
+            cudaFreeHost(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)));
+#endif
+        } else {
+            // Standard memory deallocation for CPU tiles or off-band tiles
+            // Off-band tiles use regular malloc/calloc, so use standard free()
+            free(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)));
+        }
+    }
+}
+END
+
+extern "C" %{
+
+/**
+ * Create a new band memory freeing taskpool
+ * 
+ * This function creates a PaRSEC taskpool for freeing memory in the band or off-band region
+ * of a hierarchical matrix. The taskpool will be scheduled to execute the memory freeing
+ * tasks in parallel across available processing units.
+ * 
+ * @param [inout] dcA:      Matrix descriptor with distributed and allocated data
+ * @param [in] params:      TLR parameters containing GPU configuration and band size
+ * @param [in] indicator:   Region selector: 0=free band region only, non-zero=free off-band region
+ * @return the parsec taskpool object to schedule for execution
+ */
+parsec_taskpool_t*
+parsec_band_free_memory_New(parsec_tiled_matrix_t *dcA,
+        hicma_parsec_params_t *params, int indicator)
+{
+    parsec_taskpool_t* band_free_memory_taskpool;
+    parsec_band_free_memory_taskpool_t* taskpool = NULL;
+
+    // Create the taskpool using the generated constructor
+    taskpool = parsec_band_free_memory_new(dcA, params, indicator);
+    band_free_memory_taskpool = (parsec_taskpool_t*)taskpool;
+
+    return band_free_memory_taskpool;
+}
+
+/**
+ * Destructor for band memory freeing taskpool
+ * 
+ * This function properly cleans up the taskpool and frees all associated resources.
+ * It should be called after the taskpool has completed execution.
+ * 
+ * @param [inout] taskpool: The parsec taskpool object to destroy and free
+ */
+void parsec_band_free_memory_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_band_free_memory_taskpool_t *band_free_memory_taskpool = (parsec_band_free_memory_taskpool_t *)taskpool;
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * Execute band memory freeing operation
+ * 
+ * This is the main interface function that creates, schedules, and executes the memory
+ * freeing taskpool. It handles the complete lifecycle of the memory freeing operation,
+ * including taskpool creation, execution, and cleanup.
+ * 
+ * @param [in] parsec:      PaRSEC context for task scheduling and execution
+ * @param [inout] dcA:      Matrix descriptor with distributed and allocated data
+ * @param [in] params:      TLR parameters containing GPU configuration and band size
+ * @param [in] indicator:   Region selector: 0=free band region only, non-zero=free off-band region
+ * @return 0 on success, error code on failure
+ */
+int parsec_band_free_memory(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcA,
+        hicma_parsec_params_t *params, int indicator)
+{
+    parsec_taskpool_t *parsec_band_free_memory = NULL;
+    
+    // Create the memory freeing taskpool
+    parsec_band_free_memory = parsec_band_free_memory_New(dcA, params, indicator); 
+
+    if( parsec_band_free_memory != NULL ){
+        // Schedule and execute the taskpool
+        parsec_context_add_taskpool(parsec, parsec_band_free_memory);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        
+        // Clean up the taskpool
+        parsec_band_free_memory_Destruct(parsec_band_free_memory);
+    }
+
+    return 0;
+}
+
+%}

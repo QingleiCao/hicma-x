@@ -1,0 +1,262 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2023-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2023-2025     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "climate_emulator.h"
+
+%}
+
+/* Global variable declarations for PaRSEC task scheduling
+ * These define the data dependencies and matrix descriptors used by the tasks
+ */
+desc_f_spatial     [ type = "parsec_tiled_matrix_t*" ]
+desc_flm           [ type = "parsec_tiled_matrix_t*" aligned = desc_f_spatial]
+
+desc_Zlm           [ type = "parsec_tiled_matrix_t*" ]
+desc_SC            [ type = "parsec_tiled_matrix_t*" ]
+
+gb                 [ type = "climate_emulator_struct_t *" ]
+
+/* Memory pool for temporary workspace buffer */
+p_work             [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]
+
+/* GPU workspace for CUDA/HIP acceleration */
+ws_gpu               [ type = "void *" hidden = on default = NULL ]
+
+/* GPU device management parameters */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]
+
+/* GPU binding task for data placement optimization
+ * This task ensures that data is placed on the appropriate GPU device
+ * for better performance and load balancing
+ */
+bind_gpu(n)
+
+n = 0 .. desc_f_spatial->lnt-1
+
+: desc_f_spatial(0, n)
+
+READ flm   <- desc_flm(0, n)
+           -> flm task(n)               [ type_remote = flm ]
+
+READ f_spatial <- desc_f_spatial(0, n)
+               -> f_spatial task(n)     [ type_remote = f_spatial ]
+
+BODY
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    // GPU acceleration is available
+    if( nb_cuda_devices > 0 ) {
+        // Determine which GPU to use for this task based on load balancing
+        int g = climate_emulator_gpu_load_balance( n, gb->nodes, nb_cuda_devices );
+        
+        // Advise the runtime to place flm data on the selected GPU
+        parsec_advise_data_on_device( _f_flm->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+        
+        // Advise the runtime to place f_spatial data on the selected GPU
+        parsec_advise_data_on_device( _f_f_spatial->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+/* Main computation task for inverse geqsht operation
+ * Each task processes one column (n) and applies the inverse transformation
+ * using pre-computed Zlm and SC matrices
+ */
+task(n)
+
+n = 0 .. desc_f_spatial->lnt-1 
+
+// Calculate the rank that owns the current column for proper data distribution
+rank_of_desc_f_spatial = %{ return desc_f_spatial->super.rank_of(&desc_f_spatial->super, 0, n); %}
+
+: desc_f_spatial(0, n)
+
+RW f_spatial <- f_spatial bind_gpu(n)     [ type_remote = f_spatial ]
+             -> desc_f_spatial(0, n)
+
+READ flm   <- flm bind_gpu(n)             [ type_remote = flm ]
+READ Zlm   <- desc_Zlm(0, rank_of_desc_f_spatial) 
+READ SC    <- desc_SC(0, rank_of_desc_f_spatial) 
+
+/* GPU implementation using CUDA (currently commented out)
+ * This would provide GPU acceleration for the inverse transformation
+ */
+//BODY[type=CUDA]
+//{
+//#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+//    printf("CUDA GPU n %d : %d\n", n, desc_f_spatial->super.rank_of(&desc_f_spatial->super, 0, n));
+//    climate_emulator_geqsht_inverse_pre_computed_version_gpu_core(n, flm, f_spatial, Zlm, SC, cuda_device, gpu_task, cuda_stream, gb);
+//#endif
+//}
+//END
+
+/* GPU implementation using HIP (currently commented out)
+ * This would provide GPU acceleration for the inverse transformation
+ */
+//BODY[type=HIP]
+//{
+//#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+//    printf("HIP GPU n %d : %d\n", n, desc_f_spatial->super.rank_of(&desc_f_spatial->super, 0, n));
+//    climate_emulator_geqsht_inverse_pre_computed_version_gpu_core(n, flm, f_spatial, Zlm, SC, cuda_device, gpu_task, cuda_stream, gb);
+//#endif
+//}
+//END
+
+/* CPU implementation of the inverse transformation */
+BODY
+{
+#if DEBUG_INFO_CLIMATE_EMULATOR
+    // Print debug information for the current task
+    printf("CPU n %d : %d\n", n, desc_f_spatial->super.rank_of(&desc_f_spatial->super, 0, n)); 
+    climate_emulator_print_matrix_col_double(flm, 1, 20, 1); 
+#endif
+
+    // Allocate temporary workspace from memory pool
+    double *Smt = (double *)parsec_private_memory_pop(p_work);
+    
+    // Perform the inverse geqsht transformation using pre-computed matrices
+    climate_emulator_geqsht_inverse_pre_computed_version_core(flm, f_spatial, Zlm, SC, Smt, gb);
+    
+    // Return workspace to memory pool
+    parsec_private_memory_push(p_work, Smt);
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create and initialize a new PaRSEC taskpool for inverse geqsht operation
+ * 
+ * This function sets up the taskpool with all necessary matrix descriptors,
+ * memory pools, and GPU workspace for the inverse geqsht operation using
+ * pre-computed matrices.
+ * 
+ * @param parsec PaRSEC context
+ * @param gb Climate emulator structure
+ * @param params HICMA parameters
+ * @return Pointer to the initialized taskpool
+ */
+parsec_taskpool_t*
+climate_emulator_geqsht_inverse_pre_computed_version_New(parsec_context_t *parsec,
+        climate_emulator_struct_t *gb,
+        hicma_parsec_params_t *params)
+{
+    // Extract matrix descriptors from the climate emulator structure
+    parsec_tiled_matrix_t *f_spatial = (parsec_tiled_matrix_t *)&gb->desc_f_spatial;
+    parsec_tiled_matrix_t *flm = (parsec_tiled_matrix_t *)&gb->desc_flm;
+    parsec_tiled_matrix_t *Zlm = (parsec_tiled_matrix_t *)&gb->desc_Zlm;
+    parsec_tiled_matrix_t *SC = (parsec_tiled_matrix_t *)&gb->desc_SC;
+
+    // Create the inverse geqsht taskpool with all matrix descriptors
+    parsec_climate_emulator_geqsht_inverse_pre_computed_version_taskpool_t
+        *taskpool = parsec_climate_emulator_geqsht_inverse_pre_computed_version_new(f_spatial, flm, Zlm, SC, gb);
+
+    // Initialize memory pool for temporary workspace
+    // Size is based on spherical harmonic dimensions: (L+1) * (2*L-1)
+    taskpool->_g_p_work = (parsec_memory_pool_t*)malloc(sizeof(parsec_memory_pool_t));
+    parsec_private_memory_init( taskpool->_g_p_work, (gb->L+1) * (2*gb->L-1) * sizeof(double) );
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    int nb = 0, *dev_index;
+
+    /** Find all available CUDA/HIP devices for GPU acceleration */
+    hicma_parsec_find_cuda_devices( &dev_index, &nb);
+
+    // Set GPU workspace and device information
+    taskpool->_g_ws_gpu = (void *)gb->ws;
+    taskpool->_g_nb_cuda_devices = nb;
+    taskpool->_g_cuda_device_index = dev_index;
+#endif
+
+    // Configure the arena for f_spatial matrix (double precision)
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_inverse_pre_computed_version_f_spatial_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, f_spatial->mb, f_spatial->nb, f_spatial->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    // Configure the arena for flm matrix (double precision)
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_inverse_pre_computed_version_flm_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, flm->mb, flm->nb, flm->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)taskpool;
+}
+
+/**
+ * @brief Clean up and destroy the PaRSEC inverse geqsht taskpool
+ * 
+ * This function properly deallocates all arenas, memory pools, and the taskpool itself
+ * to prevent memory leaks.
+ * 
+ * @param taskpool Pointer to the taskpool to destroy
+ */
+void climate_emulator_geqsht_inverse_pre_computed_version_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_climate_emulator_geqsht_inverse_pre_computed_version_taskpool_t *climate_emulator_geqsht_inverse_pre_computed_version_taskpool = (parsec_climate_emulator_geqsht_inverse_pre_computed_version_taskpool_t *)taskpool;
+    
+    // Remove the arena for f_spatial matrix
+    parsec_del2arena(&climate_emulator_geqsht_inverse_pre_computed_version_taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_inverse_pre_computed_version_f_spatial_ADT_IDX]);
+    
+    // Remove the arena for flm matrix
+    parsec_del2arena(&climate_emulator_geqsht_inverse_pre_computed_version_taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_inverse_pre_computed_version_flm_ADT_IDX]);
+    
+    // Clean up the memory pool
+    parsec_private_memory_fini( climate_emulator_geqsht_inverse_pre_computed_version_taskpool->_g_p_work);
+    
+    // Free the taskpool itself
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Main function to execute the inverse geqsht operation
+ * 
+ * This function orchestrates the entire inverse geqsht process:
+ * 1. Creates and configures the inverse geqsht taskpool
+ * 2. Executes the inverse transformations in parallel across all columns
+ * 3. Waits for completion and cleans up resources
+ * 
+ * @param parsec PaRSEC context
+ * @param gb Climate emulator structure
+ * @param params HICMA parameters
+ * @return 0 on success
+ */
+int climate_emulator_geqsht_inverse_pre_computed_version(parsec_context_t *parsec,
+        climate_emulator_struct_t *gb,
+        hicma_parsec_params_t *params)
+{
+    // Create the inverse geqsht taskpool
+    parsec_taskpool_t *parsec_climate_emulator_geqsht_inverse_pre_computed_version = NULL;
+    parsec_climate_emulator_geqsht_inverse_pre_computed_version = climate_emulator_geqsht_inverse_pre_computed_version_New( parsec, gb, params);
+    
+    if( parsec_climate_emulator_geqsht_inverse_pre_computed_version != NULL ){
+        // Add the taskpool to the PaRSEC context
+        parsec_context_add_taskpool(parsec, parsec_climate_emulator_geqsht_inverse_pre_computed_version);
+        
+        // Start execution of all inverse transformation tasks
+        parsec_context_start(parsec);
+        
+        // Wait for all tasks to complete
+        parsec_context_wait(parsec);
+        
+        // Clean up the taskpool
+        climate_emulator_geqsht_inverse_pre_computed_version_Destruct(parsec_climate_emulator_geqsht_inverse_pre_computed_version);
+    }
+
+    return 0;
+}
+
+%}

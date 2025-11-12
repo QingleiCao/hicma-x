@@ -1,0 +1,181 @@
+extern "C" %{
+/**
+ * @file matrix_unique_element.jdf
+ * @brief Unique element extraction from matrices
+ * 
+ * This file implements a PaRSEC task for finding unique elements in a matrix.
+ * The algorithm processes each tile in parallel and collects all unique values
+ * using a thread-safe set data structure. The results are then merged across
+ * threads and processes to obtain the global set of unique elements.
+ * 
+ * The implementation uses C++ set operations for efficient unique element
+ * collection and merging, with proper memory management for distributed
+ * computation.
+ * 
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+// Declare the C++ functions for set operations
+extern void* create_array_set(int num_threads);                    // Create thread-safe set array
+extern void add_to_set_in_array(void* array_set_ptr, int tid, int value);  // Add element to thread's set
+extern void* merge_local_sets(void* array_set);                    // Merge sets within a process
+extern int* convert_merged_set_to_array(void* merged_set, int* size);      // Convert set to array
+extern int* merge_across_processes(void* local_set_ptr, int* num_elements); // Merge across processes
+extern void free_array_set(void* array_set);                       // Free thread set array
+extern void free_merged_set(void* merged_set);                     // Free merged set
+
+%}
+
+/* Global parameters for the unique element extraction task
+ * descA:      The tiled matrix descriptor containing the matrix data
+ * params_tlr: TLR parameters including output storage for unique elements
+ * array_set:  Thread-safe set data structure for collecting unique elements
+ */
+descA           [ type = "parsec_tiled_matrix_t*" ]
+params_tlr      [ type = "hicma_parsec_params_t *" ]
+array_set       [ type = "void *" ]
+
+
+/**************************************************
+ *        Unique element extraction task          *
+ *        Collects unique values from each tile   *
+ **************************************************/
+task(m, n)
+
+// Execution space: process all matrix tiles
+m = 0 .. descA->mt-1
+n = 0 .. descA->nt-1 
+
+// Parallel partitioning: each tile is processed by one task
+:descA(m, n)
+
+// Parameters: read the matrix tile data
+READ D <- descA(m, n)               
+
+BODY
+{
+    // Calculate actual tile dimensions (handle edge tiles that may be smaller)
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int tempnn = n == descA->nt-1 ? descA->n - n * descA->nb : descA->nb;
+
+    /* Extract unique elements from this tile and add to thread's set */ 
+    for(int j = 0; j < tempnn; j++) {
+        for(int i = 0; i < tempmm; i++) {
+            // Add each matrix element to the thread's set (duplicates are automatically handled)
+            add_to_set_in_array(array_set, es->th_id, (int)((int8_t *)D)[j*descA->mb+i]);
+        }
+    }
+}
+END
+
+
+
+extern "C" %{
+
+/**
+ * @brief Create a new unique element extraction taskpool
+ * 
+ * This function creates and initializes a PaRSEC taskpool for extracting
+ * unique elements from a matrix. The taskpool will schedule tasks to
+ * process each tile in parallel and collect unique values.
+ * 
+ * @param [in] parsec:     PaRSEC context (unused but required for interface)
+ * @param [in] A:          The tiled matrix descriptor
+ * @param [in] params_tlr: TLR parameters including output storage for unique elements
+ * @param [in] array_set:  Thread-safe set data structure for collecting unique elements
+ * @return the parsec object to schedule
+ */
+parsec_taskpool_t*
+hicma_parsec_matrix_unique_element_New( parsec_context_t *parsec,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params_tlr,
+        void *array_set)
+{
+    // Create the taskpool with the specified parameters
+    parsec_matrix_unique_element_taskpool_t *matrix_unique_element = parsec_matrix_unique_element_new(A, params_tlr, array_set);
+    return (parsec_taskpool_t*)matrix_unique_element;
+}
+
+/**
+ * @brief Destroy the unique element extraction taskpool
+ * 
+ * @param [inout] taskpool: The PaRSEC taskpool to destroy
+ */
+void hicma_parsec_matrix_unique_element_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_matrix_unique_element_taskpool_t *matrix_unique_element_taskpool = (parsec_matrix_unique_element_taskpool_t *)taskpool;
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Extract unique elements from a matrix
+ * 
+ * This function finds all unique elements in a matrix by processing each tile
+ * in parallel and collecting unique values using thread-safe set operations.
+ * The results are merged across threads and processes to obtain the global
+ * set of unique elements.
+ * 
+ * @param [in] parsec:     PaRSEC context for task scheduling
+ * @param [in] A:          The tiled matrix descriptor
+ * @param [inout] params_tlr: TLR parameters (array_unique_elem and nb_unique_elem will be updated)
+ * @return 0 on success
+ */
+int hicma_parsec_matrix_unique_element( parsec_context_t *parsec,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params_tlr)
+{
+    parsec_taskpool_t *parsec_matrix_unique_element = NULL;
+    
+    /* Ensure single virtual process (simplified parallelization model) */
+    assert( parsec->nb_vp == 1 );
+    int nb_threads = parsec->virtual_processes[0]->nb_cores;
+    
+    // Create thread-safe set data structure
+    void* array_set = create_array_set(nb_threads);
+    if (array_set == NULL) {
+        fprintf(stderr, "Error: Failed to create array set for unique element extraction\n");
+        return -1;
+    }
+
+    // Create and execute the unique element extraction taskpool
+    parsec_matrix_unique_element = hicma_parsec_matrix_unique_element_New( parsec, A, params_tlr, array_set); 
+     
+    parsec_context_add_taskpool(parsec, parsec_matrix_unique_element);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+    hicma_parsec_matrix_unique_element_Destruct(parsec_matrix_unique_element);
+   
+    // Merge the sets within each process to get local unique elements
+    void* local_merged_set = merge_local_sets(array_set);
+    if (local_merged_set == NULL) {
+        fprintf(stderr, "Error: Failed to merge local sets for unique element extraction\n");
+        free_array_set(array_set);
+        return -1;
+    }
+
+    // Merge the sets across all processes to get global unique elements
+    params_tlr->array_unique_elem = merge_across_processes(local_merged_set, &params_tlr->nb_unique_elem);
+
+    // Clean up memory
+    free_array_set(array_set);
+    free_merged_set(local_merged_set);
+
+    // Debug output: print unique elements if verbose mode is enabled
+    if(0 == params_tlr->rank && params_tlr->verbose > 1) {
+        fprintf(stderr, "The unique elements:\n");
+        for(int i = 0; i < params_tlr->nb_unique_elem; i++)
+            fprintf(stderr, "%d  ", params_tlr->array_unique_elem[i]);
+        fprintf(stderr, "\n");
+    }
+
+    return 0; 
+}
+
+%}

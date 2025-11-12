@@ -1,0 +1,486 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+/**
+ * @file gemm_TN.jdf
+ * @brief JDF (Just Data Flow) implementation for General Matrix Multiply operation C = alpha * A^T * B + beta * C
+ * 
+ * This file implements a high-performance GEMM operation using PaRSEC runtime system.
+ * The operation computes: C = alpha * A^T * B + beta * C where:
+ * - A^T denotes the transpose of matrix A
+ * - B is used as-is (no transpose)
+ * - C is the result matrix
+ * 
+ * Key features:
+ * - Supports mixed precision computation (int8 input, int32 intermediate, float output)
+ * - GPU acceleration with CUDA/HIP support
+ * - Memory optimization with data type conversions
+ * - Triangular matrix support (only processes upper triangular part)
+ */
+
+#include "hicma_parsec.h"
+
+/* Define the different shapes this JDF is using */
+#define A_SHAPE 0  /**< Shape identifier for matrix A */
+#define B_SHAPE 1  /**< Shape identifier for matrix B */
+#define C_SHAPE 2  /**< Shape identifier for matrix C */
+
+#include "gemm_TN.h"
+
+
+/**
+ * @brief Debug function to print a tile of float values
+ * @param A Pointer to the tile data (column-major format)
+ * @param m Number of rows in the tile
+ * @param n Number of columns in the tile
+ */
+void parsec_print_tile(float *A, int m, int n){
+      printf("\n");
+    for(int i=0;i<m;i++){
+       for(int j=0;j<n;j++){
+       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
+          printf("%f, ", A[j*m+i]);
+       }
+       printf("\n");
+    }
+}
+
+/**
+ * @brief Debug function to print a tile of int8 values
+ * @param A Pointer to the tile data (column-major format)
+ * @param m Number of rows in the tile
+ * @param n Number of columns in the tile
+ */
+void parsec_print_tile_int8(int8_t *A, int m, int n){
+      printf("\n");
+    for(int i=0;i<m;i++){
+       for(int j=0;j<n;j++){
+       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
+          //printf("%, " PRId8, A[j*m+i]);
+          printf("%d ", A[j*m+i]);
+       }
+       printf("\n");
+    }
+}
+
+/**
+ * @brief Debug function to print a tile of int values
+ * @param A Pointer to the tile data (column-major format)
+ * @param m Number of rows in the tile
+ * @param n Number of columns in the tile
+ */
+void parsec_print_tile_int(int *A, int m, int n){
+      printf("\n");
+    for(int i=0;i<m;i++){
+       for(int j=0;j<n;j++){
+       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
+          //printf("%, " PRId8, A[j*m+i]);
+          printf("%d ", A[j*m+i]);
+       }
+       printf("\n");
+    }
+}
+
+
+/**
+ * @brief Hook function that always returns DONE (used for conditional execution)
+ * @param task The task being processed
+ * @return PARSEC_HOOK_RETURN_DONE
+ */
+static inline parsec_hook_return_t
+always_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_DONE;
+}
+
+/**
+ * @brief Hook function that always returns NEXT (used for conditional execution)
+ * @param task The task being processed
+ * @return PARSEC_HOOK_RETURN_NEXT
+ */
+static inline parsec_hook_return_t
+never_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_NEXT;
+}
+
+%}
+
+/*
+ * Global Parameters and Data Descriptors
+ * =====================================
+ */
+
+/* Keep this first, as in all jdf in this directory, to
+ * enable switching between GEMM implementations.
+ */
+gemm_type [ type = int hidden=on default="HICMA_GEMM_TN" ]  /**< GEMM implementation type identifier */
+
+transA [type = int]  /**< Transpose flag for matrix A (1=transpose, 0=no transpose) */
+transB [type = int]  /**< Transpose flag for matrix B (1=transpose, 0=no transpose) */
+
+alpha  [type = float]  /**< Scaling factor for the matrix product A^T * B */
+beta   [type = float]  /**< Scaling factor for the existing matrix C */
+
+descA     [type = "parsec_tiled_matrix_t*"]  /**< Descriptor for input matrix A */
+
+// descB should be the same as descA !!!!
+descB     [type = "parsec_tiled_matrix_t*"]  /**< Descriptor for input matrix B (should be same as descA) */
+
+descC     [type = "parsec_tiled_matrix_t*"]  /**< Descriptor for output matrix C */
+
+params_tlr   [ type = "hicma_parsec_params_t *" ]  /**< HiCMA PaRSEC parameters */
+
+/* GPU workspace */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]  /**< GPU workspace for CUDA/HIP operations */
+
+/*Workspace*/
+p_work_int       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]  /**< Memory pool for integer workspace */
+
+/* GPU number and index */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]  /**< Number of available CUDA devices */
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]  /**< Array of CUDA device indices */
+
+/** We need to keep the set of handle-globals the same between
+ *  gemm_*.jdf, to ensure that all handles can be destroyed
+ *  with a generic function. P and Q are unused here. */
+P      [type = "int" hidden=on default="-1"]  /**< Process grid rows (unused in this implementation) */
+Q      [type = "int" hidden=on default="-1"]  /**< Process grid columns (unused in this implementation) */
+
+/* Look ahead on both dimensions */
+lookP  [type = "int" hidden=on default="dplasma_aux_getGEMMLookahead(descC)"]  /**< Look-ahead depth for P dimension */
+lookQ  [type = "int" hidden=on default="dplasma_aux_getGEMMLookahead(descC)"]  /**< Look-ahead depth for Q dimension */
+
+/**************************************************
+ *               Define Arena                     *
+ * ===============================================
+ * Arena definition for the GEMM operation.
+ * This creates a virtual execution space for the computation.
+ **************************************************/
+my_arena(k)
+
+// Execution space - single iteration for arena initialization
+k = 0 .. 0
+
+// Parallel partitioning - maps to the first tile of matrix C
+:descC(0, 0)
+
+// Parameters - dummy reads for arena setup
+READ A1 <- NULL       [ type = FULL_SP ]   /**< Dummy read for single precision data */
+READ A2 <- NULL       [ type = FULL_I8 ]   /**< Dummy read for int8 data */
+READ A3 <- NULL       [ type = FULL_I32 ]  /**< Dummy read for int32 data */
+
+BODY
+{
+    //fprintf(stderr, "lookP %d loopQ %d\n", lookP, lookQ);
+}
+END
+
+/**************************************************
+ *                       READ_A                   *
+ * ===============================================
+ * Task for reading tiles from matrix A.
+ * This task reads a tile A(k,m) and distributes it to GEMM tasks.
+ * For triangular matrices, only the upper triangular part is processed.
+ **************************************************/
+READ_A(k, m)  [profile = off]
+
+// Execution space - iterate over all tiles in matrix A
+k = 0 .. descA->mt-1  /**< Row index in matrix A */
+m = 0 .. descA->nt-1  /**< Column index in matrix A */
+
+// Parallel partitioning - each task operates on one tile
+: descA(k, m)
+
+// Data flow - read tile and distribute to GEMM tasks
+READ A <- descA(k, m)
+       -> ((k!=descA->mt-1)) ? A GEMM(m, 0 .. m, k)  [ type_remote = FULL_I8 ]   /**< Send as int8 for intermediate iterations */
+       -> ((k==descA->mt-1)) ? A GEMM(m, 0 .. m, k)  [ type_remote = FULL_SP ]   /**< Send as float for final iteration */
+       -> ((k!=descB->mt-1)) ? B GEMM(m .. descC->mt-1, m, k)  [ type_remote = FULL_I8 ]   /**< Send B as int8 for intermediate iterations */
+       -> ((k==descB->mt-1)) ? B GEMM(m .. descC->mt-1, m, k)  [ type_remote = FULL_SP ]   /**< Send B as float for final iteration */
+
+// Control flow - look-ahead mechanism for better performance
+CTL ctla <- (k >= lookQ) ? ctla GEMM(m, 0 .. m, k-lookQ)   /**< Control signal for A data flow */
+CTL ctlb <- (k >= lookP) ? ctlb GEMM(m .. descC->mt-1, m, k-lookP)   /**< Control signal for B data flow */
+
+BODY
+{
+    printlog("rank %u <- A(%d,%d)\n", ((parsec_data_collection_t*)descA)->myrank, k, m);
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( nb_cuda_devices > 0 ) {
+        // GPU load balancing - assign tile to appropriate GPU
+        int g = gpu_load_balance_2d( k, m, params_tlr );
+        parsec_advise_data_on_device( _f_A->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+
+/**************************************************
+ *                       READ_C                   *
+ * ===============================================
+ * Task for reading tiles from matrix C.
+ * This task reads the initial values of matrix C tiles.
+ * For triangular matrices, only the upper triangular part is processed.
+ **************************************************/
+READ_C(m, n) [profile = off]
+
+// Execution space - iterate over upper triangular tiles of matrix C
+m = 0 .. descC->mt-1  /**< Row index in matrix C */
+n = 0 .. m            /**< Column index in matrix C (upper triangular: n <= m) */
+
+// Parallel partitioning - each task operates on one tile
+: descC(m, n)
+
+// Data flow - read tile and send to first GEMM task
+READ C <- descC(m, n)
+       -> C GEMM(m, n, 0)      [ type_remote = FULL_SP ]   /**< Send as single precision to first GEMM iteration */
+
+BODY
+{
+    printlog("rank %u <- C(%d,%d)\n", ((parsec_data_collection_t*)descC)->myrank, m, n);
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( nb_cuda_devices > 0 ) {
+        // GPU load balancing - assign tile to appropriate GPU
+        int g = gpu_load_balance_2d( m, n, params_tlr );
+        parsec_advise_data_on_device( _f_C->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+
+
+/**************************************************
+ *                       GEMM                     *
+ * ===============================================
+ * Main computation task for GEMM operation.
+ * Performs: C = alpha * A^T * B + beta * C
+ * 
+ * This task implements mixed-precision computation:
+ * - Input matrices A and B: int8 (for memory efficiency)
+ * - Intermediate computation: int32 (for accuracy)
+ * - Output matrix C: float (for final result)
+ * 
+ * The computation is performed in k iterations, where each iteration
+ * processes one panel of the matrices.
+ **************************************************/
+GEMM(m, n, k)
+
+// Execution space - iterate over all tiles in the computation
+m = 0 .. descC->mt-1  /**< Row index in result matrix C */
+n = 0 .. m            /**< Column index in result matrix C (upper triangular: n <= m) */
+k = 0 .. descA->mt-1  /**< Panel index for the k-loop (outer product iteration) */
+
+// Parallel partitioning - each task operates on one tile of matrix C
+: descC(m, n)
+
+// Parameters - data dependencies and flow
+READ A <- ((k!=descA->mt-1)) ? A READ_A(k, m)         [ type_remote = FULL_I8 ]   /**< Read A as int8 for intermediate iterations */
+       <- ((k==descA->mt-1)) ? A READ_A(k, m)         [ type_remote = FULL_SP ]   /**< Read A as float for final iteration */
+
+READ B <- ((k!=descA->mt-1)) ? A READ_A(k, n)         [ type_remote = FULL_I8 ]   /**< Read B as int8 for intermediate iterations */
+       <- ((k==descA->mt-1)) ? A READ_A(k, n)         [ type_remote = FULL_SP ]   /**< Read B as float for final iteration */
+
+RW   C <- (k == 0)             ? C READ_C(m, n)       [ type_remote = FULL_SP ]   /**< Read initial C as float */
+       <- (k != 0)             ? C GEMM( m, n, k-1 )  [ type_remote = FULL_I32 ]  /**< Read C from previous iteration as int32 */
+       -> (k == (descA->mt-1)) ? descC(m, n)          /**< Write final result back to matrix C */
+       -> (k != (descA->mt-1)) ? C GEMM( m, n, k+1 )  [ type_remote = FULL_I32 ]  /**< Pass C to next iteration as int32 */
+
+// Control flow - look-ahead mechanism for better performance
+CTL ctla -> (k < (descA->mt-lookQ)) ? ctla READ_A(k+lookQ, m)   /**< Control signal for A data prefetching */
+CTL ctlb -> (k < (descA->mt-lookP)) ? ctlb READ_A(k+lookP, n)   /**< Control signal for B data prefetching */
+
+BODY [type=CUDA]
+{
+    // Skip computation for lower triangular part (only process upper triangular)
+    if (m < n) {
+        return PARSEC_HOOK_RETURN_DONE;
+        printf("m: %d n: %d\n", m, n);
+    }
+
+    // Print progress for the first tile (m=0, n=0)
+    if(0 == m && 0 == n) hicma_parsec_print_process_syrk(descA->mt, k, params_tlr->start_time_syrk);
+    
+    // Set up scaling factors
+    float lalpha = alpha;                    /**< Scaling factor for A^T * B */
+    float lbeta  = (k == 0) ? beta : 1.0;   /**< Scaling factor for C (beta only on first iteration) */
+
+    // Calculate actual tile dimensions (handle edge cases)
+    int tempmm = m == descC->mt-1 ? descC->m - m * descC->mb : descC->mb;  /**< Actual rows in C tile */
+    int tempnn = n == descC->nt-1 ? descC->n - n * descC->nb : descC->nb;  /**< Actual columns in C tile */
+    int tempkk = k == descA->mt-1 ? descA->m - k * descA->mb : descA->mb;  /**< Actual columns in A tile */
+    int ldak = descA->mb;   /**< Leading dimension of A tile */
+    int ldbk = descB->mb;   /**< Leading dimension of B tile */
+    int ldcm = descC->mb;   /**< Leading dimension of C tile */
+
+    // Get CUDA BLAS handle and set stream
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+    cublasStatus_t status;
+
+    // Convert scaling factors to integer for mixed-precision computation
+    int ialpha=(int)lalpha;
+    int ibeta=(int)lbeta;
+#if 1
+    // Convert C from float to int32 on first iteration
+    if(k == 0) float_2int_array_unary(tempmm, tempnn, C, ldcm, cuda_stream->cuda_stream);
+    
+    if (k != descA->mt-1) {
+        // Intermediate iterations: use mixed precision (int8 -> int32)
+        status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                tempmm, tempnn, tempkk,
+                &ialpha, A, CUDA_R_8I, ldak,      /**< A as int8 */
+                B, CUDA_R_8I, ldbk,               /**< B as int8 */
+                &ibeta, C, CUDA_R_32I, ldcm,      /**< C as int32 */
+                CUDA_R_32I, CUBLAS_GEMM_DEFAULT); 
+        //printf("\n k:%d %s %d\n", k,  __FILE__, __LINE__);                    
+    } else {
+        // Final iteration: convert back to float and use single precision
+        // parsec_print_tile(A, tempmm, tempmm);
+        int_2float_array_unary(tempmm, tempnn, C, ldcm, cuda_stream->cuda_stream);
+        status = cublasSgemm( handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                tempmm, tempnn, tempkk,
+                &lalpha, A, ldak,                 /**< A as float */
+                B, ldbk,                          /**< B as float */
+                &lbeta,  C, ldcm );               /**< C as float */
+    }
+#endif
+
+}
+END
+
+
+BODY [type=HIP]
+{
+    // Skip computation for lower triangular part (only process upper triangular)
+    if (m < n) {
+        return PARSEC_HOOK_RETURN_DONE;
+        printf("m: %d n: %d\n", m, n);
+    }
+
+    // Print progress for the first tile (m=0, n=0)
+    if(0 == m && 0 == n) hicma_parsec_print_process_syrk(descA->mt, k, params_tlr->start_time_syrk);
+    
+    // Set up scaling factors
+    float lalpha = alpha;                    /**< Scaling factor for A^T * B */
+    float lbeta  = (k == 0) ? beta : 1.0;   /**< Scaling factor for C (beta only on first iteration) */
+
+    // Calculate actual tile dimensions (handle edge cases)
+    int tempmm = m == descC->mt-1 ? descC->m - m * descC->mb : descC->mb;  /**< Actual rows in C tile */
+    int tempnn = n == descC->nt-1 ? descC->n - n * descC->nb : descC->nb;  /**< Actual columns in C tile */
+    int tempkk = k == descA->mt-1 ? descA->m - k * descA->mb : descA->mb;  /**< Actual columns in A tile */
+    int ldak = descA->mb;   /**< Leading dimension of A tile */
+    int ldbk = descB->mb;   /**< Leading dimension of B tile */
+    int ldcm = descC->mb;   /**< Leading dimension of C tile */
+
+    // Get HIP BLAS handle and set stream (reusing CUDA infrastructure)
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+    cublasStatus_t status;
+
+    // Convert scaling factors to integer for mixed-precision computation
+    int ialpha=(int)lalpha;
+    int ibeta=(int)lbeta;
+#if 1
+    // Convert C from float to int32 on first iteration
+    if(k == 0) float_2int_array_unary(tempmm, tempnn, C, ldcm, cuda_stream->cuda_stream);
+    
+    if (k != descA->mt-1) {
+        // Intermediate iterations: use mixed precision (int8 -> int32)
+        status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                tempmm, tempnn, tempkk,
+                &ialpha, A, CUDA_R_8I, ldak,      /**< A as int8 */
+                B, CUDA_R_8I, ldbk,               /**< B as int8 */
+                &ibeta, C, CUDA_R_32I, ldcm,      /**< C as int32 */
+                CUDA_R_32I, CUBLAS_GEMM_DEFAULT); 
+        //printf("\n k:%d %s %d\n", k,  __FILE__, __LINE__);                    
+    } else {
+        // Final iteration: convert back to float and use single precision
+        // parsec_print_tile(A, tempmm, tempmm);
+        int_2float_array_unary(tempmm, tempnn, C, ldcm, cuda_stream->cuda_stream);
+        status = cublasSgemm( handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                tempmm, tempnn, tempkk,
+                &lalpha, A, ldak,                 /**< A as float */
+                B, ldbk,                          /**< B as float */
+                &lbeta,  C, ldcm );               /**< C as float */
+    }
+#endif
+
+}
+END
+
+
+
+/*
+ * ===============================================
+ * CPU Implementation (commented out)
+ * This is the CPU version of the GEMM computation.
+ * It uses Intel MKL's cblas_gemm_s8u8s32 for mixed-precision
+ * computation and CORE_sgemm for single-precision computation.
+ * ===============================================
+ *
+ * BODY
+ * {
+ *     // Skip computation for lower triangular part (only process upper triangular)
+ *     if (m < n) {
+ *         return PARSEC_HOOK_RETURN_DONE;
+ *         printf("m: %d n: %d\n", m, n);
+ *     }
+ *
+ *     // Print progress for the first tile (m=0, n=0)
+ *     if(0 == m && 0 == n) hicma_parsec_print_process_syrk(descA->mt, k, params_tlr->start_time_syrk);
+ *     
+ *     // Set up scaling factors
+ *     float lalpha = alpha;                    // Scaling factor for A^T * B
+ *     float lbeta  = (k == 0) ? beta : 1.0;   // Scaling factor for C (beta only on first iteration)
+ *
+ *     // Calculate actual tile dimensions (handle edge cases)
+ *     int tempmm = m == descC->mt-1 ? descC->m - m * descC->mb : descC->mb;  // Actual rows in C tile
+ *     int tempnn = n == descC->nt-1 ? descC->n - n * descC->nb : descC->nb;  // Actual columns in C tile
+ *     int tempkk = k == descA->mt-1 ? descA->m - k * descA->mb : descA->mb;  // Actual columns in A tile
+ *     int ldak = descA->mb;   // Leading dimension of A tile
+ *     int ldbk = descB->mb;   // Leading dimension of B tile
+ *     int ldcm = descC->mb;   // Leading dimension of C tile
+ *     int co=0;               // Offset for Intel MKL mixed-precision GEMM
+ *
+ *     // Convert C from float to int32 on first iteration
+ *     if(k==0) convert_s2i_unary_CPU(C, tempmm, tempnn, ldcm);
+ *     
+ *     if (k != descA->mt-1) {
+ *         // Intermediate iterations: use Intel MKL mixed precision (int8 -> int32)
+ *         cblas_gemm_s8u8s32(CblasColMajor, transA, CblasNoTrans, CblasFixOffset,
+ *             tempmm, tempnn, tempkk, lalpha, (int8_t*)A, ldak, 0,    // A as int8
+ *             (int8_t*) B, ldbk, 0, lbeta, (int *)C, ldcm, &co);      // B as int8, C as int32
+ *
+ *     } else{
+ *         // Final iteration: convert back to float and use single precision
+ *         convert_i2s_unary_CPU(C, tempmm, tempnn, ldcm);
+ *         CORE_sgemm(transA, dplasmaNoTrans, tempmm,
+ *             tempnn, tempkk, lalpha,
+ *             A, ldak, B,      // A and B as float
+ *             ldbk, lbeta, C, ldcm );  // C as float
+ *         
+ *     }
+ *
+ * }
+ * END
+ */

@@ -1,0 +1,257 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2023-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2023-2025     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "climate_emulator.h"
+
+/**
+ * @brief Read double precision data from a CSV file and convert to complex matrix
+ * 
+ * This function reads real double values from a CSV file and converts them to complex numbers
+ * by setting the imaginary part to zero. It supports both CPU (complex double) and 
+ * GPU (cuDoubleComplex) data types. The real values are expected to be comma-separated.
+ * 
+ * @param filename Path to the CSV file to read
+ * @param _data Pointer to the destination matrix data array (void* for type flexibility)
+ * @param M Number of rows in the matrix
+ * @param N Number of columns in the matrix
+ * @param nb_gpus Number of GPUs (0 for CPU-only mode)
+ * @return 0 on success, -1 on file open failure, 1 on read error
+ */
+static int read_csv_double2complex_core(const char* filename, void *_data, int M, int N, int nb_gpus) {
+    // Open the CSV file for reading
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        printf("File opening failed: %s", filename);
+        return -1;
+    }
+
+    int status = 0;
+    double real;
+    
+    // CPU mode: read real values and convert to complex double array
+    if( 0 == nb_gpus ) {
+        complex double *data = (complex double *)_data;
+        
+        // Read data row by row, column by column
+        for (int i = 0; i < M; i++) {
+            for (int j = 0; j < N; j++) {
+                // Read real double value followed by comma
+                // fscanf automatically handles the comma separator
+                status = fscanf(fp, "%lf,", &real);
+                
+                // Convert real value to complex number (imaginary part = 0)
+                data[j*M+i] = (complex double)real;
+                
+#if DEBUG_INFO_CLIMATE_EMULATOR 
+                // Check for read errors in debug mode
+                if (status != 1) {
+                    fprintf(stderr, "Error reading file at row %d, column %d\n", i, j);
+                    fclose(fp);
+                    return 1;
+                }
+#endif
+            }
+        }
+
+#if DEBUG_INFO_CLIMATE_EMULATOR
+        // Print a subset of the loaded data for debugging
+        climate_emulator_print_matrix_col_complex(data, 10, 10, M);
+#endif
+
+    } else {
+        // GPU mode: read real values and convert to cuDoubleComplex array
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        cuDoubleComplex *data = (cuDoubleComplex *)_data;
+        
+        // Read data row by row, column by column
+        for (int i = 0; i < M; i++) {
+            for (int j = 0; j < N; j++) {
+                // Read real double value followed by comma
+                status = fscanf(fp, "%lf,", &real);
+                
+                // Convert real value to CUDA complex format (imaginary part = 0)
+                data[j*M+i] = make_cuDoubleComplex(real, 0);
+                
+#if DEBUG_INFO_CLIMATE_EMULATOR
+                // Check for read errors in debug mode
+                if (status != 1) {
+                    fprintf(stderr, "Error reading file at row %d, column %d\n", i, j);
+                    fclose(fp);
+                    return 1;
+                }
+#endif
+            }
+        }
+#endif
+    }
+
+    // Close the file
+    fclose(fp);
+
+    return 0;
+}
+
+%}
+
+/* Matrix descriptor for the destination complex matrix */
+descA         [ type = "parsec_tiled_matrix_t*" ]
+/* Filename to read data from */
+filename      [ type = "char *" ]
+/* Number of GPUs (0 for CPU-only mode) */
+nb_gpus       [ type = "int" ]
+
+/* Task definition for reading double CSV data and converting to complex matrix tiles
+ * Each task processes one tile (m, n) of the matrix
+ */
+task(m, n)
+
+m = 0 .. descA->lmt-1
+n = 0 .. descA->lnt-1 
+
+: descA(m, n)
+
+RW A <- descA(m, n) 
+     -> descA(m, n) 
+
+BODY
+{
+    // Read double CSV data and convert to complex numbers in the current tile
+    read_csv_double2complex_core(filename, A, descA->mb, descA->nb, nb_gpus);
+    
+    // Placeholder for potential sum operation (currently disabled)
+    if(0 && 0 == nb_gpus) climate_emulator_sum_complex_core(A, descA->mb, descA->nb);
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create and initialize a new PaRSEC taskpool for double-to-complex CSV reading
+ * 
+ * This function sets up the taskpool with matrix descriptor and filename,
+ * initializes the matrix with proper dimensions for complex data, and configures
+ * the arena for complex double precision data types.
+ * 
+ * @param parsec PaRSEC context
+ * @param filename Path to the CSV file to read
+ * @param desc Matrix descriptor to initialize
+ * @param MB Block size for rows
+ * @param NB Block size for columns
+ * @param params HICMA parameters
+ * @return Pointer to the initialized taskpool
+ */
+parsec_taskpool_t*
+climate_emulator_read_csv_double2complex_New(parsec_context_t *parsec,
+        char *filename,
+        parsec_matrix_block_cyclic_t *desc,
+        int MB,
+        int NB,
+        hicma_parsec_params_t *params)
+{
+    // Initialize the matrix descriptor with block-cyclic distribution for complex data
+    parsec_matrix_block_cyclic_init(desc, PARSEC_MATRIX_COMPLEX_DOUBLE, PARSEC_MATRIX_TILE,
+            params->rank, MB, NB, MB, NB*params->nodes, 0, 0,
+            MB, NB*params->nodes, 1, params->nodes,
+            1, 1, 0, 0);
+    
+    // Allocate memory for the complex matrix data
+    desc->mat = parsec_data_allocate((size_t)desc->super.nb_local_tiles *
+                                   (size_t)desc->super.bsiz *
+                                   (size_t)parsec_datadist_getsizeoftype(desc->super.mtype));
+
+    // Handle case where filename is NULL
+    if(NULL == filename) {
+        parsec_data_collection_set_key((parsec_data_collection_t*)desc, "desc");
+        VERBOSE_PRINT(params->rank, params->verbose, ("filename is NULL\n"));
+        return NULL;
+    }
+    
+    // Set the filename as the key for the data collection
+    parsec_data_collection_set_key((parsec_data_collection_t*)desc, filename);
+
+    // Create the double-to-complex CSV reading taskpool with GPU information
+    parsec_climate_emulator_read_csv_double2complex_taskpool_t *taskpool = parsec_climate_emulator_read_csv_double2complex_new(&desc->super, filename, params->gpus);
+
+    // Configure the arena for complex double precision data types
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_climate_emulator_read_csv_double2complex_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_complex_t, PARSEC_MATRIX_FULL,
+                            1, MB, NB, MB,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)taskpool;
+}
+
+/**
+ * @brief Clean up and destroy the PaRSEC double-to-complex CSV reading taskpool
+ * 
+ * This function properly deallocates the arena and the taskpool itself
+ * to prevent memory leaks.
+ * 
+ * @param taskpool Pointer to the taskpool to destroy
+ */
+void climate_emulator_read_csv_double2complex_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_climate_emulator_read_csv_double2complex_taskpool_t *climate_emulator_read_csv_double2complex_taskpool = (parsec_climate_emulator_read_csv_double2complex_taskpool_t *)taskpool;
+    
+    // Remove the arena for complex double precision data types
+    parsec_del2arena(&climate_emulator_read_csv_double2complex_taskpool->arenas_datatypes[PARSEC_climate_emulator_read_csv_double2complex_DEFAULT_ADT_IDX]);
+    
+    // Free the taskpool itself
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Main function to execute double-to-complex CSV reading operation
+ * 
+ * This function orchestrates the entire double-to-complex CSV reading process:
+ * 1. Creates and configures the double-to-complex CSV reading taskpool
+ * 2. Executes the reading operations in parallel across all tiles
+ * 3. Waits for completion and cleans up resources
+ * 
+ * @param parsec PaRSEC context
+ * @param filename Path to the CSV file to read
+ * @param desc Matrix descriptor for the destination matrix
+ * @param MB Block size for rows
+ * @param NB Block size for columns
+ * @param params HICMA parameters
+ * @return 0 on success
+ */
+int climate_emulator_read_csv_double2complex(parsec_context_t *parsec,
+        char *filename,
+        parsec_matrix_block_cyclic_t *desc,  
+        int MB,
+        int NB,
+        hicma_parsec_params_t *params)
+{
+    // Log the reading operation
+    VERBOSE_PRINT(params->rank, params->verbose, ("Reading %s\n", filename));
+    
+    // Create the double-to-complex CSV reading taskpool
+    parsec_taskpool_t *parsec_climate_emulator_read_csv_double2complex = NULL;
+    parsec_climate_emulator_read_csv_double2complex = climate_emulator_read_csv_double2complex_New( parsec, filename, desc, MB, NB, params);
+    
+    if( parsec_climate_emulator_read_csv_double2complex != NULL ){
+        // Add the taskpool to the PaRSEC context
+        parsec_context_add_taskpool(parsec, parsec_climate_emulator_read_csv_double2complex);
+        
+        // Start execution of all reading tasks
+        parsec_context_start(parsec);
+        
+        // Wait for all tasks to complete
+        parsec_context_wait(parsec);
+        
+        // Clean up the taskpool
+        climate_emulator_read_csv_double2complex_Destruct(parsec_climate_emulator_read_csv_double2complex);
+    }
+
+    return 0;
+}
+
+%}

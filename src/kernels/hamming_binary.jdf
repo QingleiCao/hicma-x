@@ -1,0 +1,510 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+/**
+ * @file hamming_binary.jdf
+ * @brief Hamming Distance Computation using Binary Matrix Operations
+ * 
+ * This JDF (Just Data Flow) file implements efficient Hamming distance computation
+ * between binary matrices using GPU-accelerated matrix operations. The implementation
+ * computes the Hamming distance matrix C = A^T * B where A and B are binary matrices
+ * and the result C contains the pairwise Hamming distances.
+ * 
+ * Key Features:
+ * - GPU acceleration using CUDA/HIP
+ * - Support for both CUDA and HIP backends
+ * - Optimized memory management with workspace buffers
+ * - Lookahead optimization for improved performance
+ * - Integration with PaRSEC runtime for distributed execution
+ */
+
+#define TEST_CPU 0
+
+#if TEST_CPU
+#define CBLAS_H
+#include "mkl_cblas.h"
+#endif
+
+#include "hicma_parsec.h"
+
+/* Define the different shapes this JDF is using */
+#define A_SHAPE 0
+#define B_SHAPE 1
+#define C_SHAPE 2
+
+#include "hamming_binary.h"
+
+/**
+ * @brief Debug function to print a float matrix tile
+ * @param A Pointer to the matrix data (column-major format)
+ * @param m Number of rows
+ * @param n Number of columns
+ */
+void parsec_print_tile4(float *A, int m, int n){
+      printf("\n");
+    for(int i=0;i<m;i++){
+       for(int j=0;j<n;j++){
+       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
+          printf("%f, ", A[j*m+i]);
+       }
+       printf("\n");
+    }
+}
+
+/**
+ * @brief Debug function to print an int8_t matrix tile
+ * @param A Pointer to the matrix data (column-major format)
+ * @param m Number of rows
+ * @param n Number of columns
+ */
+void parsec_print_tile2_int8(int8_t *A, int m, int n){
+      printf("\n");
+    for(int i=0;i<m;i++){
+       for(int j=0;j<n;j++){
+       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
+          //printf("%, " PRId8, A[j*m+i]);
+          printf("%d ", A[j*m+i]);
+       }
+       printf("\n");
+    }
+}
+
+/**
+ * @brief Debug function to print an int matrix tile
+ * @param A Pointer to the matrix data (column-major format)
+ * @param m Number of rows
+ * @param n Number of columns
+ */
+void parsec_print_tile2_int(int *A, int m, int n){
+      printf("\n");
+    for(int i=0;i<m;i++){
+       for(int j=0;j<n;j++){
+       //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
+          //printf("%, " PRId8, A[j*m+i]);
+          printf("%d ", A[j*m+i]);
+       }
+       printf("\n");
+    }
+}
+
+/**
+ * @brief Hook function that always returns DONE (used for task evaluation)
+ * @param task The task being evaluated
+ * @return PARSEC_HOOK_RETURN_DONE
+ */
+static inline parsec_hook_return_t
+always_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_DONE;
+}
+
+/**
+ * @brief Hook function that always returns NEXT (used for task evaluation)
+ * @param task The task being evaluated
+ * @return PARSEC_HOOK_RETURN_NEXT
+ */
+static inline parsec_hook_return_t
+never_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_NEXT;
+}
+
+
+
+%}
+
+/*
+ * Global Parameters for Hamming Distance Computation
+ */
+
+/* Keep this first, as in all jdf in this directory, to
+ * enable switching between GEMM implementations.
+ */
+//msyrk_type [ type = int hidden=on default="HICMA_GEMM_TN" ]
+
+/** @brief Transpose flag for matrix A (dplasmaTrans or dplasmaNoTrans) */
+transA [type = int]
+
+/** @brief Transpose flag for matrix B (dplasmaTrans or dplasmaNoTrans) */
+transB [type = int]
+
+/** @brief Scaling factor alpha for the matrix multiplication */
+alpha  [type = float]
+
+/** @brief Scaling factor beta for the accumulation */
+beta   [type = float]
+
+/** @brief Descriptor for input matrix A (binary data) */
+descA     [type = "const parsec_tiled_matrix_t*"]
+
+/** @brief Descriptor for input matrix B (should be the same as descA for Hamming distance) */
+descB     [type = "const parsec_tiled_matrix_t*"]
+
+/** @brief Descriptor for output matrix C (Hamming distance results) */
+descC     [type = "const parsec_tiled_matrix_t*"]
+
+/** @brief HICMA PaRSEC parameters including algorithm settings */
+params_tlr   [ type = "hicma_parsec_params_t *" ]
+
+/** @brief GPU workspace for CUDA/HIP operations */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]
+
+/** @brief Memory pool for temporary int8_t workspace A */
+p_work_intA       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ] 
+
+/** @brief Memory pool for temporary int8_t workspace B */
+p_work_intB       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ] 
+
+/** @brief Number of available CUDA/HIP devices */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]
+
+/** @brief Array of CUDA/HIP device indices */
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]
+
+/** We need to keep the set of handle-globals the same between
+ *  gemm_*.jdf, to ensure that all handles can be destroyed
+ *  with a generic function. P and Q are unused here. */
+P      [type = "int" hidden=on default="-1"]
+Q      [type = "int" hidden=on default="-1"]
+
+/** @brief Lookahead parameter for dimension P (optimization) */
+lookP  [type = "int" hidden=on default="dplasma_aux_getGEMMLookahead(descC)"]
+
+/** @brief Lookahead parameter for dimension Q (optimization) */
+lookQ  [type = "int" hidden=on default="dplasma_aux_getGEMMLookahead(descC)"]
+
+/**************************************************
+ *               Define Arena                     *
+ **************************************************/
+/**
+ * @brief Arena definition for memory management
+ * This arena is used for managing temporary data structures
+ * and workspace allocations for the Hamming distance computation.
+ */
+my_arena(k)
+
+// Execution space
+k = 0 .. 0
+
+// Parallel partitioning
+:descC(0, 0)
+
+// Parameters
+READ A1 <- NULL       [ type = FULL_SP ]
+READ A2 <- NULL       [ type = FULL_I8 ]
+READ A3 <- NULL       [ type = FULL_I32 ]
+
+BODY
+{
+    //fprintf(stderr, "lookP %d loopQ %d\n", lookP, lookQ);
+}
+END
+
+/**************************************************
+ *                       READ_A                   *
+ **************************************************/
+/**
+ * @brief Task to read matrix A tiles for Hamming distance computation
+ * 
+ * This task reads tiles from matrix A (binary input data) and distributes
+ * them to the appropriate GEMM tasks. It also handles GPU memory placement
+ * optimization by advising data placement on preferred devices.
+ * 
+ * @param k Row tile index in matrix A
+ * @param m Column tile index in matrix A
+ */
+READ_A(k, m)  [profile = off]
+
+k = 0 .. descA->mt-1
+m = 0 .. descA->nt-1
+
+: descA(k, m)
+
+READ A <- descA(k, m)
+       -> A GEMM(m, 0 .. m, k)            [ type_remote = FULL_I8 ] 
+       -> B GEMM(m .. descC->mt-1, m, k)  [ type_remote = FULL_I8 ]
+
+CTL ctla <- (k >= lookQ) ? ctla GEMM(m, 0 .. m, k-lookQ)
+CTL ctlb <- (k >= lookP) ? ctlb GEMM(m .. descC->mt-1, m, k-lookP)
+
+BODY
+{
+    printlog("rank %u <- A(%d,%d)\n", ((parsec_data_collection_t*)descA)->myrank, k, m);
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( nb_cuda_devices > 0 ) {
+        int g = gpu_load_balance_2d( k, m, params_tlr );
+        parsec_advise_data_on_device( _f_A->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+
+/**************************************************
+ *                       READ_C                   *
+ **************************************************/
+/**
+ * @brief Task to read matrix C tiles for Hamming distance results
+ * 
+ * This task reads tiles from matrix C (output matrix for Hamming distances)
+ * and prepares them for accumulation in the GEMM tasks. It handles GPU
+ * memory placement optimization for the result matrix.
+ * 
+ * @param m Row tile index in matrix C
+ * @param n Column tile index in matrix C (only upper triangular part)
+ */
+READ_C(m, n) [profile = off]
+
+m = 0 .. descC->mt-1
+n = 0 .. m 
+
+: descC(m, n)
+
+READ C <- descC(m, n)
+       -> C GEMM(m, n, 0)      [ type_remote = FULL_I32 ]
+
+BODY
+{
+    printlog("rank %u <- C(%d,%d)\n", ((parsec_data_collection_t*)descC)->myrank, m, n);
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( nb_cuda_devices > 0 ) {
+        int g = gpu_load_balance_2d( m, n, params_tlr );
+        parsec_advise_data_on_device( _f_C->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+/**************************************************
+ *                       GEMM                     *
+ **************************************************/
+/**
+ * @brief Main GEMM task for Hamming distance computation
+ * 
+ * This is the core computational task that performs the Hamming distance
+ * calculation between binary matrices. It computes C += alpha * A^T * B + beta * C
+ * where A and B are binary matrices and C accumulates the Hamming distances.
+ * 
+ * The computation is optimized for GPU execution using CUDA/HIP backends
+ * with specialized kernels for binary data processing.
+ * 
+ * @param m Row tile index in result matrix C
+ * @param n Column tile index in result matrix C (upper triangular)
+ * @param k Reduction dimension index (iterates over A's rows)
+ */
+GEMM(m, n, k)
+
+// Execution space
+m = 0 .. descC->mt-1
+n = 0 .. m 
+k = 0 .. descA->mt-1
+
+// Parallel partitioning
+: descC(m, n)
+
+// Parameters
+READ A <-  A READ_A(k, m)         [ type_remote = FULL_I8 ] 
+
+READ B <-  A READ_A(k, n)         [ type_remote = FULL_I8 ]
+
+RW   C <- (k == 0)             ? C READ_C(m, n)           [ type_remote = FULL_I32 ]  
+       <- (k != 0)             ? C GEMM( m, n, k-1 )      [ type_remote = FULL_I32 ]
+       -> (k == (descA->mt-1))? descC(m, n)
+       -> (k != (descA->mt-1)) ? C GEMM( m, n, k+1 )      [ type_remote = FULL_I32 ]
+
+CTL ctla -> (k < (descA->mt-lookQ)) ? ctla READ_A(k+lookQ, m)
+CTL ctlb -> (k < (descA->mt-lookP)) ? ctlb READ_A(k+lookP, n)
+
+BODY [type=CUDA]
+{
+    // Print progress for the first tile to track computation progress
+    if(0 == m && 0 == n) hicma_parsec_print_process_syrk(descA->mt, k, params_tlr->start_time_gemm);
+    
+    // Convert scaling factors to int32_t for integer GEMM operations
+    int32_t lalpha = (int32_t)alpha;
+    int32_t lbeta  = (int32_t)beta;
+    //int lbeta  = (k == 0) ? beta : 1;
+
+    // Calculate actual tile dimensions (handle edge cases for last tiles)
+    int tempmm = m == descC->mt-1 ? descC->m - m * descC->mb : descC->mb;
+    int tempnn = n == descC->nt-1 ? descC->n - n * descC->nb : descC->nb;
+    int tempkk = k == descA->mt-1 ? descA->m - k * descA->mb : descA->mb;
+    int ldak = descA->mb;  // Leading dimension of A
+    int ldbk = descB->mb;  // Leading dimension of B
+    int ldcm = descC->mb;  // Leading dimension of C
+
+    // Get CUDA workspace and cuBLAS handle for GPU operations
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+    cublasStatus_t status;
+
+    // Get current unique element value for Hamming distance computation
+    int current_value = params_tlr->array_unique_elem[params_tlr->current_hamming_id];
+    void *A_use = stream_found->gpu_buffer_A;  // GPU workspace for matrix A
+    void *B_use = stream_found->gpu_buffer_B;  // GPU workspace for matrix B
+
+#if defined(ENABLE_CUTLASS)
+    // Use CUTLASS optimized tensor GEMM for binary operations
+    bitmask_tensergemm_GPU( A, A_use,  B_use, C, tempmm, tempkk, current_value, cuda_stream->cuda_stream);
+#else
+    // Preprocess matrix A: subtract ones for Hamming distance computation
+    hicma_parsec_hamming_subtract_ones_GPU(tempkk, tempmm, A_use, A, ldak, current_value, cuda_stream->cuda_stream);
+    
+    // Preprocess matrix B: get identity matrix for Hamming distance computation
+    hicma_parsec_hamming_get_id_matrix_GPU(tempkk, tempnn, B_use, B, ldak, current_value, cuda_stream->cuda_stream);
+
+    // Perform the core GEMM operation: C = alpha * A^T * B + beta * C
+    // This computes the Hamming distance between binary vectors
+    status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                                   tempmm, tempnn, tempkk,
+                                   &lalpha, A_use, CUDA_R_8I, ldak,
+                                            B_use, CUDA_R_8I, ldbk,
+                                   &lbeta, C, CUDA_R_32I, ldcm,
+                                            CUDA_R_32I, CUBLAS_GEMM_DEFAULT); 
+#endif
+
+#if 0
+    // Debug output (disabled in production)
+    printf("current_value: %d lalpha: %d lbeta: %d\n", current_value, lalpha, lbeta);
+    matrix_print_int8_GPU(descA->mb, descA->nb, A_use, cuda_stream->cuda_stream);
+    
+    printf("temp %d %d %d %d %d %d\n", tempmm, tempnn, tempkk, ldak, ldbk, ldcm);
+    matrix_print_int8_GPU(descB->mb, descB->nb, B_use, cuda_stream->cuda_stream);
+
+    matrix_print_int32_GPU(descC->mb, descC->nb, C, cuda_stream->cuda_stream);
+#endif
+}
+END
+
+
+BODY [type=HIP]
+{
+    // Print progress for the first tile to track computation progress
+    if(0 == m && 0 == n) hicma_parsec_print_process_syrk(descA->mt, k, params_tlr->start_time_gemm);
+    
+    // Convert scaling factors to int32_t for integer GEMM operations
+    int32_t lalpha = (int32_t)alpha;
+    int32_t lbeta  = (int32_t)beta;
+    //int lbeta  = (k == 0) ? beta : 1;
+
+    // Calculate actual tile dimensions (handle edge cases for last tiles)
+    int tempmm = m == descC->mt-1 ? descC->m - m * descC->mb : descC->mb;
+    int tempnn = n == descC->nt-1 ? descC->n - n * descC->nb : descC->nb;
+    int tempkk = k == descA->mt-1 ? descA->m - k * descA->mb : descA->mb;
+    int ldak = descA->mb;  // Leading dimension of A
+    int ldbk = descB->mb;  // Leading dimension of B
+    int ldcm = descC->mb;  // Leading dimension of C
+
+    // Get HIP workspace and rocBLAS handle for GPU operations
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+    cublasStatus_t status;
+
+    // Get current unique element value for Hamming distance computation
+    int current_value = params_tlr->array_unique_elem[params_tlr->current_hamming_id];
+    void *A_use = (int8_t *)stream_found->gpu_buffer_A;  // GPU workspace for matrix A
+    void *B_use = (int8_t *)stream_found->gpu_buffer_B;  // GPU workspace for matrix B
+    
+    // Preprocess matrix A: subtract ones for Hamming distance computation
+    hicma_parsec_hamming_subtract_ones_GPU(tempkk, tempmm, A_use, A, ldak, current_value, cuda_stream->cuda_stream);
+    
+    // Preprocess matrix B: get identity matrix for Hamming distance computation
+    hicma_parsec_hamming_get_id_matrix_GPU(tempkk, tempnn, B_use, B, ldak, current_value, cuda_stream->cuda_stream);
+
+    // Perform the core GEMM operation: C = alpha * A^T * B + beta * C
+    // This computes the Hamming distance between binary vectors using HIP/rocBLAS
+    status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                                   tempmm, tempnn, tempkk,
+                                   &lalpha, A_use, CUDA_R_8I, ldak,
+                                            B_use, CUDA_R_8I, ldbk,
+                                   &lbeta, C, CUDA_R_32I, ldcm,
+                                            CUDA_R_32I, CUBLAS_GEMM_DEFAULT);
+
+#if 0
+    // Debug output (disabled in production)
+    printf("current_value: %d lalpha: %d lbeta: %d\n", current_value, lalpha, lbeta);
+    matrix_print_int8_GPU(descA->mb, descA->nb, A_use, cuda_stream->cuda_stream);
+
+    printf("temp %d %d %d %d %d %d\n", tempmm, tempnn, tempkk, ldak, ldbk, ldcm);
+    matrix_print_int8_GPU(descB->mb, descB->nb, B_use, cuda_stream->cuda_stream);
+
+    matrix_print_int32_GPU(descC->mb, descC->nb, C, cuda_stream->cuda_stream);
+#endif
+}
+END
+
+/*
+ * CPU implementation (currently disabled in favor of GPU implementation)
+ * This implementation would perform Hamming distance computation on CPU
+ * using Intel MKL CBLAS functions for integer matrix operations.
+ */
+/*
+BODY
+{
+    // Print progress for the first tile to track computation progress
+    if(0 == m && 0 == n) hicma_parsec_print_process_syrk(descA->mt, k, params_tlr->start_time_gemm);
+    
+    // Convert scaling factors to float for CPU operations
+    float lalpha = (float)alpha;
+    float lbeta  = (float)beta;
+    //float lbeta  = (k == 0) ? beta : 1.0;
+
+    // Calculate actual tile dimensions (handle edge cases for last tiles)
+    int tempmm = m == descC->mt-1 ? descC->m - m * descC->mb : descC->mb;
+    int tempnn = n == descC->nt-1 ? descC->n - n * descC->nb : descC->nb;
+    int tempkk = k == descA->mt-1 ? descA->m - k * descA->mb : descA->mb;
+    int ldak = descA->mb;  // Leading dimension of A
+    int ldbk = descB->mb;  // Leading dimension of B
+    int ldcm = descC->mb;  // Leading dimension of C
+    int co=0;              // Offset for C matrix
+    int8_t ao =0;          // Offset for A matrix
+    int8_t bo =0;          // Offset for B matrix
+
+    // Allocate workspace memory from private memory pools
+    int8_t  *A_use = (int8_t *)parsec_private_memory_pop(p_work_intA);
+    uint8_t  *B_use = (uint8_t *)parsec_private_memory_pop(p_work_intB);
+
+    // Get current unique element value for Hamming distance computation
+    int current_value = params_tlr->array_unique_elem[params_tlr->current_hamming_id];
+    
+    // Preprocess matrices for Hamming distance computation on CPU
+    hicma_parsec_hamming_subtract_ones_CPU(tempkk, tempmm, A_use, A, ldak, current_value);
+    hicma_parsec_hamming_get_id_matrix_CPU(tempkk, tempnn, B_use, B, ldbk, current_value);
+
+#if TEST_CPU
+    // Use Intel MKL CBLAS for integer GEMM operations
+    cblas_gemm_s8u8s32(CblasColMajor, CblasTrans, CblasNoTrans, CblasFixOffset,
+            tempmm, tempnn, tempkk, lalpha, (int8_t*)A_use, ldak, ao,
+            (uint8_t*) B_use, ldbk, bo, lbeta, (int *)C, ldcm, &co);
+#endif
+
+#if 1
+    // Debug output (disabled in production)
+    //parsec_print_tile2_int8(B_use, tempmm, tempnn);
+    //parsec_print_tile2_int(C, tempmm, tempnn);
+#endif
+
+    // Return workspace memory to private memory pools
+    parsec_private_memory_push(p_work_intA, A_use);
+    parsec_private_memory_push(p_work_intB, B_use);
+
+}
+END
+*/

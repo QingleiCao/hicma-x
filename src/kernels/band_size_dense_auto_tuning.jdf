@@ -1,0 +1,996 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+#include <unistd.h>
+
+// Control flag for verbose output during auto-tuning
+static int print_more_info = 1; 
+
+%}
+
+/** Band Size Auto-Tuning Kernel
+ * 
+ * This kernel implements an auto-tuning algorithm to determine the optimal band_size_dense
+ * for hierarchical matrix operations. The algorithm balances computational efficiency between
+ * dense operations (in the band region) and low-rank operations (in the off-band region).
+ * 
+ * Auto-tuning Strategy:
+ * 1. For each candidate band size, count operations in both TLR and dense formats
+ * 2. Compare computational costs using performance models for CPU and GPU
+ * 3. Select the band size that minimizes total execution time
+ * 4. Consider GPU memory limitations and CPU-GPU workload balance
+ * 
+ * The algorithm uses two main tasks:
+ * - trsm_ops: Counts TRSM (triangular solve) operations
+ * - gemm_ops: Counts GEMM (matrix multiplication) operations
+ */
+// Input parameters for band size auto-tuning
+descAr          [ type = "parsec_tiled_matrix_t *" ]  // Matrix descriptor for rank information
+descFake        [ type = "parsec_tiled_matrix_t *" ]  // Fake descriptor for task distribution
+rank_array      [ type = "int *" ]                    // Array storing rank information for each tile
+NB              [ type = "int" ]                      // Block size (tile dimension)
+band_size_dense [ type = "int" ]                      // Current band size being evaluated
+// Operation counters for performance analysis (per-thread arrays)
+ops_trsm_tlr    [ type = "long long int *" ]          // TRSM operation count in TLR format
+ops_trsm_dense  [ type = "long long int *" ]          // TRSM operation count in dense format
+ops_gemm_tlr    [ type = "long long int *" ]          // GEMM operation count in TLR format
+ops_gemm_dense  [ type = "long long int *" ]          // GEMM operation count in dense format
+array_Brank     [ type = "long long int *" ]          // B matrix rank accumulator for statistics
+count_Brank     [ type = "long long int *" ]          // B matrix rank counter for statistics
+band_maxrank_thread  [ type = "int *" ]               // Maximum rank per thread for current band
+// Grid dimensions (hidden parameters automatically extracted from matrix descriptor)
+rows            [ type = "int" hidden = on default = "((parsec_matrix_sym_block_cyclic_band_t *)descAr)->off_band.grid.rows" ]
+cols            [ type = "int" hidden = on default = "((parsec_matrix_sym_block_cyclic_band_t *)descAr)->off_band.grid.cols" ]
+
+
+/**************************************************
+ * TRSM Operation Counting Task                   *
+ *                                                *
+ * This task counts the number of floating-point  *
+ * operations (FLOPS) for TRSM (triangular solve) *
+ * operations in both TLR and dense formats       *
+ **************************************************/
+trsm_ops(m, k)
+
+// Iterate over band region for TRSM operations
+// m: row index, k: column index
+// TRSM operations occur in the band region where dense operations are performed
+m = band_size_dense-1 .. descAr->lmt-1 
+k = m+1-band_size_dense .. m+1-band_size_dense
+
+// Distribute tasks across processors using round-robin assignment
+procs_id = m % ( rows * cols )
+
+: descFake(0, procs_id)
+
+BODY
+{
+    // Get rank of matrix A at position (k,m) from the rank array
+    int Arank = rank_array[k*descAr->lm+m];
+    int info = 0;
+
+    // Input validation: rank must be non-negative
+    if( Arank < 0 ) { 
+        fprintf(stderr, "ERROR in trsm_ops (%d, %d): Arank %d\n", m, k, Arank);
+        info = 1;
+    }
+
+    // Accumulate operation counts for this thread
+    int myid = es->th_id;
+    
+    // TLR format: operations scale with rank (lower rank = fewer operations)
+    ops_trsm_tlr[myid] += (long long int)NB * NB * Arank;   
+    
+    // Dense format: operations are fixed regardless of rank (full block operations)
+    ops_trsm_dense[myid] += (long long int)NB * NB * NB;    
+
+    // Debug output for validation and analysis
+    if( info || DEBUG_INFO ) {
+        printf("trsm_ops %d, %d: Arank %d\n", m, k, Arank);
+        printf("trsm (%d, %d): ops_trsm_tlr %lld, ops_trsm_dense %lld, Ar %d, NB %d\n",
+                m, k, ops_trsm_tlr[myid], ops_trsm_dense[myid], Arank, NB); 
+    }
+}
+END
+
+
+/**************************************************
+ * GEMM Operation Counting Task                   *
+ *                                                *
+ * This task counts the number of floating-point  *
+ * operations (FLOPS) for GEMM (matrix multiply)  *
+ * operations in both TLR and dense formats       *
+ **************************************************/
+gemm_ops(m, n, k) 
+// Iterate over off-band region for GEMM operations
+// k: iteration index, m: row index, n: column index
+// GEMM operations occur in the off-band region where low-rank operations are performed
+k = 0   .. descAr->lmt-3
+m = k+band_size_dense .. descAr->lmt-1
+n = m+1-band_size_dense .. m+1-band_size_dense  
+
+// Distribute tasks across processors using round-robin assignment
+procs_id = m % ( rows * cols )
+
+: descFake(0, procs_id)
+
+BODY
+{
+    // Get ranks of matrices A, B, and C at their respective positions
+    // These ranks determine the computational complexity of the operations
+    int Arank = rank_array[k*descAr->lm+m];  // Rank of matrix A
+    int Brank = rank_array[k*descAr->lm+n];  // Rank of matrix B  
+    int Crank = rank_array[n*descAr->lm+m];  // Rank of result matrix C
+    int myid = es->th_id;
+    int info = 0;
+
+    // Input validation: all ranks must be non-negative
+    if( Arank < 0 || Brank < 0 || Crank < 0 ) {
+        fprintf(stderr, "ERROR in gemm_ops (%d, %d, %d): Arank %d, Brank %d, Crank %d\n", m, n, k, Arank, Brank, Crank);
+        info = 1;
+    }
+
+    // Track maximum rank for this thread (used for performance analysis)
+    if( band_maxrank_thread[myid] < Crank )
+            band_maxrank_thread[myid] = Crank;
+
+    // Calculate FLOPS for TLR (Tensor Low-Rank) operations
+    // TLR operations involve QR decomposition, matrix multiplication, and SVD
+    int Crank_Arank = Crank + Arank;  // Combined rank for intermediate operations
+    
+    // QR decomposition of [CU AU] - factorize the combined matrix
+    unsigned long int qraflop = hicma_parsec_op_counts('q', NB, Crank_Arank, 0, 0);
+    
+    // AV*BV^T operation - matrix multiplication with rank structure
+    unsigned long int qrbflop = hicma_parsec_op_counts('m', Arank, Brank, NB, 0);
+    
+    // (AV*BV^T) * BU^T operation - additional matrix multiplication step
+    qrbflop += hicma_parsec_op_counts('m', Arank, NB, Brank, 0);
+    qrbflop += hicma_parsec_op_counts('q', NB, Crank_Arank, 0, 0);
+    
+    int rA_nrows  = NB < Crank_Arank ? NB : Crank_Arank;  // Effective row dimension
+    
+    // SVD operations - singular value decomposition for rank reduction
+    unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_Arank, Crank_Arank, 2, 0);
+    svdflop += hicma_parsec_op_counts('s', Crank_Arank, 0, 0, 0);
+    svdflop += Crank_Arank * Crank;  // Additional SVD operations
+    
+    // Update U and V matrices - orthogonal matrix updates
+    unsigned long int newuflop = hicma_parsec_op_counts('o', NB, Crank, Crank_Arank, 1);
+    unsigned long int newvflop = hicma_parsec_op_counts('o', Crank, NB, Crank_Arank, 2);
+
+    // Accumulate total TLR operation counts for this thread
+    ops_gemm_tlr[myid] += (long long int)qraflop + qrbflop + svdflop + newuflop + newvflop;
+
+    // Calculate dense operation counts based on band position
+    // Different regions have different computational patterns
+    if( m-k < band_size_dense ) {
+        // Full dense GEMM operations in band region
+        // Standard matrix multiplication: C = A * B (all matrices are dense)
+        ops_gemm_dense[myid] += (long long int)2 * NB * NB * NB;
+    } else if( n-k < band_size_dense && m-n < band_size_dense ) {
+        // Mixed dense operations near band boundary
+        // One matrix is dense, the other is low-rank
+        ops_gemm_dense[myid] += (long long int)4 * NB * NB * Arank; 
+    } else if( m-n < band_size_dense ) {
+        // Rank-structured dense operations in off-band region
+        // Both matrices are low-rank, but we compute the dense result
+        ops_gemm_dense[myid] += (long long int)2 * NB * NB * parsec_imin(Arank, Brank) + (long long int)4 * NB * Arank * Brank; 
+
+        // Accumulate B matrix rank statistics for performance analysis
+        // These statistics help in determining optimal band size
+        array_Brank[myid] += (long long int)Brank;
+        count_Brank[myid] += (long long int)1;
+    }
+
+    // Debug output for validation and analysis
+    if( info || DEBUG_INFO ) {
+        printf("gemm (%d, %d, %d): ops_gemm_tlr %lld, ops_gemm_dense %lld, Ar %d, Br %d, Cr %d, NB %d\n",
+                m, n, k, ops_gemm_tlr[myid], ops_gemm_dense[myid], Arank, Brank, Crank, NB);
+    }
+
+}
+END
+
+
+extern "C" %{
+
+/**
+ * Calculate the maximum band size that fits in GPU memory
+ * 
+ * This function determines the largest band size that can be stored in available GPU memory.
+ * It uses a binary search algorithm to find the optimal band size that maximizes memory
+ * utilization without exceeding GPU memory limits.
+ * 
+ * Memory calculation:
+ * - Each tile requires NB*NB*sizeof(double) bytes
+ * - Band region has mid*(2*NT-mid+1) tiles
+ * - Total memory = nb_nodes * nb_gpus * gpu_total_memory
+ * 
+ * @param [inout] params: TLR parameters structure to update with memory limit
+ */
+void hicma_parsec_find_band_size_dense_gpu_memory_max( hicma_parsec_params_t * params ) { 
+
+    int nb_nodes = params->nodes;  // Number of compute nodes
+    int nb_gpus = params->gpus;    // Number of GPUs per node
+    int NT = params->NT;           // Total number of tiles per dimension
+    int NB = params->NB;           // Tile size (block dimension)
+
+    /* If no GPUs available, use full matrix size (no memory constraint) */
+    if( 0 == nb_gpus ) {
+        params->band_size_dense_gpu_memory_max = NT;
+        return;
+    }
+
+    /* Binary search to find maximum band size that fits in GPU memory */
+    int left = 1, right = NT, mid;
+    
+    // Calculate target memory capacity (in number of tiles)
+    // Convert total GPU memory from bytes to tile count
+    double sum, target = (double)nb_nodes * nb_gpus * params->gpu_total_memory * 1.0e9 / 4.0 / NB / NB; 
+    
+    while( left < right ) {
+        mid = left + ceil((right - left) / 2.0);
+        
+        // Calculate memory usage for band of size 'mid'
+        // Band region has mid*(2*NT-mid+1) tiles (lower triangular)
+        sum = (double)mid * (2 * NT - mid + 1);
+        
+        if( sum <= target )
+            left = mid;      // This size fits, try larger
+        else
+            right = mid - 1; // This size is too large, try smaller
+    }
+
+    params->band_size_dense_gpu_memory_max = right;
+}
+
+/**
+ * Calculate execution time on CPU and GPU for a given band size
+ * 
+ * This function estimates the execution time for both CPU and GPU operations
+ * assuming perfect parallelization. It models the computational complexity
+ * of different operations in both dense and TLR formats.
+ * 
+ * Operation Analysis:
+ * DENSE operations (performed on GPU):
+ * - POTRF: Cholesky factorization, NT operations, 1/3 * NB^3 flops each
+ * - TRSM: Triangular solve, (mid-1) * NT operations, NB^3 flops each  
+ * - SYRK: Symmetric rank-k update, NT*(NT-1)/2 total operations
+ * - GEMM: Matrix multiplication, NT*(NT-1)*(NT-2)/6 total operations
+ * 
+ * TLR operations (performed on CPU):
+ * - TRSM: (NT-mid)*(NT-mid+1)/2 operations, NB^3*k flops each
+ * - GEMM: (NT-mid)*(NT-mid-1)*(NT-mid-2)/6 operations, 36*NB*k^2 + 157*k^3 flops each
+ * 
+ * @param [in] params: TLR parameters containing performance characteristics
+ * @param [in] mid: Band size to evaluate
+ * @param [out] time_cpu: Estimated CPU execution time
+ * @param [out] time_gpu: Estimated GPU execution time
+ */
+static void calculate_band_size_cpu_gpu_time( hicma_parsec_params_t * params,
+        int mid, double *time_cpu, double *time_gpu ) {
+
+    /*
+     * DENSE OPERATIONS (GPU)
+     * the number of POTRF: NT
+     * POTRF flops: 1/3 * NB^3
+     * the number of TRSM: (mid-1) * NT
+     * TRSM flops: NB^3
+     * the number of SYRK: (total) NT * (NT-1) / 2 ; (1) NT * (mid-1); (3) (total) - (1)
+     * SYRK flops: (1) NB^3 ; (3) 2 * NB^3 * k + 4 * NB * k^2
+     * the number of GEMM: (total) NT * (NT-1) * (NT-2) / 6 - (NT-mid) * (NT-mid-1) * (NT-mid-2) / 6 ; (1) mid * (mid-1) * (mid-2) / 6 ; (2) mid * (mid-1) * (2*mid-1) / 6 ;  (3)  (total) - (1) - (2)
+     * GEMM flops: (1) 2 * NB^3 ; (2) 4 * NB^2 * k ; (3) 2 * NB^3 * k + 4 * NB * k^2
+     *
+     * TLR OPERATIONS (CPU)
+     * the number of TRSM: NT-mid + NT-mid-1 + ... + 1 = (NT-mid) * (NT-mid+1) / 2
+     * TRSM flops: NB^3 * k (k is the rank)
+     * the number of GEMM: (NT-mid) * (NT-mid-1) * (NT-mid-2) / 6
+     * GEMM flops: 36 * NB * k^2 + 157 * k^3
+     */
+
+    int NT = params->NT, NB = params->NB;
+
+    double time_dense_potrf = 1.0 / 3  * NB * NB * NB / 1.0e9 * NT / params->gpu_perf_nb_nb_nb;
+    double num_dense_trsm = (double)NT * (mid - 1);
+    double time_dense_trsm = (double)NB * NB * NB / 1.0e9 * num_dense_trsm / params->gpu_perf_nb_nb_nb;
+
+    double num_dense_syrk = (double)NT * (NT - 1) / 2.0;
+    double num_dense_syrk_1 = num_dense_trsm;
+    double num_dense_syrk_3 = num_dense_syrk - num_dense_syrk_1;
+    double time_dense_syrk_1 =  (double)NB * NB * NB / 1.0e9 * num_dense_syrk_1 / params->gpu_perf_nb_nb_nb;
+    double time_dense_syrk_3 = 2.0 * NB * NB * params->iavgrk / 1.0e9 * num_dense_syrk_3 / params->gpu_perf_nb_nb_r + 4.0 * NB * params->iavgrk * params->iavgrk / 1.0e9 * num_dense_syrk_3 / params->gpu_perf_nb_r_r;
+
+    double num_gemm = (double)(NT+1.0) * NT * (NT-1) / 6;
+    double num_tlr_gemm = (double)(NT-mid+1) * (NT-mid) * (NT-mid-1) / 6;
+    num_tlr_gemm = hicma_parsec_max( num_tlr_gemm, 0 );
+    double num_dense_gemm = num_gemm - num_tlr_gemm;
+    double num_dense_gemm_1 = (double)mid * (mid-1) * (mid-2) / 6;
+    num_dense_gemm_1 = hicma_parsec_max( num_dense_gemm_1, 0 );
+    double num_dense_gemm_2 = 0.0, num_dense_gemm_3 = 0.0;
+    if( mid < NT / 2 ) {
+        num_dense_gemm_2 = (double)mid * (mid-1) * (2.0*mid-1) / 6.0;
+        num_dense_gemm_3 = num_dense_gemm - num_dense_gemm_1 - num_dense_gemm_2;
+    } else {
+        for( int i = 1; i < NT-mid; i++ ) 
+            num_dense_gemm_3 += (NT-i) * i;
+        num_dense_gemm_2 = num_dense_gemm - num_dense_gemm_1 - num_dense_gemm_3;
+    }
+
+    double flop_dense_gemm_1 = 2.0 * NB * NB * NB;
+    double flop_dense_gemm_2 = 4.0 * NB * NB * params->iavgrk; 
+    double flop_dense_gemm_3_1 = 2.0 * NB * NB * params->iavgrk;
+    double flop_dense_gemm_3_2 = 4.0 * NB * params->iavgrk * params->iavgrk;
+    double flop_tlr_gemm = 36.0 * NB * params->iavgrk * params->iavgrk + 157.0 * params->iavgrk * params->iavgrk * params->iavgrk;
+
+    *time_gpu = flop_dense_gemm_1 / 1.0e9 * num_dense_gemm_1 / params->gpu_perf_nb_nb_nb;
+    *time_gpu += flop_dense_gemm_2 / 1.0e9 * num_dense_gemm_2 / params->gpu_perf_nb_nb_r; 
+    *time_gpu += flop_dense_gemm_3_1 / 1.0e9 * num_dense_gemm_3 / params->gpu_perf_nb_nb_r; 
+    *time_gpu += flop_dense_gemm_3_2 / 1.0e9 * num_dense_gemm_3 / params->gpu_perf_nb_r_r; 
+    *time_gpu += time_dense_potrf + time_dense_trsm + time_dense_syrk_1 + time_dense_syrk_3;
+    *time_gpu /= (params->gpus * params->nodes * FLUCTUATION);
+    *time_cpu = flop_tlr_gemm / 1.0e9 * num_tlr_gemm / (params->cpu_perf / 3 * params->nodes); 
+
+    double flop_band = 1.0 / 3  * NB * NB * NB * NT + (double)NB * NB * NB * num_dense_trsm + (double)NB * NB * NB * num_dense_syrk_1 + 2.0 * NB * NB * params->iavgrk * num_dense_syrk_3 + 4.0 * NB * params->iavgrk * params->iavgrk * num_dense_syrk_3 + flop_dense_gemm_1 * num_dense_gemm_1 + flop_dense_gemm_2 * num_dense_gemm_2 + flop_dense_gemm_3_1 * num_dense_gemm_3 + flop_dense_gemm_3_2 * num_dense_gemm_3; 
+    double flop_offband = flop_tlr_gemm * num_tlr_gemm;
+
+    if( 0 == params->rank ) {
+        fprintf( stderr, YEL "band_size_dense %d : nb_nodes %d flop_band %le flop_offband %le ; time_band_on_GPU %lf time_offband_on_CPU %lf " 
+                "num_gemm %lf, num_tlr_gemm %lf num_dense_gemm %lf num_dense_gemm_1 %lf num_dense_gemm_2 %lf num_dense_gemm_3 %lf\n" RESET,
+                mid, params->nodes, flop_band, flop_offband, *time_gpu, *time_cpu,
+                num_gemm, num_tlr_gemm, num_dense_gemm, num_dense_gemm_1, num_dense_gemm_2, num_dense_gemm_3 );
+    }
+}
+
+/* Calculate the band_size based on balance between CPU and GPU
+ * Assume kernels are running parallel
+ */
+static void find_band_size_gpu_balance( hicma_parsec_params_t * params ) {
+
+    int nb = 0, NT = params->NT, NB = params->NB;
+
+    if( 0 == params->gpus ) {
+        params->band_size_dense_gpu_balance_max = params->NT;
+        return;
+    }
+
+    /* If on GPU */
+    /* Search the max band_size_dense it could do on GPU to balance workload */
+    int left = 2, right = NT, mid; 
+    double time_cpu, time_gpu;
+    while( left < right ) {
+        mid = left + (right - left) / 2;
+        calculate_band_size_cpu_gpu_time( params, mid, &time_cpu, &time_gpu );
+        if( time_cpu > time_gpu )
+            left = mid + 1;
+        else
+            right = mid;
+    }
+
+    /* Update */
+    params->band_size_dense_gpu_balance_max = left; 
+}
+
+/* Read from file and get the average */
+static void read_file_get_value( char *filename, double *perf ) {
+    double perf_buf[20];
+    char *line_buf = NULL;
+    size_t line_buf_size = 0;
+    int line_count = 0;
+    ssize_t line_size;
+
+    FILE *fp;
+    fp = fopen( filename, "r" );
+    if( !fp ) {
+        fprintf(stderr, "Cannot open file %s\n", filename);
+    }
+
+    /* Get the first line of the file. */
+    line_size = getline(&line_buf, &line_buf_size, fp);
+
+    /* Loop through until we are done with the file. */
+    while (line_size >= 0)
+    {
+        /* Show the line details */
+        perf_buf[line_count] = atof(line_buf);
+
+        /* Increment our line count */
+        line_count++;
+
+        /* Get the next line */
+        line_size = getline(&line_buf, &line_buf_size, fp);
+    }
+
+    /* Get average */
+    *perf = 0.0;
+    for( int i = 0; i < line_count; i++ ) {
+        //*perf += perf_buf[i];
+        *perf = hicma_parsec_max(*perf, perf_buf[i]);
+    }
+    //*perf /= line_count;
+
+    /* Free the allocated line buffer */
+    free(line_buf);
+    line_buf = NULL;
+
+    /* Close the file now that we are done with it */
+    fclose(fp);
+}
+
+
+/* Test CPU and GPU performance of the currenst setting */ 
+void hicma_parsec_performance_testing_cpu_gpu( hicma_parsec_params_t * params ) {
+
+    /* If not on GPU */
+    if( 0 == params->gpus ) {
+        return;
+    }
+
+    /* Get CPU performance and GPU performance */
+    if( 0 == params->rank ) {
+        fprintf( stderr, YEL "\nRun a simple test to get 1 node CPU performance and 1 GPU Performance\n"RESET );
+        char cmdbuf_cpu[200], cmdbuf_gpu[200];
+
+        sprintf( cmdbuf_cpu, "%stesting_dgemm_cpu %d > log_cpu_perf_1node.txt", params->exe_file_path, hicma_parsec_min(2000, params->NB) );
+        fprintf(stderr, "\n%s\n", cmdbuf_cpu);
+        system(cmdbuf_cpu);
+
+        sprintf( cmdbuf_gpu, "%stesting_dgemm_gpu %d > log_gpu_perf_1gpu_nb_nb_nb.txt", params->exe_file_path, params->NB);
+        fprintf(stderr, "\n%s\n", cmdbuf_gpu);
+        system(cmdbuf_gpu);
+
+        int rank;
+        /* Choose different rank for diferent problems */
+        if( params->fixedrk > 0 ) {
+            rank = params->fixedrk;
+        } else {
+            switch( params->kind_of_problem ) {
+                case 0:
+                    rank = params->NB / 80;  
+                    break;
+
+                case 1:
+                    rank = params->NB / 30;
+                    break;
+
+                case 2:
+                    rank = params->NB / 70;
+                    break;
+
+                case 3:
+                    rank = params->NB / 20;
+                    break;
+
+                case 4:
+                    rank = params->NB / 10;
+                    break;
+
+                case 5:
+                    rank = params->NB / 10;
+                    break;
+
+                case 6:
+                    rank = params->NB / 100;
+                    break;
+
+                case 7:
+                    rank = params->NB / 20;
+                    break;
+
+                case 8:
+                    rank = params->NB / 40;
+                    break;
+
+                case 9:
+                    rank = params->NB / 10;
+                    break;
+
+                default:
+                    fprintf(stderr, "Wrong value of \"kind_of_problem\" parameter\n");
+                    return;
+            }
+        }
+        fprintf(stderr, YEL "estimate the rank for each problem: rank= %d\n", rank);
+
+        sprintf( cmdbuf_gpu, "%stesting_dgemm_gpu %d %d %d > log_gpu_perf_1gpu_nb_nb_r.txt", params->exe_file_path, params->NB, params->NB, rank );
+        fprintf(stderr, "\n%s\n", cmdbuf_gpu);
+        system(cmdbuf_gpu);
+
+        sprintf( cmdbuf_gpu, "%stesting_dgemm_gpu %d %d %d > log_gpu_perf_1gpu_nb_r_r.txt", params->exe_file_path, params->NB, rank, rank );
+        fprintf(stderr, "\n%s\n", cmdbuf_gpu);
+        system(cmdbuf_gpu);
+
+        sleep(1);
+
+        /* Grep CPU and GPU performance */
+        sprintf( cmdbuf_cpu, "grep seconds log_cpu_perf_1node.txt | awk '{print $7}' > log_cpu_perf_1node.csv" );  
+        fprintf(stderr, "\n%s\n", cmdbuf_cpu);
+        system(cmdbuf_cpu);
+
+        sprintf( cmdbuf_gpu, "grep seconds log_gpu_perf_1gpu_nb_nb_nb.txt | awk '{print $7}' > log_gpu_perf_1gpu_nb_nb_nb.csv" );
+        fprintf(stderr, "\n%s\n", cmdbuf_gpu);
+        system(cmdbuf_gpu);
+
+        sprintf( cmdbuf_gpu, "grep seconds log_gpu_perf_1gpu_nb_nb_r.txt | awk '{print $7}' > log_gpu_perf_1gpu_nb_nb_r.csv" );
+        fprintf(stderr, "\n%s\n", cmdbuf_gpu);
+        system(cmdbuf_gpu);
+
+        sprintf( cmdbuf_gpu, "grep seconds log_gpu_perf_1gpu_nb_r_r.txt | awk '{print $7}' > log_gpu_perf_1gpu_nb_r_r.csv" );
+        fprintf(stderr, "\n%s\n", cmdbuf_gpu);
+        system(cmdbuf_gpu);
+
+        sleep(1);
+    }
+
+    /* Wait rank 0 */
+    MPI_Barrier( MPI_COMM_WORLD );
+    
+    /* Get CPU performance of 1 core*/
+    read_file_get_value( "log_cpu_perf_1node.csv", &params->cpu_perf );
+
+    /* Get GPU performance */
+    read_file_get_value( "log_gpu_perf_1gpu_nb_nb_nb.csv", &params->gpu_perf_nb_nb_nb );
+    read_file_get_value( "log_gpu_perf_1gpu_nb_nb_r.csv", &params->gpu_perf_nb_nb_r );
+    read_file_get_value( "log_gpu_perf_1gpu_nb_r_r.csv", &params->gpu_perf_nb_r_r );
+
+    if( 0 == params->rank && print_more_info ) {
+        fprintf(stderr, YEL "CPU performance per core %lf ; GPU perforamance per GPU: GEMM(NB, NB, NB) %lf GEMM(NB, NB, rank) %lf GEMM(NB, rank, rank) %lf\n" RESET, params->cpu_perf, params->gpu_perf_nb_nb_nb, params->gpu_perf_nb_nb_r, params->gpu_perf_nb_r_r);
+    }
+}
+
+/* Update the termination factor if on GPU */
+static void band_size_auto_tuning_termination_gpu(
+        hicma_parsec_params_t * params, int band_size_dense,
+        long long int sum_Brank,
+        long long int sum_count_Brank,
+        long long int sum_tlr,
+        long long int sum_dense ) {
+
+    /* If not on GPU */
+    if( 0 == params->gpus ) {
+        return;
+    }
+
+    int NB = params->NB, NT = params->NT;
+    double num_gemm = ((double)NT-band_size_dense) * ((double)NT-band_size_dense+1) / 2.0; 
+    num_gemm = hicma_parsec_max( num_gemm, 0 );
+    int count_gemm_2 = hicma_parsec_min( band_size_dense-1, NT-band_size_dense );
+    double num_gemm_2 = (double)count_gemm_2 * ((double)count_gemm_2+1) / 2.0; 
+    num_gemm_2 = hicma_parsec_max( num_gemm_2, 0 );
+    double num_gemm_3 = num_gemm - num_gemm_2;
+    double num_gemm_nb_nb_r = num_gemm_2 * 2 + num_gemm_3;
+    double num_gemm_nb_r_r = 2 * num_gemm_3;
+
+    double avg_Brank, gpu_perf, flop_gemm_nb_nb_r, flop_gemm_nb_r_r;
+    if( 0 == sum_count_Brank ) {
+        gpu_perf = params->gpu_perf_nb_nb_r;
+    } else {
+        avg_Brank = (double)sum_Brank / sum_count_Brank;           
+        flop_gemm_nb_nb_r = (double)num_gemm_nb_nb_r * NB;
+        flop_gemm_nb_r_r = (double)num_gemm_nb_r_r * avg_Brank;
+        gpu_perf = ( flop_gemm_nb_nb_r + flop_gemm_nb_r_r ) / ( flop_gemm_nb_nb_r/params->gpu_perf_nb_nb_r + flop_gemm_nb_r_r / params->gpu_perf_nb_r_r );
+    }
+
+#if 0
+    double time_tlr = (double)sum_tlr / 1.0e9 / (params->cpu_perf / 3);
+    double ratio_flops = (double)NB / avg_Brank;
+    double ratio_num = num_gemm_nb_nb_r / num_gemm_nb_r_r;  
+    double sum_nb_r_r = (double)sum_dense / (1.0 + ratio_flops * ratio_num);
+    double sum_nb_nb_r = (double)sum_dense - sum_nb_r_r;
+    double time_nb_nb_r = sum_nb_nb_r / 1.0e9 / (params->gpu_perf_nb_nb_r * params->gpus);
+    double time_nb_r_r = sum_nb_r_r / 1.0e9 / (params->gpu_perf_nb_r_r * params->gpus);
+    double time_dense = time_nb_nb_r + time_nb_r_r; 
+    params->band_size_auto_tuning_termination = time_tlr / time_dense; 
+    if( 0 == params->rank && print_more_info ) {
+        fprintf(stderr, RED "time_tlr= %lf time_dense= %lf time_nb_nb_r= %lf time_nb_r_r=%lf sum_nb_r_r= %lf sum_nb_nb_r= %lf\n" RESET, time_tlr, time_dense, time_nb_nb_r, time_nb_r_r, sum_nb_r_r, sum_nb_nb_r );
+    }
+#endif
+
+    params->band_size_auto_tuning_termination = (gpu_perf * params->gpus * FLUCTUATION) / (params->cpu_perf / 3); 
+
+    if( 0 == params->rank && print_more_info ) {
+        fprintf(stderr, YEL "CPU performance per node %lf ; nb_cores %d ; GPU perforamance per GPU %lf ; nb_gpus %d ; band_size_auto_tuning_termination= %lf ; avg_Brank= %lf sum_Brank %lld sum_count_Brank %lld\n" RESET, params->cpu_perf, params->cores, gpu_perf, params->gpus, params->band_size_auto_tuning_termination, avg_Brank, sum_Brank, sum_count_Brank);
+        fprintf(stderr, YEL "count_gemm_2= %d num_gemm_nb_nb_r= %lf num_gemm_nb_r_r= %lf flop_gemm_nb_nb_r= %lf flop_gemm_nb_r_r= %lf gpu_perf_nb_nb_r= %lf gpu_perf_nb_r_r= %lf\n" RESET, count_gemm_2, num_gemm_nb_nb_r, num_gemm_nb_r_r, flop_gemm_nb_nb_r, flop_gemm_nb_r_r, params->gpu_perf_nb_nb_r, params->gpu_perf_nb_r_r);
+    }
+}
+
+/**
+ * Create a new band size auto-tuning taskpool
+ * 
+ * This function creates a PaRSEC taskpool for auto-tuning the optimal band size
+ * in hierarchical matrix operations. The taskpool will count operations in both
+ * TLR and dense formats to determine the most efficient band size.
+ * 
+ * @param [in] dcAr:         Matrix descriptor with distributed and allocated data
+ * @param [in] dcFake:       Fake descriptor used for task distribution
+ * @param [in] rank_array:   Array containing rank information for each tile
+ * @param [in] NB:           Tile size (block dimension)
+ * @param [in] band_size_dense: Current band size being evaluated
+ * @param [in] ops_trsm_tlr:   Array to store TRSM operation counts in TLR format
+ * @param [in] ops_trsm_dense: Array to store TRSM operation counts in dense format
+ * @param [in] ops_gemm_tlr:   Array to store GEMM operation counts in TLR format
+ * @param [in] ops_gemm_dense: Array to store GEMM operation counts in dense format
+ * @param [in] array_Brank:    Array to accumulate B matrix rank statistics
+ * @param [in] count_Brank:    Array to count B matrix rank occurrences
+ * @param [in] band_maxrank_thread: Array to track maximum rank per thread
+ * @return the parsec taskpool object to schedule for execution
+ */
+    parsec_taskpool_t*
+parsec_band_size_dense_auto_tuning_New(parsec_tiled_matrix_t *dcAr,
+        parsec_tiled_matrix_t *dcFake,
+        int *rank_array,
+        int NB,
+        int band_size_dense,
+        long long int *ops_trsm_tlr,
+        long long int *ops_trsm_dense,
+        long long int *ops_gemm_tlr,
+        long long int *ops_gemm_dense,
+        long long int *array_Brank,
+        long long int *count_Brank,
+        int *band_maxrank_thread)
+{
+    parsec_band_size_dense_auto_tuning_taskpool_t* taskpool = NULL;
+    
+    // Create the auto-tuning taskpool using the generated constructor
+    taskpool = parsec_band_size_dense_auto_tuning_new(dcAr, dcFake, rank_array, NB, band_size_dense,
+            ops_trsm_tlr, ops_trsm_dense, ops_gemm_tlr,
+            ops_gemm_dense, array_Brank, count_Brank, band_maxrank_thread); 
+    return (parsec_taskpool_t*)taskpool; 
+}
+
+/**
+ * Destructor for band size auto-tuning taskpool
+ * 
+ * This function properly cleans up the taskpool and frees all associated resources.
+ * It should be called after the taskpool has completed execution.
+ * 
+ * @param [inout] taskpool: The parsec taskpool object to destroy and free
+ */
+void parsec_band_size_dense_auto_tuning_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_band_size_dense_auto_tuning_taskpool_t *band_size_dense_auto_tuning_taskpool = (parsec_band_size_dense_auto_tuning_taskpool_t *)taskpool;
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * Execute band size auto-tuning operation (linear search)
+ * 
+ * This is the main interface function that performs auto-tuning to determine the optimal
+ * band size for hierarchical matrix operations. It uses a linear search strategy,
+ * testing band sizes from the current value up to the maximum possible size.
+ * 
+ * The auto-tuning process:
+ * 1. For each candidate band size, count operations in both TLR and dense formats
+ * 2. Compare computational costs using performance models
+ * 3. Select the band size that minimizes total execution time
+ * 4. Consider GPU memory limitations and CPU-GPU workload balance
+ * 
+ * @param [in] parsec:       PaRSEC context for task scheduling and execution
+ * @param [in] dcAr:         Matrix descriptor with distributed and allocated data
+ * @param [in] dcFake:       Fake descriptor used for task distribution
+ * @param [in] rank_array:   Array containing rank information for each tile
+ * @param [inout] params:    TLR parameters structure to update with optimal band size
+ * @return the optimal band size determined by auto-tuning
+ */
+int parsec_band_size_dense_auto_tuning(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcAr,
+        parsec_tiled_matrix_t *dcFake,
+        int *rank_array,
+        hicma_parsec_params_t *params )
+{
+    parsec_taskpool_t *parsec_band_size_dense_auto_tuning = NULL;
+    int root = dcAr->super.rank_of(&dcAr->super, 0, 0);
+    int NB = params->NB;
+    int NT = params->NT;
+    int opt_band_size_dense = params->NT;
+
+    /* Only for 1 vp */
+    assert( parsec->nb_vp == 1 );
+    int nb_threads = parsec->virtual_processes[0]->nb_cores;
+
+    long long int *ops_trsm_tlr = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *ops_trsm_dense = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *ops_gemm_tlr = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *ops_gemm_dense = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *array_Brank = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *count_Brank = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int ops_total_tlr, ops_total_dense, sum_tlr, sum_dense, total_Brank, sum_Brank, total_count_Brank, sum_count_Brank;
+
+    /* For maxrank of each band */
+    int *band_maxrank_thread = (int *)calloc(sizeof(int), nb_threads);
+    int *band_maxrank_receive = (int *)calloc( sizeof(int), dcAr->super.nodes );
+
+    /* band_size_dense starts from band_size_dense + 1 */
+    for( int band_size_dense = params->band_size_dense + 1; band_size_dense < dcAr->lmt; band_size_dense++ ) {
+
+        /* init ops to 0 each iteration */
+        for( int i = 0; i < nb_threads; i++ ) {
+            ops_trsm_tlr[i] = 0LL;
+            ops_trsm_dense[i] = 0LL;
+            ops_gemm_tlr[i] = 0LL;
+            ops_gemm_dense[i] = 0LL;
+            array_Brank[i] = 0LL;
+            count_Brank[i] = 0LL;
+            band_maxrank_thread[i] = 0;
+        }
+
+        VERBOSE_PRINT(params->rank, params->verbose, ("\n***************** START Check band_size_dense %d ******************\n", band_size_dense));
+
+        parsec_band_size_dense_auto_tuning = parsec_band_size_dense_auto_tuning_New(dcAr, dcFake, rank_array, NB,
+                band_size_dense, ops_trsm_tlr, ops_trsm_dense,
+                ops_gemm_tlr, ops_gemm_dense, array_Brank, count_Brank, band_maxrank_thread); 
+
+        if( parsec_band_size_dense_auto_tuning != NULL ){
+            parsec_context_add_taskpool(parsec, parsec_band_size_dense_auto_tuning);
+            parsec_context_start(parsec);
+            parsec_context_wait(parsec);
+            parsec_band_size_dense_auto_tuning_Destruct(parsec_band_size_dense_auto_tuning);
+        }
+
+        /* Init value */
+        ops_total_tlr = 0LL;
+        ops_total_dense = 0LL;
+        sum_tlr = 0LL;
+        sum_dense = 0LL;
+        total_Brank = 0LL;
+        sum_Brank = 0LL;
+        total_count_Brank = 0LL;
+        sum_count_Brank = 0LL;
+        int band_maxrank_process = band_maxrank_thread[0];
+        int band_maxrank;
+
+        for( int i = 0; i < nb_threads; i++ ) {
+            ops_total_tlr += ops_trsm_tlr[i] + ops_gemm_tlr[i]; 
+            ops_total_dense += ops_trsm_dense[i] + ops_gemm_dense[i]; 
+            total_Brank += array_Brank[i];
+            total_count_Brank += count_Brank[i];
+
+            if( band_maxrank_process < band_maxrank_thread[i] )
+                band_maxrank_process = band_maxrank_thread[i];
+        }
+
+        MPI_Allreduce(&ops_total_tlr, &sum_tlr, 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD); 
+        MPI_Allreduce(&ops_total_dense, &sum_dense, 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD); 
+        MPI_Allreduce(&total_Brank, &sum_Brank, 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD); 
+        MPI_Allreduce(&total_count_Brank, &sum_count_Brank, 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD); 
+        MPI_Allreduce(&band_maxrank_process, &band_maxrank, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD); 
+
+        VERBOSE_PRINT(params->rank, params->verbose,
+                ("band_size_dense: %d, nb_threads: %d, ops_sum_tlr: %Le, ops_sum_dense: %Le\n",
+                 band_size_dense, nb_threads, (long double)sum_tlr, (long double)sum_dense));
+        VERBOSE_PRINT(params->rank, params->verbose,
+                ("***************** END Check band_size_dense %d : %d ******************\n", band_size_dense, band_maxrank));
+
+        /* Update the termination factor if on GPU */
+        band_size_auto_tuning_termination_gpu( params, band_size_dense, sum_Brank, sum_count_Brank, sum_tlr, sum_dense );
+
+        /* Find the result */
+        if( sum_tlr * params->band_size_auto_tuning_termination <= sum_dense ) { 
+            params->band_size_dense_gpu_time_max = band_size_dense - 1;
+            VERBOSE_PRINT(params->rank, params->verbose,
+                    (BLU "\n############################# Find the OPT band_size_dense : %d #############################\n" RESET,
+                     params->band_size_dense_gpu_time_max));
+
+            /* Termination */
+            break;
+        }
+    }
+
+    /* The band_size based on GPU memory limitation */
+    if( root == dcAr->super.myrank & params->gpus > 0 )
+        fprintf(stderr, BLU "band_size limit based on GPU memory: %d\n" RESET, params->band_size_dense_gpu_memory_max);
+
+    /* Calculate the band_size based on balance between CPU and GPU */
+    find_band_size_gpu_balance( params );
+    if( root == dcAr->super.myrank && params->gpus > 0 )
+        fprintf(stderr, BLU "band_size limit based on balance of CPU and GPU: %d\n" RESET, params->band_size_dense_gpu_balance_max);
+
+    opt_band_size_dense = hicma_parsec_min( params->band_size_dense_gpu_time_max, params->band_size_dense_gpu_memory_max );
+    opt_band_size_dense = hicma_parsec_min( opt_band_size_dense, params->band_size_dense_gpu_balance_max );
+
+    VERBOSE_PRINT(params->rank, params->verbose, (BLU "The auto-tuned band_size_dense is %d\n\n" RESET, opt_band_size_dense));
+
+    /* Update the new maxrank */
+    if( params->adaptive_maxrank ) {
+        int current_maxrank = 0;
+        for( int i = opt_band_size_dense; i < NT; i++ ) {
+            int j = i - opt_band_size_dense;
+            current_maxrank = hicma_parsec_max( rank_array[j*NT+i], current_maxrank );
+        } 
+        params->maxrank = hicma_parsec_min( current_maxrank*3, params->maxrank );
+        params->genmaxrank = params->maxrank;
+        params->compmaxrank = params->maxrank;
+        if( root == dcAr->super.myrank )
+            fprintf(stderr, GRN "Update maxrank to %d, which is min(current_maxrank*3, maxrank) where current_maxrank= %d is maxrank of the last band_id %d\n" RESET, params->maxrank, current_maxrank, opt_band_size_dense);
+    }
+
+    /* Free memory */
+    free( ops_trsm_tlr );
+    free( ops_trsm_dense );
+    free( ops_gemm_tlr );
+    free( ops_gemm_dense );
+    free( band_maxrank_thread );
+    free( band_maxrank_receive );
+
+    return opt_band_size_dense; 
+}
+
+
+/**
+ * Execute band size auto-tuning operation (binary search)
+ * 
+ * This function performs auto-tuning to determine the optimal band size using a binary
+ * search strategy, which is more efficient than linear search for large problem sizes.
+ * It tests band sizes in a binary search pattern to find the optimal value.
+ * 
+ * The auto-tuning process:
+ * 1. Use binary search to test candidate band sizes
+ * 2. For each candidate, count operations in both TLR and dense formats
+ * 3. Compare computational costs using performance models
+ * 4. Select the band size that minimizes total execution time
+ * 5. Consider GPU memory limitations and CPU-GPU workload balance
+ * 
+ * @param [in] parsec:       PaRSEC context for task scheduling and execution
+ * @param [in] dcAr:         Matrix descriptor with distributed and allocated data
+ * @param [in] dcFake:       Fake descriptor used for task distribution
+ * @param [in] rank_array:   Array containing rank information for each tile
+ * @param [inout] params:    TLR parameters structure to update with optimal band size
+ * @return the optimal band size determined by auto-tuning
+ */
+int parsec_band_size_dense_auto_tuning_binary_search(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcAr,
+        parsec_tiled_matrix_t *dcFake,
+        int *rank_array,
+        hicma_parsec_params_t *params )
+{
+    parsec_taskpool_t *parsec_band_size_dense_auto_tuning = NULL;
+    int root = dcAr->super.rank_of(&dcAr->super, 0, 0);
+    int NB = params->NB, NT = params->NT;
+    int opt_band_size_dense = params->NT;
+
+    /* Only for 1 vp */
+    assert( parsec->nb_vp == 1 );
+    int nb_threads = parsec->virtual_processes[0]->nb_cores;
+
+    long long int *ops_trsm_tlr = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *ops_trsm_dense = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *ops_gemm_tlr = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *ops_gemm_dense = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *array_Brank = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int *count_Brank = (long long int *)calloc(sizeof(long long int), nb_threads);
+    long long int ops_total_tlr, ops_total_dense, sum_tlr, sum_dense, total_Brank, sum_Brank, total_count_Brank, sum_count_Brank;
+
+    /* For maxrank of each band */
+    int *band_maxrank_thread = (int *)calloc(sizeof(int), nb_threads);
+    int *band_maxrank_receive = (int *)calloc( sizeof(int), dcAr->super.nodes );
+
+    int left = params->band_size_dense + 1, right = NT, band_size_dense;
+
+    /* Binary search */ 
+    while( left < right ) {
+
+        band_size_dense = left + (right - left) / 2;
+
+        /* init ops to 0 each iteration */
+        for( int i = 0; i < nb_threads; i++ ) {
+            ops_trsm_tlr[i] = 0LL;
+            ops_trsm_dense[i] = 0LL;
+            ops_gemm_tlr[i] = 0LL;
+            ops_gemm_dense[i] = 0LL;
+            array_Brank[i] = 0LL;
+            count_Brank[i] = 0LL;
+            band_maxrank_thread[i] = 0;
+        }
+
+        if( root == dcAr->super.myrank )
+            fprintf(stderr, "\n***************** START Check band_size_dense %d ******************\n", band_size_dense);
+
+        parsec_band_size_dense_auto_tuning = parsec_band_size_dense_auto_tuning_New(dcAr, dcFake, rank_array, NB,
+                band_size_dense, ops_trsm_tlr, ops_trsm_dense,
+                ops_gemm_tlr, ops_gemm_dense, array_Brank, count_Brank, band_maxrank_thread); 
+
+        if( parsec_band_size_dense_auto_tuning != NULL ){
+            parsec_context_add_taskpool(parsec, parsec_band_size_dense_auto_tuning);
+            parsec_context_start(parsec);
+            parsec_context_wait(parsec);
+            parsec_band_size_dense_auto_tuning_Destruct(parsec_band_size_dense_auto_tuning);
+        }
+
+        /* Init value */
+        ops_total_tlr = 0LL;
+        ops_total_dense = 0LL;
+        sum_tlr = 0LL;
+        sum_dense = 0LL;
+        total_Brank = 0LL;
+        sum_Brank = 0LL;
+        total_count_Brank = 0LL;
+        sum_count_Brank = 0LL;
+        int band_maxrank_process = band_maxrank_thread[0];
+        int band_maxrank;
+
+        for( int i = 0; i < nb_threads; i++ ) {
+            ops_total_tlr += ops_trsm_tlr[i] + ops_gemm_tlr[i]; 
+            ops_total_dense += ops_trsm_dense[i] + ops_gemm_dense[i]; 
+            total_Brank += array_Brank[i];
+            total_count_Brank += count_Brank[i];
+
+            if( band_maxrank_process < band_maxrank_thread[i] )
+                band_maxrank_process = band_maxrank_thread[i];
+        }
+
+        MPI_Allreduce(&ops_total_tlr, &sum_tlr, 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD); 
+        MPI_Allreduce(&ops_total_dense, &sum_dense, 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD); 
+        MPI_Allreduce(&total_Brank, &sum_Brank, 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD); 
+        MPI_Allreduce(&total_count_Brank, &sum_count_Brank, 1, MPI_LONG_LONG_INT, MPI_SUM, MPI_COMM_WORLD); 
+        MPI_Allreduce(&band_maxrank_process, &band_maxrank, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+
+        if( root == dcAr->super.myrank ) {
+            fprintf(stderr, "band_size_dense: %d, nb_threads: %d, ops_sum_tlr: %Le, ops_sum_dense: %Le\n",
+                    band_size_dense, nb_threads, (long double)sum_tlr, (long double)sum_dense);
+            fprintf(stderr, "***************** END Check band_size_dense %d : %d ******************\n", band_size_dense, band_maxrank);
+        }
+
+        /* Update the termination factor if on GPU */
+        band_size_auto_tuning_termination_gpu( params, band_size_dense, sum_Brank, sum_count_Brank, sum_tlr, sum_dense );
+
+        if( sum_tlr * params->band_size_auto_tuning_termination > sum_dense )
+            left = band_size_dense + 1;
+        else
+            right = band_size_dense; 
+    }
+
+    /* Find the result */
+    params->band_size_dense_gpu_time_max = left - 1;
+    VERBOSE_PRINT(params->rank, params->verbose,
+            (BLU "\n############################# Find the OPT band_size_dense : %d #############################\n" RESET,
+             params->band_size_dense_gpu_time_max));
+
+    /* The band_size based on GPU memory limitation */
+    if( root == dcAr->super.myrank )
+        fprintf(stderr, BLU "band_size limit based on GPU memory: %d\n" RESET, params->band_size_dense_gpu_memory_max);
+
+    /* Calculate the band_size based on balance between CPU and GPU */
+    find_band_size_gpu_balance( params );
+    if( root == dcAr->super.myrank ) 
+        fprintf(stderr, BLU "band_size limit based on balance of CPU and GPU: %d\n" RESET, params->band_size_dense_gpu_balance_max);
+
+    opt_band_size_dense = hicma_parsec_min( params->band_size_dense_gpu_time_max, params->band_size_dense_gpu_memory_max ); 
+    opt_band_size_dense = hicma_parsec_min( opt_band_size_dense, params->band_size_dense_gpu_balance_max ); 
+
+    VERBOSE_PRINT(params->rank, params->verbose, (BLU "The auto-tuned band_size_dense is %d\n\n" RESET, opt_band_size_dense));
+
+    /* Update the new maxrank */
+    if( params->adaptive_maxrank ) {
+        int current_maxrank = 0;
+        for( int i = opt_band_size_dense; i < NT; i++ ) {
+            int j = i - opt_band_size_dense;
+            current_maxrank = hicma_parsec_max( rank_array[j*NT+i], current_maxrank );
+        }
+        params->maxrank = hicma_parsec_min( current_maxrank*3, params->maxrank );
+        params->genmaxrank = params->maxrank;
+        params->compmaxrank = params->maxrank;
+        if( root == dcAr->super.myrank )
+            fprintf(stderr, GRN "Update maxrank to %d, which is min(current_maxrank*3, maxrank) where current_maxrank= %d is maxrank of the last band_id %d\n" RESET, params->maxrank, current_maxrank, opt_band_size_dense);
+    }
+
+    /* Free memory */
+    free( ops_trsm_tlr );
+    free( ops_trsm_dense );
+    free( ops_gemm_tlr );
+    free( ops_gemm_dense );
+    free( band_maxrank_thread );
+    free( band_maxrank_receive );
+
+    return opt_band_size_dense; 
+}
+
+
+%}

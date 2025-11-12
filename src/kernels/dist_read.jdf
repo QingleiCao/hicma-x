@@ -1,0 +1,225 @@
+extern "C" %{
+/*
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+
+#include "hicma_parsec.h"
+
+/**
+ * @brief Read genotype data from binary files in distributed manner
+ * 
+ * This function reads genotype data from binary files where:
+ * - M must equal the number of patients in the input file
+ * - N is the number of SNPs in the output file
+ * - Data is read row by row and stored in column major order
+ * 
+ * @param path Base path to the genotype files
+ * @param num File number to read (0-based, will be incremented by 1)
+ * @param matrix Output matrix to store the read data
+ * @param N Number of patients (rows)
+ * @param SNP Number of SNPs (columns)
+ * @return 0 on success
+ */
+static int dist_read_float(char* path, int num, float *matrix, int N, int SNP) {
+
+   FILE *f;
+   unsigned int i;
+   
+   // Construct the full file path by appending genotype file number
+   char str[100] = {0};
+   char *cont = (char *)malloc(strlen(path) * sizeof(char)+100);
+   memcpy(cont, path,strlen(path) * sizeof(char)+10);
+   num++;  // Convert 0-based to 1-based file numbering
+   snprintf(str, sizeof(str), "/genotype%d.bin", num);
+   strcat(cont, str);
+
+   // Open the binary genotype file for reading
+   f = fopen(cont,"rb");
+
+   // Read data row by row from the binary file
+   for ( i=0; i<N; i++){
+       // Seek to the correct position for this row (each float is 4 bytes)
+       fseek(f, SNP*i*4, SEEK_SET);
+
+       // Calculate the starting index in the output matrix (column major order)
+       unsigned long long index =i*SNP;
+
+       // Read one complete row of SNP data
+       fread(&matrix[index],sizeof(float),SNP,f);
+
+       // Optional progress reporting (currently disabled)
+       if (0&&(i%100000==0)) {
+          printf("\n %5.2f %% completed", (100.*(double) i)/((double) N));
+       }
+   }
+   // Debug code for printing matrix contents (commented out)
+   /*for(int i = 0; i<N; i++) {
+        for(int j = 0; j<SNP; j++) {
+            printf("%f ", matrix[i*SNP+j]);
+        }
+        printf("\n");
+    }
+    printf("\n\n");*/
+   
+   // Clean up file handle and allocated memory
+   fclose(f);
+   free(cont);
+   return 0;
+}
+
+/**
+ * @brief Calculate the sum of all elements in a matrix
+ * 
+ * @param A Input matrix (stored in column major order)
+ * @param M Number of rows
+ * @param N Number of columns
+ * @return Sum of all matrix elements
+ */
+float sum_matrix_of_file(float *A, int M, int N) {
+    float sum = 0.0;
+    // Iterate through matrix in column major order
+    for(int j = 0; j < N; j++) {
+        for(int i = 0; i < M; i++) {
+            sum += A[j*M+i];
+            // Debug: printf("(%d, %d) %f ", i, j, A[j*M+i]);
+        }
+    }
+    printf("sum: %f\n", sum);
+    
+    return sum;
+}
+
+
+%}
+
+// PaRSEC task parameters
+descA         [ type = "parsec_tiled_matrix_t*" ]  // Matrix descriptor
+path      [ type = "char *" ]                      // Base path to genotype files
+
+// Task definition for distributed reading
+task(m, n)
+
+// Task iteration space: single row (m=0), multiple columns (n varies)
+m = 0 .. 0
+n = 0 .. descA->lnt-1 
+
+: descA(m, n)
+
+// Data dependencies: read-write access to matrix tile
+RW A <- descA(m, n) 
+     -> descA(m, n) 
+
+BODY
+{
+    // Read genotype data for this tile from the corresponding file
+    dist_read_float(path, n, A, descA->mb, descA->nb);
+    // Optional: sum_matrix_of_file(A, descA->mb, descA->nb);
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create a new PaRSEC taskpool for distributed reading
+ * 
+ * @param parsec PaRSEC context
+ * @param path Base path to genotype files
+ * @param desc Matrix descriptor to initialize
+ * @param SNPS Number of SNPs (columns)
+ * @param CHK Block size for tiling
+ * @param params HICMA parameters including rank and node information
+ * @return PaRSEC taskpool object for scheduling
+ */
+parsec_taskpool_t*
+dist_read_New(parsec_context_t *parsec,
+        char *path,
+        parsec_matrix_block_cyclic_t *desc,
+        int SNPS,
+        int CHK,
+        hicma_parsec_params_t *params)
+{
+    // Initialize and allocate memory for the distributed matrix
+    int total = params->N;
+    
+    // Initialize block-cyclic matrix distribution
+    parsec_matrix_block_cyclic_init(desc, PARSEC_MATRIX_FLOAT, PARSEC_MATRIX_TILE,
+            params->rank, SNPS, CHK, SNPS, total, 0, 0, 
+            SNPS, total, 1, params->nodes,
+            1, 1, 0, 0);
+    
+    // Allocate memory for the matrix data
+    desc->mat = parsec_data_allocate((size_t)desc->super.nb_local_tiles *
+                                   (size_t)desc->super.bsiz *
+                                   (size_t)parsec_datadist_getsizeoftype(desc->super.mtype));
+    
+    // Set data collection key for identification
+    parsec_data_collection_set_key((parsec_data_collection_t*)desc, "desc");
+
+    // Create the distributed read taskpool
+    parsec_dist_read_taskpool_t *taskpool = parsec_dist_read_new(&desc->super, path);
+
+    // Add float datatype to arena for efficient memory management
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_dist_read_DEFAULT_ADT_IDX],
+                            parsec_datatype_float_t, PARSEC_MATRIX_FULL,
+                            1, SNPS, CHK, SNPS,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)taskpool;
+}
+
+/**
+ * @brief Destroy the distributed read taskpool and free resources
+ * 
+ * @param taskpool PaRSEC taskpool to destroy
+ */
+void dist_read_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_dist_read_taskpool_t *dist_read_taskpool = (parsec_dist_read_taskpool_t *)taskpool;
+    // Remove datatype from arena
+    parsec_del2arena(&dist_read_taskpool->arenas_datatypes[PARSEC_dist_read_DEFAULT_ADT_IDX]);
+    // Free the taskpool
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Main function to perform distributed reading of genotype data
+ * 
+ * @param parsec PaRSEC context
+ * @param path Base path to genotype files
+ * @param desc Matrix descriptor for the distributed matrix
+ * @param SNPS Number of SNPs (columns)
+ * @param CHK Block size for tiling
+ * @param params HICMA parameters
+ * @return 0 on success
+ */
+int dist_read(parsec_context_t *parsec,
+        char *path,
+        parsec_matrix_block_cyclic_t *desc,  
+        int SNPS,
+        int CHK,
+        hicma_parsec_params_t *params)
+{
+    VERBOSE_PRINT(params->rank, params->verbose, ("Reading %s\n", path));
+    
+    // Create the distributed read taskpool
+    parsec_taskpool_t *parsec_dist_read = NULL;
+    parsec_dist_read = dist_read_New( parsec, path, desc, SNPS, CHK, params);
+    
+    if( parsec_dist_read != NULL ){
+        // Add taskpool to context and execute
+        parsec_context_add_taskpool(parsec, parsec_dist_read);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        // Clean up resources
+        dist_read_Destruct(parsec_dist_read);
+    }
+
+    return 0;
+}
+
+%}

@@ -1,0 +1,13 @@
+1. Merge LAPACK to tile and tile to LAPACK
+2. Merge potrf JDFs
+3. Matrix sum that supports multiple precisions
+4. Hide tile size
+5. Better API
+6. Python and Julia interfaces
+7. Remove dependencies to hcore
+8. Fix recursive issue in PaRSEC
+9. Merge GENOMICS and remove the redundant macros
+10. Fix hicma_parsec_init for external users
+11. Add additional params and redesign the structure
+12. Redesign tensor_gemm to tensor_gemm_sp, tensor_gemm_hp, ...
+13. Mememory register vs allocate host for adaptive_decision

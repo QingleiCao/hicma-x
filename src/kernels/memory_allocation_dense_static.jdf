@@ -1,0 +1,149 @@
+extern "C" %{
+/**
+ * @file memory_allocation_dense_static.jdf
+ * @brief Static memory allocation for dense matrices
+ * 
+ * This file defines the PaRSEC task for performing static memory allocation
+ * on dense matrix tiles. The allocation is performed in-place on the matrix
+ * tiles according to the specified allocation type and matrix structure.
+ * 
+ * The task supports both upper and lower triangular matrices and handles
+ * different allocation types through the allocate_type parameter.
+ * 
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+#include "hicma_parsec.h"
+#include "src/include/dplasma/constants.h"
+
+%}
+
+/* Global parameters for the memory allocation task
+ * uplo:          Specifies whether to allocate for upper or lower triangular part
+ * descA:         The tiled matrix descriptor
+ * allocate_type: String specifying the type of memory allocation to perform
+ */
+uplo           [ type = "dplasma_enum_t" ]
+descA          [ type = "parsec_tiled_matrix_t *" ]
+allocate_type  [type = "char *"]
+
+/**************************************************
+ *        Memory allocation task                  *
+ *        Allocates memory for matrix tiles       *
+ **************************************************/
+allocate_task(m, n)
+
+// Execution space: process tiles according to matrix structure
+// For upper triangular: process tiles (m,n) where n >= m
+// For lower triangular: process tiles (m,n) where n <= m
+m = 0 .. descA->lmt-1
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
+
+// Parallel partitioning: each tile is processed by one task
+: descA(m, n)                     
+
+// Parameters: read and write the matrix tile data
+RW A <- descA(m, n)    
+     -> descA(m, n)  
+
+BODY
+{
+    // Perform memory allocation for this tile according to the specified type
+    // The allocation is done in-place on the tile's device memory
+    hicma_parsec_core_memory_allocation(&this_task->data._f_A.data_out->device_private, 
+                                       (size_t)descA->mb*descA->nb, 
+                                       allocate_type, 
+                                       &this_task->data._f_A.data_out->original->nb_elts);
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create a new memory allocation taskpool for dense matrices
+ * 
+ * This function creates and initializes a PaRSEC taskpool for performing
+ * static memory allocation on dense matrix tiles. The taskpool handles
+ * both upper and lower triangular matrices according to the specified
+ * allocation type.
+ * 
+ * @param [in] uplo:          Specifies upper or lower triangular part to allocate
+ * @param [in] A:             The matrix to allocate memory for, already distributed
+ * @param [in] allocate_type: String specifying the type of memory allocation to perform
+ * @return The parsec object to schedule
+ */
+parsec_taskpool_t*
+hicma_parsec_memory_allocation_dense_static_New( dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        char *allocate_type)
+{
+    // Create the taskpool with the specified parameters
+    parsec_memory_allocation_dense_static_taskpool_t* memory_allocation_dense_static_taskpool = NULL;
+    memory_allocation_dense_static_taskpool = parsec_memory_allocation_dense_static_new(uplo, A, allocate_type);
+
+    // Note: Arena setup is commented out as it may not be needed for this operation
+    // Uncomment if specific data type arenas are required
+//    parsec_add2arena(&memory_allocation_dense_static_taskpool->arenas_datatypes[PARSEC_memory_allocation_dense_static_DEFAULT_ADT_IDX],
+//                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+//                            1, A->mb, A->nb, A->mb,
+//                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)memory_allocation_dense_static_taskpool;
+}
+
+/**
+ * @brief Destroy the memory allocation taskpool
+ * 
+ * @param [inout] taskpool: The PaRSEC taskpool to destroy
+ */
+void hicma_parsec_memory_allocation_dense_static_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_memory_allocation_dense_static_taskpool_t *memory_allocation_dense_static_taskpool = (parsec_memory_allocation_dense_static_taskpool_t *)taskpool;
+    
+    // Note: Arena cleanup is commented out as it may not be needed for this operation
+    // Uncomment if specific data type arenas were set up
+//    parsec_del2arena(&memory_allocation_dense_static_taskpool->arenas_datatypes[PARSEC_memory_allocation_dense_static_DEFAULT_ADT_IDX]);
+    
+    // Free the taskpool
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Perform static memory allocation on a dense matrix
+ * 
+ * This function performs static memory allocation on a dense matrix by
+ * processing each tile in parallel according to the specified allocation
+ * type and matrix structure (upper or lower triangular).
+ * 
+ * @param [in] parsec:        The PaRSEC context for task scheduling
+ * @param [in] uplo:          Specifies upper or lower triangular part to allocate
+ * @param [inout] A:          The matrix to allocate memory for, already distributed and allocated
+ * @param [in] allocate_type: String specifying the type of memory allocation to perform
+ * @return 0 on success
+ */
+int hicma_parsec_memory_allocation_dense_static(parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        char *allocate_type) 
+{
+    parsec_taskpool_t *parsec_memory_allocation_dense_static = NULL;
+    
+    // Create the memory allocation taskpool
+    parsec_memory_allocation_dense_static = hicma_parsec_memory_allocation_dense_static_New(uplo, A, allocate_type);
+    
+    // Execute the memory allocation operation if taskpool was created successfully
+    if( parsec_memory_allocation_dense_static != NULL ){
+        parsec_context_add_taskpool(parsec, parsec_memory_allocation_dense_static);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        hicma_parsec_memory_allocation_dense_static_Destruct(parsec_memory_allocation_dense_static);
+    }
+
+    return 0;
+}
+
+%}

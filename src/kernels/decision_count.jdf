@@ -1,0 +1,176 @@
+extern "C" %{
+/*
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+
+#include "hicma_parsec.h"
+
+%}
+
+// Input parameters for the decision counting task
+descA           [ type = "parsec_tiled_matrix_t*" ]  // Matrix descriptor for the tiled matrix
+params_tlr      [ type = "hicma_parsec_params_t *" ] // TLR parameters containing precision decisions
+num_dense_dp    [ type = "double *" ]                // Counter for dense double precision tiles
+num_dense_sp    [ type = "double *" ]                // Counter for dense single precision tiles
+num_dense_hp    [ type = "double *" ]                // Counter for dense half precision tiles
+num_dense_fp8   [ type = "double *" ]                // Counter for dense FP8 precision tiles
+num_low_rank_dp [ type = "double *" ]                // Counter for low-rank double precision tiles
+num_low_rank_sp [ type = "double *" ]                // Counter for low-rank single precision tiles
+
+// Task definition for counting different types of precision decisions
+Task(m, n)
+
+// Iterate over lower triangular matrix tiles (m >= n)
+m = 0 .. descA->lmt-1  // Row index from 0 to number of tiles in rows - 1
+n = 0 .. m             // Column index from 0 to current row (lower triangular)
+
+: descA(m, n)  // Depend on the matrix tile at position (m,n)
+
+
+BODY
+{
+    // Get thread ID for thread-local counting
+    int th_id = es->th_id;
+    
+    /* Count different types of precision decisions for this tile */
+    if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
+        num_dense_dp[th_id] += 1.0;
+    } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
+        num_dense_sp[th_id] += 1.0;
+    } else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
+        num_dense_hp[th_id] += 1.0;
+    } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
+        num_dense_fp8[th_id] += 1.0;
+    } else if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] ) {
+        num_low_rank_dp[th_id] += 1.0;
+    } else { 
+        // Default to low-rank single precision
+        num_low_rank_sp[th_id] += 1.0;
+    }
+
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create a new taskpool for counting precision decisions
+ * @param [in] A: the tiled matrix data, already distributed and allocated
+ * @param [in] params: TLR parameters containing precision decisions
+ * @param [in] num_dense_dp: counter array for dense double precision tiles
+ * @param [in] num_dense_sp: counter array for dense single precision tiles
+ * @param [in] num_dense_hp: counter array for dense half precision tiles
+ * @param [in] num_dense_fp8: counter array for dense FP8 precision tiles
+ * @param [in] num_low_rank_dp: counter array for low-rank double precision tiles
+ * @param [in] num_low_rank_sp: counter array for low-rank single precision tiles
+ * @return the parsec taskpool object to schedule
+ */
+parsec_taskpool_t*
+parsec_decision_count_New(
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        double *num_dense_dp,
+        double *num_dense_sp,
+        double *num_dense_hp,
+        double *num_dense_fp8,
+        double *num_low_rank_dp,
+        double *num_low_rank_sp  )
+{
+    parsec_taskpool_t* decision_count_taskpool;
+    parsec_decision_count_taskpool_t* taskpool = NULL;
+
+    // Create the taskpool for decision counting
+    taskpool = parsec_decision_count_new( A, params, num_dense_dp, num_dense_sp, num_dense_hp,
+            num_dense_fp8, num_low_rank_dp, num_low_rank_sp );
+    decision_count_taskpool = (parsec_taskpool_t*)taskpool;
+
+    return decision_count_taskpool;
+}
+
+/**
+ * @brief Destroy the decision counting taskpool
+ * @param [inout] taskpool: the parsec taskpool object to destroy
+ */
+void parsec_decision_count_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_decision_count_taskpool_t *decision_count_taskpool = (parsec_decision_count_taskpool_t *)taskpool;
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Main function to count different types of precision decisions
+ * @param [in] parsec: parsec context for task scheduling
+ * @param [in] A: tiled matrix descriptor
+ * @param [inout] params: TLR parameters to store the counts
+ * @return 0 on success
+ */
+int hicma_parsec_decision_count(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params )
+{
+    parsec_taskpool_t *parsec_decision_count = NULL;
+
+    /* Calculate the number of different decisions */
+    /* Only for 1 virtual process */
+    assert( parsec->nb_vp == 1 );
+    int nb_threads = parsec->virtual_processes[0]->nb_cores;
+
+    // Allocate thread-local counter arrays
+    double *num_dense_dp = (double *)calloc( sizeof(double), nb_threads );
+    double *num_dense_sp = (double *)calloc( sizeof(double), nb_threads );
+    double *num_dense_hp = (double *)calloc( sizeof(double), nb_threads );
+    double *num_dense_fp8 = (double *)calloc( sizeof(double), nb_threads );
+    double *num_low_rank_dp = (double *)calloc( sizeof(double), nb_threads );
+    double *num_low_rank_sp = (double *)calloc( sizeof(double), nb_threads );
+
+    // Create and schedule the decision counting taskpool
+    parsec_decision_count = parsec_decision_count_New( A, params, num_dense_dp, num_dense_sp, num_dense_hp,
+            num_dense_fp8, num_low_rank_dp, num_low_rank_sp );
+
+    if( parsec_decision_count != NULL ){
+        parsec_context_add_taskpool(parsec, parsec_decision_count);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        parsec_decision_count_Destruct(parsec_decision_count);
+    }
+
+    // Reduce thread-local counts to thread 0
+    for( int i = 1; i < nb_threads; i++ ) {
+        num_dense_dp[0] += num_dense_dp[i];
+        num_dense_sp[0] += num_dense_sp[i];
+        num_dense_hp[0] += num_dense_hp[i];
+        num_dense_fp8[0] += num_dense_fp8[i];
+        num_low_rank_dp[0] += num_low_rank_dp[i];
+        num_low_rank_sp[0] += num_low_rank_sp[i];
+    }
+
+    // Reduce counts across all MPI processes
+    MPI_Allreduce(&num_dense_dp[0], &params->nb_dense_dp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&num_dense_sp[0], &params->nb_dense_sp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&num_dense_hp[0], &params->nb_dense_hp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&num_dense_fp8[0], &params->nb_dense_fp8, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&num_low_rank_dp[0], &params->nb_low_rank_dp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&num_low_rank_sp[0], &params->nb_low_rank_sp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    
+    // Free allocated memory
+    free( num_dense_dp );
+    free( num_dense_sp );
+    free( num_dense_hp );
+    free( num_dense_fp8 );
+    free( num_low_rank_dp );
+    free( num_low_rank_sp );
+
+    // Print verbose statistics if enabled
+    VERBOSE_PRINT(params->rank, params->verbose,
+            (GRN "nb_dense_dp= %.0lf nb_dense_sp= %.0lf nb_dense_hp= %.0lf nb_dense_fp8= %.0lf nb_low_rank_dp= %.0lf nb_low_rank_sp= %.0lf\n" RESET,
+             params->nb_dense_dp, params->nb_dense_sp, params->nb_dense_hp, params->nb_dense_fp8, params->nb_low_rank_dp, params->nb_low_rank_sp));
+
+    return 0;
+}
+
+%}

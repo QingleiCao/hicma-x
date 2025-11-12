@@ -1,0 +1,200 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/* Band Tile Regeneration Kernel
+ * 
+ * This kernel regenerates matrix tiles in the band region of a hierarchical matrix.
+ * The band region contains dense tiles that are stored in full format and are typically
+ * computed using a kernel function that generates matrix entries based on spatial indices.
+ * 
+ * The regeneration process:
+ * 1. Iterates over the lower triangular band region
+ * 2. Allocates appropriate memory (CPU or GPU-optimized)
+ * 3. Calls the kernel function to compute matrix entries
+ * 4. Stores the generated data in the tile
+ * 
+ * Memory allocation strategy:
+ * - GPU systems: Uses pinned host memory for faster GPU transfers
+ * - CPU systems: Uses standard memory allocation with zero initialization
+ */
+// Input parameters for band regeneration
+uplo            [ type = int ]                        // Matrix storage format (PlasmaLower for lower triangular)
+descA           [ type = "parsec_tiled_matrix_t*" ]  // Matrix descriptor containing tile layout information
+params_tlr      [ type = "hicma_parsec_params_t *" ] // TLR parameters including GPU configuration
+params_kernel   [ type = "starsh_params_t *" ]       // Kernel generation parameters (function pointer and data)
+band_size_dense [ type = "int" ]                      // Band size defining the dense region boundary
+
+/**************************************************
+ * Band Tile Generation Task                      *
+ *                                                *
+ * This task generates new tile data for a single *
+ * tile in the band region using the provided     *
+ * kernel function                                *
+ **************************************************/
+generate_band(m, n)
+
+// Iterate over band region (lower triangular)
+// m: row index, n: column index
+// Only process tiles within the band_size_dense boundary
+m = 0 .. descA->mt-1
+n = %{ return parsec_imax(m-band_size_dense+1, 0); %} .. m
+
+// Parallel partitioning across available processors
+:descA(m, n)
+
+READ D <- descA(m, n) 
+
+BODY
+{
+    // Calculate tile dimensions and leading dimension
+    int ldd = BLKLDD(descA, m);  // Leading dimension for this tile
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;  // Actual row dimension
+    int tempnn = tempmm;  // For symmetric matrices, column dimension equals row dimension
+
+    /* Memory allocation for new tile data */
+#if !BAND_MEMORY_CONTIGUOUS
+    // Create new data copy with PaRSEC memory management
+    this_task->data._f_D.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, descA->super.default_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
+    
+    if( params_tlr->gpus > 0 ) {
+        // GPU-optimized memory allocation using pinned host memory
+        // Pinned memory enables faster CPU-GPU transfers
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+        cudaMallocHost((void**)&this_task->data._f_D.data_out->device_private, descA->mb * descA->mb * sizeof(double));
+#endif
+
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        hipHostMalloc((void**)&this_task->data._f_D.data_out->device_private, descA->mb * descA->mb * sizeof(double), hipHostMallocDefault);
+#endif
+    } else {
+        // Standard CPU memory allocation with zero initialization
+        // calloc ensures all matrix entries start as zero
+        this_task->data._f_D.data_out->device_private = calloc(descA->mb * descA->mb, sizeof(double));
+    }
+#endif
+
+    /* Generate tile data using the kernel function */
+    // The kernel function computes matrix entries based on spatial indices
+    // It takes the tile dimensions, global indices, kernel data, and output buffer
+    params_kernel->kernel(tempmm, tempnn, 
+                         params_kernel->index + m*descA->mb,  // Global row start index
+                         params_kernel->index + n*descA->mb,  // Global column start index
+                         params_kernel->data, params_kernel->data,  // Kernel data (passed twice for symmetric kernels)
+                         this_task->data._f_D.data_out->device_private, ldd);  // Output buffer and leading dimension
+}
+END
+
+extern "C" %{
+
+/**
+ * Create a new band regeneration taskpool
+ * 
+ * This function creates a PaRSEC taskpool for regenerating tiles in the band region
+ * of a hierarchical matrix. The taskpool will generate new tile data using the provided
+ * kernel function and store it in the appropriate memory format (CPU or GPU-optimized).
+ * 
+ * @param [in] uplo:         Matrix storage format (PlasmaLower for lower triangular)
+ * @param [inout] A:         Matrix descriptor with distributed and allocated data
+ * @param [in] params:       TLR parameters containing GPU configuration and settings
+ * @param [in] params_kernel: Kernel generation parameters including function pointer and data
+ * @param [in] band_size_dense: Band size defining the dense region boundary
+ * @return the parsec taskpool object to schedule for execution, NULL on error
+ */
+parsec_taskpool_t*
+band_regenerate_New(int uplo,
+             parsec_tiled_matrix_t *A,
+             hicma_parsec_params_t *params,
+             starsh_params_t *params_kernel,
+             int band_size_dense)
+{
+    parsec_arena_t* default_arena;
+
+    /* Input validation - only lower triangular storage is currently supported */
+    if( uplo != PlasmaLower ) {
+        dplasma_error("STARSH_appr_New", "illegal value of uplo");
+        return NULL /*-1*/;
+    }
+
+    // Create the band regeneration taskpool using the generated constructor
+    parsec_band_regenerate_taskpool_t *band_regenerate =
+        parsec_band_regenerate_new(uplo, A, params, params_kernel, band_size_dense);
+
+    // Configure the data type arena for double precision matrices
+    // This sets up memory management and alignment for the tile data
+    parsec_add2arena(&band_regenerate->arenas_datatypes[PARSEC_band_regenerate_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, A->mb, A->nb, A->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+    return (parsec_taskpool_t*)band_regenerate;
+}
+
+/**
+ * Destructor for band regeneration taskpool
+ * 
+ * This function properly cleans up the taskpool and frees all associated resources,
+ * including the data type arena that was configured during taskpool creation.
+ * 
+ * @param [inout] taskpool: The parsec taskpool object to destroy and free
+ */
+void band_regenerate_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_band_regenerate_taskpool_t *band_regenerate_taskpool = (parsec_band_regenerate_taskpool_t *)taskpool;
+    
+    // Remove the data type arena that was added during taskpool creation
+    parsec_del2arena(&band_regenerate_taskpool->arenas_datatypes[PARSEC_band_regenerate_DEFAULT_ADT_IDX]);
+    
+    // Free the taskpool and all its resources
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * Execute band regeneration operation
+ * 
+ * This is the main interface function that creates, schedules, and executes the band
+ * regeneration taskpool. It handles the complete lifecycle of the regeneration operation,
+ * including taskpool creation, execution, and cleanup.
+ * 
+ * @param [in] parsec:       PaRSEC context for task scheduling and execution
+ * @param [in] uplo:         Matrix storage format (currently supports PlasmaLower only)
+ * @param [inout] dcA:       Matrix descriptor with distributed and allocated data
+ * @param [in] params:       TLR parameters containing GPU configuration and settings
+ * @param [in] params_kernel: Kernel generation parameters including function pointer and data
+ * @param [in] band_size_dense: Band size defining the dense region boundary
+ * @return 0 on success, error code on failure
+ */
+int parsec_band_regenerate( parsec_context_t *parsec,
+                int uplo,
+                parsec_tiled_matrix_t *dcA,
+                hicma_parsec_params_t *params,
+                starsh_params_t *params_kernel,
+                int band_size_dense)
+{
+    parsec_taskpool_t *parsec_band_regenerate = NULL;
+
+    // Create the band regeneration taskpool
+    parsec_band_regenerate = band_regenerate_New(
+             uplo, dcA, params, params_kernel, band_size_dense);
+
+    // Schedule and execute the taskpool
+    parsec_context_add_taskpool(parsec, parsec_band_regenerate);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+    
+    // Clean up the taskpool
+    band_regenerate_Destruct(parsec_band_regenerate);
+
+    return 0;
+}
+
+%}

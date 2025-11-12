@@ -1,0 +1,344 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+#include "hicma_parsec.h"
+
+/*
+ * ========================================================================================
+ * SINGLE PRECISION HALF PRECISION BANDED CHOLESKY FACTORIZATION (POTRF)
+ * ========================================================================================
+ * 
+ * This JDF (Just-in-time Data Flow) implements a high-performance Cholesky factorization
+ * algorithm for banded matrices using mixed precision arithmetic (single precision with
+ * half precision acceleration). The algorithm decomposes a symmetric positive definite
+ * matrix A into A = L * L^T, where L is a lower triangular matrix.
+ * 
+ * ALGORITHM OVERVIEW:
+ * ===================
+ * The Cholesky factorization follows a block-based approach with four main computational
+ * kernels:
+ * 1. POTRF: Diagonal block factorization (L(k,k) = chol(A(k,k)))
+ * 2. TRSM:  Triangular solve for column updates (L(m,k) = A(m,k) * L(k,k)^(-T))
+ * 3. SYRK:  Symmetric rank-k update for diagonal blocks (A(m,m) -= L(m,k) * L(m,k)^T)
+ * 4. GEMM:  Matrix-matrix multiply for off-diagonal updates (A(m,n) -= L(m,k) * L(n,k)^T)
+ * 
+ * TASK PRIORITY SCHEDULING SYSTEM:
+ * ================================
+ * This JDF implements a sophisticated priority-based scheduling system to optimize task
+ * execution order and minimize critical path length:
+ * 
+ * Priority Formulas (higher values = higher priority):
+ * - shpotrf_shpotrf(k)    : (MT-k)^3                           - Diagonal block factorization
+ * - shpotrf_ssyrk(k,m)    : (MT-m)^3 + 3*(m-k)                - Symmetric rank-k update  
+ * - shpotrf_strsm(m,k)    : (MT-m)^3 + 3*(m-k)*(2*MT-k-m-1)   - Triangular solve
+ * - shpotrf_sgemm(m,n,k)  : (MT-m)^3 + 3*(m-n)*(2*MT-m-n-1) + 6*(m-k) - Matrix multiply
+ * 
+ * Where MT = descA->mt (number of tile rows/columns)
+ * 
+ * Maximum priority bound:
+ * (MT - PRI_CHANGE)^3 + 3*MT*(2*MT - PRI_CHANGE - 1) + 6*MT < (MT^3 + 6*MT^2 + 3*MT)
+ * 
+ * PERFORMANCE OPTIMIZATIONS:
+ * ==========================
+ * - GPU acceleration with CUDA/HIP support for all computational kernels
+ * - Mixed precision arithmetic for improved performance and memory efficiency
+ * - Lookahead and left-looking optimizations to reduce synchronization overhead
+ * - Load balancing across multiple GPU devices
+ * - Priority-based task scheduling to minimize critical path
+ * 
+ * WARNING: Integer overflow may occur if mt > 1200 due to cubic priority calculations.
+ */
+
+%}
+
+/* ========================================================================================
+ * GLOBAL VARIABLES AND PARAMETERS
+ * ========================================================================================
+ * These variables define the matrix structure, algorithm parameters, and GPU configuration
+ * for the Cholesky factorization algorithm.
+ */
+
+// Matrix and algorithm configuration
+descA      [type = "parsec_tiled_matrix_t*"]  // Matrix descriptor containing tile layout, dimensions, and data pointers
+params_tlr [ type = "hicma_parsec_params_t *" ]  // Algorithm parameters including precision settings, band sizes, and optimization flags
+
+// Task priority scheduling parameters for critical path optimization
+PRI_CHANGE [type = "int" hidden = on default = 0 ]  // Priority change threshold - tasks beyond this point use cubic priority
+PRI_MAX    [type = "int" hidden = on default = "(descA->mt * ( 3 + descA->mt * ( 2 + descA->mt )))" ]  // Maximum priority value to prevent overflow
+
+/* GPU acceleration workspace and device management for mixed precision operations */
+ws_gpu     [ type = "void *" hidden = on default = NULL ]  // GPU workspace buffer for temporary storage during computations
+
+// Multi-GPU configuration for load balancing and parallel execution
+nb_cuda_devices      [ type = "int"   hidden = on default = 1 ]  // Number of available CUDA/HIP devices for computation
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]  // Array of GPU device indices for load balancing
+
+
+/* ========================================================================================
+ * MATRIX TILE BINDING AND GPU DEVICE ASSIGNMENT
+ * ========================================================================================
+ * This task binds matrix tiles to computational tasks and assigns GPU devices for
+ * optimal load balancing in mixed precision operations.
+ */
+shpotrf_bind_A(m, n)
+
+// Execution space: process only lower triangular matrix tiles (Cholesky constraint)
+m = 0 .. descA->nt-1  // Row index (0 to number of tile rows - 1)
+n = 0 .. m            // Column index (0 to m, ensuring lower triangular structure)
+
+// Parallel partitioning: each tile can be processed independently
+:descA(m, n)
+
+// Data flow routing: direct matrix tiles to appropriate computational kernels based on position
+READ A <- descA(m, n)
+       -> (m == 0 && n == 0) ? T shpotrf_shpotrf(0)    [ type_remote = SINGLE ]  // First diagonal tile -> initial factorization
+       -> (m > 0  && n == 0) ? C shpotrf_strsm(m, 0)   [ type_remote = SINGLE ]  // First column tiles -> triangular solve
+       -> (m == n && n > 0) ? T shpotrf_ssyrk(0, m)    [ type_remote = SINGLE ]  // Diagonal tiles -> symmetric rank-k update
+       -> (m != n && n > 0) ? C shpotrf_sgemm(m, n, 0) [ type_remote = SINGLE ]  // Off-diagonal tiles -> matrix multiply
+
+BODY
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    // GPU load balancing: assign optimal GPU device for mixed precision operations
+    if( nb_cuda_devices > 0 ) {
+        // Calculate optimal GPU device based on tile position and available devices
+        int g = gpu_load_mixed_precision( m, n, descA->nt, params_tlr->P, nb_cuda_devices, 
+                                         params_tlr->band_size_dense_sp, params_tlr->band_size_dense_sp);
+        // Advise runtime to prefer specific GPU device for this data tile to minimize transfers
+        parsec_advise_data_on_device( _f_A->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+
+/* ========================================================================================
+ * DIAGONAL BLOCK CHOLESKY FACTORIZATION (POTRF)
+ * ========================================================================================
+ * This task performs Cholesky factorization of diagonal blocks: L(k,k) = chol(A(k,k))
+ * It is the critical path operation that must complete before dependent tasks can proceed.
+ */
+shpotrf_shpotrf(k) [high_priority = on] 
+
+// Execution space: process each diagonal block in sequence
+k = 0 .. descA->mt-1  // Diagonal block index (0 to number of tile rows - 1)
+
+// Parallel partitioning: each diagonal block is independent but must be processed in order
+:descA(k, k)
+
+// Data dependencies and flow: diagonal blocks are the critical path
+RW T <- (k == 0) ? A shpotrf_bind_A(k, k) : T shpotrf_ssyrk(k-1, k)   [ type_remote = SINGLE ]  // Input: first block from matrix or previous syrk result
+     -> T shpotrf_strsm(k+1..descA->mt-1, k)                          [ type_remote = SINGLE ]  // Output: feeds triangular solve tasks for column k
+     -> descA(k, k)                                                      // Output: updates matrix diagonal block
+
+// Priority calculation: cubic priority ensures diagonal blocks are processed first (critical path)
+; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    // GPU-accelerated Cholesky factorization: L(k,k) = chol(A(k,k))
+    // Uses mixed precision arithmetic for improved performance
+    hicma_parsec_core_potrf_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, k );
+#endif
+}
+END
+
+BODY
+{
+    // CPU-based Cholesky factorization fallback: L(k,k) = chol(A(k,k))
+    // Single precision implementation with half precision acceleration
+    hicma_parsec_core_potrf_cpu( descA, params_tlr, es, T, k );
+}
+END
+
+/* ========================================================================================
+ * TRIANGULAR SOLVE FOR COLUMN UPDATES (TRSM)
+ * ========================================================================================
+ * This task performs triangular solve: L(m,k) = A(m,k) * L(k,k)^(-T)
+ * It updates column tiles using the factorized diagonal block.
+ */
+shpotrf_strsm(m, k) [high_priority = on] 
+
+// Execution space: solve for all tiles below diagonal block k
+m = 1 .. descA->mt-1  // Row index (below diagonal, starting from 1)
+k = 0 .. m-1          // Column index (diagonal block being used for solve)
+
+// Parallel partitioning: each tile below diagonal can be processed independently
+: descA(m, k)
+
+// Data dependencies: requires factorized diagonal block and input column tile
+READ  T <- T shpotrf_shpotrf(k)                                             [ type_remote = SINGLE ]  // Read factorized diagonal block L(k,k)
+
+RW    C <- (k == 0) ? A shpotrf_bind_A(m, k) : C shpotrf_sgemm(m, k, k-1)   [ type_remote = SINGLE ]  // Input: matrix tile or previous gemm result
+        -> A shpotrf_ssyrk(k, m)                                            [ type_remote = SINGLE ]  // Output: feeds symmetric rank-k update for diagonal
+        -> A shpotrf_sgemm(m, k+1..m-1, k)                                  [ type_remote = SINGLE ]  // Output: feeds subsequent gemm tasks in same row
+        -> B shpotrf_sgemm(m+1..descA->mt-1, m, k)                          [ type_remote = SINGLE ]  // Output: feeds gemm tasks in lower rows
+        -> descA(m, k)                                                        // Output: updates matrix tile
+
+// Control flow for lookahead and left-looking optimizations to reduce synchronization
+CTL ctl1 <- (params_tlr->lookahead > 2 && m > params_tlr->lookahead+k)? ctl1 shpotrf_sgemm(k+2, k+1, k)  // Lookahead control for early gemm scheduling
+CTL ctl_left  -> (params_tlr->left_looking > 0)? ctl_left shpotrf_sgemm(m, k+params_tlr->P*params_tlr->left_looking, 0)  // Left-looking control for memory optimization
+
+// Priority calculation: higher priority for tiles closer to diagonal (critical path optimization)
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    // GPU-accelerated triangular solve: L(m,k) = A(m,k) * L(k,k)^(-T)
+    // Uses mixed precision arithmetic for improved performance
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+#endif
+}
+END
+
+BODY
+{
+    // CPU-based triangular solve implementation: L(m,k) = A(m,k) * L(k,k)^(-T)
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;  // Handle last row block size (may be smaller)
+    int ldak = descA->mb;   // Leading dimension of diagonal block L(k,k)
+    int ldam = descA->mb;   // Leading dimension of target block L(m,k)
+
+    // Perform triangular solve: C = C * T^(-T) where T is lower triangular
+    // This computes L(m,k) = A(m,k) * L(k,k)^(-T) in single precision
+    CORE_strsm(PlasmaRight, PlasmaLower, PlasmaTrans, PlasmaNonUnit,
+               tempmm, descA->nb,
+               (float)1.0, T /*A(k, k)*/, ldak,    // Factorized diagonal block L(k,k)
+                                C /*A(m, k)*/, ldam);  // Target block L(m,k) to update
+}
+END
+
+
+/* ========================================================================================
+ * SYMMETRIC RANK-K UPDATE FOR DIAGONAL BLOCKS (SYRK)
+ * ========================================================================================
+ * This task performs symmetric rank-k update: A(m,m) -= L(m,k) * L(m,k)^T
+ * It updates diagonal blocks using the computed column tiles.
+ */
+shpotrf_ssyrk(k, m) [high_priority = on]
+
+// Execution space: update diagonal blocks using column k
+k = 0   .. descA->mt-2  // Source column index (0 to mt-2, last column doesn't need syrk)
+m = k+1 .. descA->mt-1  // Target diagonal block index (k+1 to mt-1)
+
+// Parallel partitioning: each diagonal block can be updated independently
+: descA(m, m)
+
+// Data dependencies: requires updated column tile and current diagonal block
+READ  A <- C shpotrf_strsm(m, k)                                            [ type_remote = SINGLE ]  // Read updated column tile L(m,k) from triangular solve
+
+RW    T <- (k == 0)   ? A shpotrf_bind_A(m, m) : T shpotrf_ssyrk(k-1, m)    [ type_remote = SINGLE ]  // Input: matrix diagonal or previous syrk result
+        -> (m == k+1) ? T shpotrf_shpotrf(m)  : T shpotrf_ssyrk(k+1, m)     [ type_remote = SINGLE ]  // Output: feeds next factorization or syrk
+
+// Priority calculation: higher priority for diagonal blocks closer to main diagonal (critical path)
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * (m - k) : PRI_MAX
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    // GPU-accelerated symmetric rank-k update: A(m,m) -= L(m,k) * L(m,k)^T
+    // Uses mixed precision arithmetic for improved performance
+    hicma_parsec_core_syrk_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, 0 );
+#endif
+}
+END
+
+BODY
+{
+    // CPU-based symmetric rank-k update implementation: A(m,m) -= L(m,k) * L(m,k)^T
+    int tempmm = m == descA->mt-1 ? descA->m - m*descA->mb : descA->mb;  // Handle last row block size (may be smaller)
+    int ldam = descA->mb;   // Leading dimension of source matrix L(m,k)
+
+    // Perform symmetric rank-k update: T = T - A * A^T
+    // This computes A(m,m) -= L(m,k) * L(m,k)^T in single precision
+    CORE_ssyrk(PlasmaLower, PlasmaNoTrans,
+               tempmm, descA->mb,
+               (float)-1.0, A /*A(m, k)*/, ldam,    // Source column tile L(m,k)
+               (float) 1.0, T /*A(m, m)*/, ldam);   // Target diagonal block A(m,m)
+
+    // Debug logging for performance analysis and verification
+    printlog(
+             "CORE_ssyrk( %d, %d )\n\t( %s, %s, %d, %d, %f, A(%d,%d)[%p], %d, %f, A(%d,%d)[%p], %d)\n",
+             k, m,
+             plasma_const( PlasmaLower ), plasma_const( PlasmaNoTrans ),
+             tempmm, descA->mb,
+             -1.0, m, k, A, ldam,
+              1.0, m, m, T, ldam);
+}
+END
+
+/* ========================================================================================
+ * MATRIX-MATRIX MULTIPLY FOR OFF-DIAGONAL UPDATES (GEMM)
+ * ========================================================================================
+ * This task performs matrix-matrix multiply: A(m,n) -= L(m,k) * L(n,k)^T
+ * It updates off-diagonal blocks using computed column tiles.
+ */
+shpotrf_sgemm(m, n, k)
+
+// Execution space: update off-diagonal blocks using column k
+k = 0   .. descA->mt-3  // Source column index (0 to mt-3, last two columns don't need gemm)
+m = k+2 .. descA->mt-1  // Target row index (k+2 to mt-1, off-diagonal)
+n = k+1 .. m-1          // Target column index (k+1 to m-1, off-diagonal)
+
+// Parallel partitioning: each off-diagonal block can be updated independently
+: descA(m, n)
+
+// Data dependencies: requires two updated column tiles and current off-diagonal block
+READ  A <- C shpotrf_strsm(m, k)                                                [ type_remote = SINGLE ]  // Read updated column tile L(m,k) from triangular solve
+READ  B <- C shpotrf_strsm(n, k)                                                [ type_remote = SINGLE ]  // Read updated column tile L(n,k) from triangular solve
+
+RW    C <- (k == 0) ? A shpotrf_bind_A(m, n) : C shpotrf_sgemm(m, n, k-1)       [ type_remote = SINGLE ]  // Input: matrix tile or previous gemm result
+        -> (n == k+1) ? C shpotrf_strsm(m, n) : C shpotrf_sgemm(m, n, k+1)      [ type_remote = SINGLE ]  // Output: feeds triangular solve or next gemm
+
+// Control flow for lookahead and left-looking optimizations to reduce synchronization overhead
+CTL ctl1 -> (params_tlr->lookahead > 2 && m == k+2 && n == k+1)? ctl1 shpotrf_strsm(k+params_tlr->lookahead+1 .. descA->mt-1, k)  // Lookahead control for early trsm scheduling
+CTL ctl_left <- (params_tlr->left_looking > 0 && k == 0 && n >= params_tlr->P*params_tlr->left_looking)? ctl_left shpotrf_strsm(m, n-params_tlr->P*params_tlr->left_looking)  // Left-looking control for memory optimization
+
+// Priority calculation: higher priority for blocks closer to diagonal (critical path optimization)
+; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - m - n - 3) * (m - n) + 6 * (m - k) : PRI_MAX
+
+BODY [type=CUDA]
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    // GPU-accelerated matrix-matrix multiply: A(m,n) -= L(m,k) * L(n,k)^T
+    // Uses mixed precision arithmetic for improved performance
+    hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+            C, A, B, m, n, k, 0, 0, 0 );
+#endif
+}
+END
+
+BODY
+{
+    // CPU-based matrix-matrix multiply implementation: A(m,n) -= L(m,k) * L(n,k)^T
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;  // Handle last row block size (may be smaller)
+    int ldam = descA->mb;   // Leading dimension of matrix A (L(m,k))
+    int ldan = descA->mb;   // Leading dimension of matrix B (L(n,k))
+
+    // Perform matrix-matrix multiply: C = C - A * B^T
+    // This computes A(m,n) -= L(m,k) * L(n,k)^T in single precision
+    CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
+               tempmm, descA->mb, descA->mb,
+               (float)-1.0, A /*A(m, k)*/, ldam,    // Source column tile L(m,k)
+                            B /*A(n, k)*/, ldan,    // Source column tile L(n,k)
+               (float) 1.0, C /*A(m, n)*/, ldam);  // Target off-diagonal block A(m,n)
+
+    // Debug logging for performance analysis and verification
+    printlog("CORE_sgemm( %d, %d, %d )\n\t( %s, %s, %d, %d, %d, %f, A(%d,%d)[%p], %d, A(%d,%d)[%p], %d, %f, A(%d,%d)[%p], %d)\n",
+             m, n, k,
+             plasma_const( PlasmaNoTrans ),  plasma_const( PlasmaTrans ),
+             tempmm, descA->mb, descA->mb,
+             -1.0, m, k, A, ldam,
+                   n, k, B, ldan,
+              1.0, m, n, C, ldam);
+}
+END

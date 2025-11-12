@@ -1,0 +1,394 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2023-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "climate_emulator.h"
+
+/**
+ * @brief Print a matrix row in double format for debugging purposes
+ * @param data Pointer to the matrix data
+ * @param M Number of rows to print
+ * @param N Number of columns to print
+ * @param lda Leading dimension of the matrix
+ */
+static void print_matrix_row_double(double *data, int M, int N, int lda) {
+    printf("\n\n");
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            printf("%.16f ", data[i*lda+j]);
+        }
+        printf("\n");
+    }
+    printf("\n\n");
+}
+
+/**
+ * @brief Reshape and process flmT matrix using linear regression approach
+ * 
+ * This function performs a forward reshape operation on the flmT matrix by:
+ * 1. Extracting time series data for each row
+ * 2. Computing linear regression coefficients using least squares
+ * 3. Updating the matrix with predicted values
+ * 
+ * @param flmT Input/output matrix containing time series data
+ * @param gb Climate emulator structure containing configuration parameters
+ * @param m Current row index being processed
+ * @param tmp Temporary workspace buffer for computations
+ */
+static void climate_emulator_flmT_reshape(double *flmT, climate_emulator_struct_t *gb, int m, double *tmp) {
+    // Calculate offset and dimensions for current row
+    int flmT_offset = m * gb->desc_flmT.super.mb; 
+    int M = (m == gb->desc_flmT.super.lmt-1)? gb->flmT_M-flmT_offset : gb->desc_flmT.super.mb;  
+    
+    // Early return if insufficient time points for regression
+    if( gb->T-3 <= 0 ) return;
+    
+    int N = gb->T-3;  // Number of time points for regression
+    int lda_flmT = gb->desc_flmT.super.mb;  // Leading dimension of flmT
+
+    // Allocate temporary buffers from workspace:
+    // Y: N x 1 vector for dependent variable (current time point)
+    double *Y = tmp; 
+    // X: N x 3 matrix for independent variables (3 previous time points)
+    double *X = tmp + N; 
+    // XtX: 3 x 3 matrix for X^T * X (normal matrix)
+    double *XtX = tmp + 4 * N; 
+    // XtY: 3 x 1 vector for X^T * Y (right-hand side)
+    double *XtY = tmp + 4 * N + 10;
+    // phi: 3 x 1 vector for regression coefficients (output)
+    double *phi = tmp + 4 * N + 14; 
+
+    // Process each row in the current tile
+    for(int i = 0; i < M; i++) {
+        // Extract Y vector: values at time points 3 to T-1
+        for(int j = 0; j < N; j++) {
+            Y[j] = flmT[(j+3)*lda_flmT+i]; 
+        }
+
+#if DEBUG_INFO_CLIMATE_EMULATOR
+        printf("Y\n");
+        print_matrix_row_double(Y, 3, 1, 1);
+#endif
+
+        // Extract X matrix: values at time points 0 to T-4 (3 previous time points)
+        for(int j = 0; j < N; j++) {
+            X[3*j+0] = flmT[(j+2)*lda_flmT+i];  // Time point j+2
+            X[3*j+1] = flmT[(j+1)*lda_flmT+i];  // Time point j+1
+            X[3*j+2] = flmT[(j+0)*lda_flmT+i];  // Time point j
+        }
+
+#if DEBUG_INFO_CLIMATE_EMULATOR
+        printf("X\n");
+        print_matrix_row_double(X, N, 3, 3);
+
+        printf("flmT\n");
+        print_matrix_row_double(flmT, N+3, 1, N+3);
+#endif
+        
+        // Compute X^T * X (normal matrix for least squares)
+        double alpha = 1.0;
+        double beta = 0.0;
+
+        cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                3, 3, N,
+                alpha, X, 3,
+                X, 3,
+                beta, XtX, 3); 
+
+        // Compute X^T * Y (right-hand side vector)
+        cblas_dgemv(CblasRowMajor, CblasTrans,
+                N, 3,
+                alpha, X, 3,
+                Y, 1,
+                beta, XtY, 1);
+
+#if DEBUG_INFO_CLIMATE_EMULATOR
+        printf("XtX\n");
+        print_matrix_row_double(XtX, 3, 3, 3);
+
+        printf("XtY\n");
+        print_matrix_row_double(XtY, 3, 1, 1);
+#endif
+
+        // Solve the normal equations (X^T * X) * phi = X^T * Y using Cholesky decomposition
+        // This gives us the least squares solution for the regression coefficients
+        LAPACKE_dposv(LAPACK_ROW_MAJOR, 'U', 3, 1, XtX, 3, XtY, 1); 
+
+        // Alternative: LU decomposition (commented out)
+        //int ipiv[3];
+        //LAPACKE_dgesv(LAPACK_ROW_MAJOR, 3, 1, XtX, 3, ipiv, XtY, 1);
+
+        // Store the computed regression coefficients in the global phi array
+        for(int j = 0; j < 3; j++) {
+            gb->phi[(i+flmT_offset)*3+j] = XtY[j];
+        }
+
+        // Debug output for pivot information (commented out)
+        //printf("ipiv: \n");
+        //for (int i = 0; i < 3; i++) {
+        //    printf("%d\n", ipiv[i]);
+        //}
+
+        // Use the computed phi coefficients to update flmT matrix
+        // Compute: flmT[3:end] = flmT[3:end] - X * phi
+        // This updates the matrix with the predicted values from regression
+        cblas_dgemv(CblasRowMajor, CblasNoTrans,
+                N, 3,
+                -1.0, X, 3,      // -X
+                XtY, 1,          // phi (stored in XtY)
+                1.0, &flmT[3*lda_flmT+i], lda_flmT);  // + flmT[3:end]
+
+#if DEBUG_INFO_CLIMATE_EMULATOR
+        printf("Updated flmT\n");
+        print_matrix_row_double(flmT, 1, N+3, lda_flmT);
+        print_matrix_row_double(flmT, N+3, 1, lda_flmT);
+#endif
+
+    }
+}
+
+%}
+
+/* Global variable declarations for PaRSEC task scheduling
+ * These define the data dependencies and matrix descriptors used by the tasks
+ */
+desc_f_data        [ type = "parsec_tiled_matrix_t*" ]
+desc_flm           [ type = "parsec_tiled_matrix_t*" aligned = desc_f_data]
+desc_flmT          [ type = "parsec_tiled_matrix_t*" ]
+
+desc_Et1           [ type = "parsec_tiled_matrix_t*" ]
+desc_Et2           [ type = "parsec_tiled_matrix_t*" ]
+desc_Ep            [ type = "parsec_tiled_matrix_t*" ]
+desc_Slmn          [ type = "parsec_tiled_matrix_t*" ]
+desc_Ie            [ type = "parsec_tiled_matrix_t*" ]
+desc_Io            [ type = "parsec_tiled_matrix_t*" ]
+desc_P             [ type = "parsec_tiled_matrix_t*" ]
+desc_D             [ type = "parsec_tiled_matrix_t*" ]
+desc_A             [ type = "parsec_tiled_matrix_t*" ]
+
+gb                 [ type = "climate_emulator_struct_t *" ]
+
+/* Memory pools for temporary workspace buffers
+ * These are used to allocate and manage temporary memory for computations
+ */
+p_Gmtheta_r        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]
+p_Fmnm             [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]
+p_work_1           [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]
+p_work_2           [ type = "parsec_memory_pool_t *" hidden = on default = NULL ]
+
+/* GPU workspace for CUDA/HIP acceleration */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]
+
+/* GPU device management parameters */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]
+
+/* Task definition for processing each row of the flmT matrix
+ * Each task processes one row (m) and applies the reshape operation
+ */
+task(m)
+
+m = 0 .. desc_flmT->lmt-1
+m_s = %{ return m*gb->flmT_numNB; %}
+m_e = %{ return parsec_imin((m+1)*gb->flmT_numNB-1, desc_A->lmt-1); %} 
+
+: desc_flmT(m, 0)
+
+RW flmT  <- desc_flmT(m, 0)
+         -> desc_flmT(m, 0)   
+
+BODY
+{
+    // Allocate temporary workspace from memory pool
+    double *tmp = (double *)parsec_private_memory_pop(p_work_1);
+    
+    // Apply the reshape operation to the current row
+    climate_emulator_flmT_reshape(flmT, gb, m, tmp);
+    
+    // Return workspace to memory pool
+    parsec_private_memory_push(p_work_1, tmp);
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create and initialize a new PaRSEC taskpool for forward reshape operation
+ * 
+ * This function sets up the taskpool with all necessary matrix descriptors,
+ * memory pools, and GPU workspace for the geqsht forward reshape operation.
+ * 
+ * @param parsec PaRSEC context
+ * @param gb Climate emulator structure
+ * @param params HICMA parameters
+ * @return Pointer to the initialized taskpool
+ */
+parsec_taskpool_t*
+climate_emulator_geqsht_forward_reshape_New(parsec_context_t *parsec,
+        climate_emulator_struct_t *gb,
+        hicma_parsec_params_t *params)
+{
+    // Extract matrix descriptors from the climate emulator structure
+    parsec_tiled_matrix_t *f_data = (parsec_tiled_matrix_t *)&gb->desc_f_data;
+    parsec_tiled_matrix_t *flm = (parsec_tiled_matrix_t *)&gb->desc_flm;
+    parsec_tiled_matrix_t *flmT = (parsec_tiled_matrix_t *)&gb->desc_flmT;
+    parsec_tiled_matrix_t *Et1 = (parsec_tiled_matrix_t *)&gb->desc_Et1;
+    parsec_tiled_matrix_t *Et2 = (parsec_tiled_matrix_t *)&gb->desc_Et2;
+    parsec_tiled_matrix_t *Ep = (parsec_tiled_matrix_t *)&gb->desc_Ep;
+    parsec_tiled_matrix_t *Slmn = (parsec_tiled_matrix_t *)&gb->desc_Slmn;
+    parsec_tiled_matrix_t *Ie = (parsec_tiled_matrix_t *)&gb->desc_Ie;
+    parsec_tiled_matrix_t *Io = (parsec_tiled_matrix_t *)&gb->desc_Io;
+    parsec_tiled_matrix_t *P = (parsec_tiled_matrix_t *)&gb->desc_P;
+    parsec_tiled_matrix_t *D = (parsec_tiled_matrix_t *)&gb->desc_D;
+    parsec_tiled_matrix_t *A = (parsec_tiled_matrix_t *)&gb->desc_A;
+
+    // Create the taskpool with all matrix descriptors
+    parsec_climate_emulator_geqsht_forward_reshape_taskpool_t
+        *taskpool = parsec_climate_emulator_geqsht_forward_reshape_new(f_data, flm, flmT, Et1, Et2, Ep, Slmn, Ie,Io, P, D, A, gb);
+
+    // Initialize memory pool for Gmtheta_r (complex double data)
+    taskpool->_g_p_Gmtheta_r = (parsec_memory_pool_t*)malloc(sizeof(parsec_memory_pool_t));
+    parsec_private_memory_init( taskpool->_g_p_Gmtheta_r, gb->f_data_M * gb->Ep_N * sizeof(complex double) );
+
+    // Initialize memory pool for Fmnm (complex double data)
+    taskpool->_g_p_Fmnm = (parsec_memory_pool_t*)malloc(sizeof(parsec_memory_pool_t));
+    parsec_private_memory_init( taskpool->_g_p_Fmnm, gb->Et1_M * gb->Ep_N * sizeof(complex double) );
+
+    // Initialize memory pool for work_1 (complex double data)
+    taskpool->_g_p_work_1 = (parsec_memory_pool_t*)malloc(sizeof(parsec_memory_pool_t));
+    parsec_private_memory_init( taskpool->_g_p_work_1, gb->Et2_M * gb->P_N * sizeof(complex double) );
+
+    // Initialize memory pool for work_2 (complex double data)
+    taskpool->_g_p_work_2 = (parsec_memory_pool_t*)malloc(sizeof(parsec_memory_pool_t));
+    parsec_private_memory_init( taskpool->_g_p_work_2, gb->Et2_M * gb->Ep_N * sizeof(complex double) );
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    int nb = 0, *dev_index;
+
+    /** Find all available CUDA/HIP devices for GPU acceleration */
+    hicma_parsec_find_cuda_devices( &dev_index, &nb);
+
+    // Set GPU workspace and device information
+    taskpool->_g_ws_gpu = (void *)gb->ws;
+    taskpool->_g_nb_cuda_devices = nb;
+    taskpool->_g_cuda_device_index = dev_index;
+#endif
+
+    // Configure the arena for double precision data types
+    // This sets up the memory layout and alignment for matrix operations
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_forward_reshape_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, flmT->mb, flmT->nb, flmT->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)taskpool;
+}
+
+/**
+ * @brief Clean up and destroy the PaRSEC taskpool
+ * 
+ * This function properly deallocates all memory pools, arenas, and the taskpool itself
+ * to prevent memory leaks.
+ * 
+ * @param taskpool Pointer to the taskpool to destroy
+ */
+void climate_emulator_geqsht_forward_reshape_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_climate_emulator_geqsht_forward_reshape_taskpool_t *climate_emulator_geqsht_forward_reshape_taskpool = (parsec_climate_emulator_geqsht_forward_reshape_taskpool_t *)taskpool;
+    
+    // Remove the arena for double precision data types
+    parsec_del2arena(&climate_emulator_geqsht_forward_reshape_taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_forward_reshape_DEFAULT_ADT_IDX]);
+    
+    // Clean up all memory pools
+    parsec_private_memory_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_Gmtheta_r);
+    parsec_private_memory_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_Fmnm);
+    parsec_private_memory_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_work_1);
+    parsec_private_memory_fini( climate_emulator_geqsht_forward_reshape_taskpool->_g_p_work_2);
+    
+    // Free the taskpool itself
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Main function to execute the geqsht forward reshape operation
+ * 
+ * This function orchestrates the entire forward reshape process:
+ * 1. Creates and configures the taskpool
+ * 2. Executes the reshape operations in parallel
+ * 3. Redistributes data from flmT to A matrix
+ * 4. Computes norms for verification
+ * 5. Cleans up resources
+ * 
+ * @param parsec PaRSEC context
+ * @param gb Climate emulator structure
+ * @param params HICMA parameters
+ * @return 0 on success
+ */
+int climate_emulator_geqsht_forward_reshape(parsec_context_t *parsec,
+        climate_emulator_struct_t *gb,
+        hicma_parsec_params_t *params)
+{
+#if !READ_FROM_FILE
+    // Create and execute the forward reshape taskpool
+    parsec_taskpool_t *parsec_climate_emulator_geqsht_forward_reshape = NULL;
+    parsec_climate_emulator_geqsht_forward_reshape = climate_emulator_geqsht_forward_reshape_New( parsec, gb, params);
+    if( parsec_climate_emulator_geqsht_forward_reshape != NULL ){
+        parsec_context_add_taskpool(parsec, parsec_climate_emulator_geqsht_forward_reshape);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        climate_emulator_geqsht_forward_reshape_Destruct(parsec_climate_emulator_geqsht_forward_reshape);
+    }
+#endif
+
+#if WRITE_TO_FILE 
+    // Store the processed flmT matrix to file for later use
+    VERBOSE_PRINT(params->rank, params->verbose, ("Store desc_flmT to file\n"));
+    climate_emulator_write(parsec, gb->data_dir, &gb->desc_flmT.super, NULL, params, 0);
+#endif
+
+#if READ_FROM_FILE
+    // Read the A matrix from file instead of computing it
+    VERBOSE_PRINT(params->rank, params->verbose, ("Read desc_A from file\n"));
+    climate_emulator_read(parsec, gb->data_dir, &gb->desc_A.super, NULL, params, 0);
+#endif
+
+double norm_flmT = 0.0;
+#if !READ_FROM_FILE
+    // Redistribute data from flmT matrix to A matrix
+    // This step transfers the reshaped data to the final destination
+    VERBOSE_PRINT(params->rank, params->verbose, ("Redistribute desc_flmT -> desc_A\n"));
+    parsec_redistribute(parsec, &gb->desc_flmT.super, &gb->desc_A.super, gb->A_M, gb->A_N, 0, 0, 0, 0);
+    
+    // Compute the norm of the original flmT matrix for verification
+    norm_flmT = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, &gb->desc_flmT.super, params, "double");
+#endif
+
+    // Compute the norm of the final A matrix
+    double norm_A = hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, &gb->desc_A.super, params, "double");
+
+    // Print norms for verification (only on rank 0)
+    if( 0 == params->rank ) {
+        fprintf(stderr, RED "norm_flmT %lf norm_A %lf\n" RESET, norm_flmT, norm_A);
+    }
+
+    // Aggregate phi coefficients across all MPI processes
+    // This ensures all processes have the complete set of regression coefficients
+    MPI_Allreduce(MPI_IN_PLACE, gb->phi, gb->phi_M*gb->phi_N, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+    // Clean up memory resources
+#if !READ_FROM_FILE
+    // Free the flmT matrix data and descriptor since it's no longer needed
+    parsec_data_free(gb->desc_flmT.mat);
+    parsec_tiled_matrix_destroy((parsec_tiled_matrix_t*)&gb->desc_flmT);
+#endif
+
+    return 0;
+}
+
+%}

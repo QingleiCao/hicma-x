@@ -1,0 +1,156 @@
+extern "C" %{
+/**
+ * @file datatype_convert_dense_static.jdf
+ * @brief Static datatype conversion for dense matrices
+ * 
+ * This file defines the PaRSEC task for converting datatypes in dense matrices.
+ * The conversion is performed in-place on the matrix tiles.
+ * 
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+#include "hicma_parsec.h"
+#include "src/include/dplasma/constants.h"
+
+%}
+
+// Task parameters for datatype conversion
+uplo          [ type = "dplasma_enum_t" ]        // Upper/lower triangular specification (dplasmaUpper, dplasmaLower, or dplasmaFull)
+descA         [ type = "parsec_tiled_matrix_t *" ] // Matrix descriptor for input/output matrix
+convert_type  [type = "char *"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
+
+/**
+ * @brief PaRSEC task for converting datatypes in dense matrix tiles
+ * 
+ * This task performs in-place datatype conversion on matrix tiles.
+ * The iteration space is determined by the uplo parameter:
+ * - For upper triangular: only process elements where n >= m
+ * - For lower triangular: only process elements where n <= m
+ * - For full matrix: process all elements
+ */
+Convert_task(m, n)
+
+// Iteration space: process all tiles in the matrix
+m = 0 .. descA->lmt-1  // Row index from 0 to number of tiles in rows - 1
+// For triangular matrices, limit column range based on uplo parameter
+// Upper triangular: n >= m (only process upper triangle)
+// Lower triangular: n <= m (only process lower triangle)  
+// Full matrix: process all elements (n from 0 to lnt-1)
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
+
+// Data dependencies: read and write the same tile
+: descA(m, n)                     
+
+// Read-write access to matrix tile A
+// Input: read from matrix tile at position (m,n)
+// Output: write back to the same matrix tile (in-place conversion)
+RW A <- descA(m, n)    
+     -> descA(m, n)  
+
+BODY
+{
+    // Calculate actual tile dimensions (handle edge tiles)
+    int tempmm, tempnn, ldam, ldbm;
+    
+    // Actual number of rows in this tile (handle last tile in column)
+    // For the last tile in a column, use remaining rows instead of full tile size
+    tempmm = ((m)==((descA->mt)-1)) ? ((descA->m)-(m*(descA->mb))) : (descA->mb);
+    
+    // Actual number of columns in this tile (handle last tile in row)
+    // For the last tile in a row, use remaining columns instead of full tile size
+    tempnn = ((n)==((descA->nt)-1)) ? ((descA->n)-(n*(descA->nb))) : (descA->nb);
+    
+    // Leading dimension of the tile (stride between rows)
+    ldam = BLKLDD( descA, m );
+    
+    // Perform the datatype conversion on the tile
+    // This function handles the actual conversion logic based on convert_type
+    convert_datatype_unary_CPU(A, tempmm, tempnn, ldam, convert_type, &this_task->data._f_A.data_out->original->nb_elts);
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create a new datatype conversion taskpool for dense matrices
+ * @param [in] uplo: Upper or lower triangular part to convert
+ * @param [in] A: The matrix to convert, already distributed and allocated
+ * @param [in] convert_type: Type of conversion to perform
+ * @return The parsec object to schedule
+ */
+parsec_taskpool_t*
+parsec_datatype_convert_dense_static_New( dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        char *convert_type)
+{
+    parsec_datatype_convert_dense_static_taskpool_t* datatype_convert_dense_static_taskpool = NULL;
+    
+    // Create the taskpool for datatype conversion
+    datatype_convert_dense_static_taskpool = parsec_datatype_convert_dense_static_new(uplo, A, convert_type);
+
+    // Add arena for double precision data type
+    // This arena manages memory allocation and data type handling for the conversion
+    parsec_add2arena(&datatype_convert_dense_static_taskpool->arenas_datatypes[PARSEC_datatype_convert_dense_static_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, A->mb, A->nb, A->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)datatype_convert_dense_static_taskpool;
+}
+
+/**
+ * @brief Destroy the datatype conversion taskpool
+ * @param [inout] taskpool: The parsec object to destroy
+ */
+void parsec_datatype_convert_dense_static_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_datatype_convert_dense_static_taskpool_t *datatype_convert_dense_static_taskpool = (parsec_datatype_convert_dense_static_taskpool_t *)taskpool;
+    
+    // Remove the arena for double precision data type
+    parsec_del2arena(&datatype_convert_dense_static_taskpool->arenas_datatypes[PARSEC_datatype_convert_dense_static_DEFAULT_ADT_IDX]);
+    
+    // Free the taskpool memory
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Perform datatype conversion on a dense matrix
+ * 
+ * @param [in] parsec: The PaRSEC context
+ * @param [in] uplo: Upper or lower triangular part to convert
+ * @param [inout] A: The matrix to convert, already distributed and allocated
+ * @param [in] convert_type: Type of conversion to perform
+ * @return 0 on success
+ */
+int parsec_datatype_convert_dense_static(parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        char *convert_type) 
+{
+    parsec_taskpool_t *parsec_datatype_convert_dense_static = NULL;
+    
+    // Create the taskpool for datatype conversion
+    parsec_datatype_convert_dense_static = parsec_datatype_convert_dense_static_New(uplo, A, convert_type);
+    
+    if( parsec_datatype_convert_dense_static != NULL ){
+        // Add the taskpool to the PaRSEC context for execution
+        parsec_context_add_taskpool(parsec, parsec_datatype_convert_dense_static);
+        
+        // Start the execution of tasks
+        parsec_context_start(parsec);
+        
+        // Wait for all tasks to complete
+        parsec_context_wait(parsec);
+        
+        // Clean up the taskpool
+        parsec_datatype_convert_dense_static_Destruct(parsec_datatype_convert_dense_static);
+    }
+
+    return 0;
+}
+
+%}

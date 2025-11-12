@@ -1,0 +1,15 @@
+FROM nvcr.io/nvidia/pytorch:24.07-py3
+
+RUN export DEBIAN_FRONTEND=noninteractive && \
+    apt-get update && \
+    apt-get install -y libgsl0-dev
+
+# install mpi4py
+RUN SETUPTOOLS_USE_DISTUTILS=local pip install mpi4py
+
+# install msprime
+RUN python3 -m pip install numpy
+RUN python3 -m pip install msprime --no-binary msprime
+
+# copy script
+COPY scripts/generate_gene_distributed.py /opt/hicma-x-dev/scripts/generate_gene_distributed.py

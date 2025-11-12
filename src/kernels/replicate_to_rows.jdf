@@ -1,0 +1,184 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+/**
+ * @brief Replicate diagonal elements to entire tile
+ * 
+ * This function copies the diagonal elements of matrix A to all positions
+ * in the corresponding tile of matrix C, effectively replicating the diagonal
+ * values across the entire tile.
+ * 
+ * @param m Row index of the tile
+ * @param n Column index of the tile
+ * @param nb Block size (number of elements per dimension)
+ * @param lda Leading dimension of matrix A
+ * @param A Source matrix (diagonal elements)
+ * @param C Destination matrix (tile to be filled)
+ */
+void replicate_intile(int m, int n, int nb, int lda, double* A, double *C){
+    /* Copy diagonal element A[i,i] to all positions C[i,j] in the tile */
+    for( int i =0; i<nb; i++){
+        for(int j =0; j <nb;j++){    
+            C[i+j*lda] = A[i*lda+i];
+        }
+    }
+}
+%}
+
+/**
+ * @file replicate_to_rows.jdf
+ * @brief Replicate diagonal elements to rows kernel
+ * 
+ * This kernel replicates diagonal elements from a source matrix to all positions
+ * in corresponding rows of a destination matrix. It reads diagonal tiles from
+ * the source matrix and replicates them across entire rows in the destination.
+ */
+
+/* Input/Output matrix descriptors */
+descAA             [ type = "parsec_tiled_matrix_t *" ]  /* Source matrix (diagonal elements) */
+descC              [ type = "parsec_tiled_matrix_t *" ]  /* Destination matrix (to be filled) */
+
+/**
+ * @brief Read diagonal tiles from source matrix
+ * 
+ * This task reads diagonal tiles from the source matrix and distributes
+ * them to replicate tasks for processing.
+ */
+Read(m)
+
+// Execution space: process all diagonal tiles
+m = 0 .. descC->lmt-1 
+
+: descAA(m, m)
+
+READ A <- descAA(m, m)
+       -> A replicate(m, 0 .. descC->lnt-1 )   [ type_remote = AA ]
+
+BODY
+{
+    /* No computation needed - just data distribution */
+}
+END
+
+/**
+ * @brief Replicate diagonal elements to entire row
+ * 
+ * This task takes a diagonal element from the source matrix and replicates
+ * it across all positions in the corresponding row of the destination matrix.
+ */
+replicate(m, n)
+
+// Execution space: process all tiles in destination matrix
+m = 0 .. descC->lmt-1
+n = 0 .. descC->lnt-1 
+
+: descC(m, n)
+
+READ A <- A Read(m)      [ type_remote = AA ] 
+
+RW  C <- descC(m, n)      
+      -> descC(m, n)  
+
+BODY
+{
+    /* Calculate actual tile dimensions (handle edge cases) */
+    int tempmm, tempnn, ldam, ldbm;
+    tempmm = ((m)==((descC->mt)-1)) ? ((descC->m)-(m*(descC->mb))) : (descC->mb);
+    tempnn = ((n)==((descC->nt)-1)) ? ((descC->n)-(n*(descC->nb))) : (descC->nb);
+    ldam = BLKLDD( descC, m );
+    
+    /* Replicate diagonal elements to entire tile */
+    replicate_intile( m, n , tempmm, ldam, A, C);
+}
+END
+
+
+extern "C" %{
+
+/**
+ * @brief Create new replicate to rows taskpool
+ * 
+ * @param dcAA Source matrix descriptor (diagonal elements)
+ * @param dcC Destination matrix descriptor (to be filled)
+ * @return New taskpool instance
+ */
+parsec_taskpool_t*
+hicma_parsec_replicate_to_rows_New(parsec_tiled_matrix_t *dcAA, parsec_tiled_matrix_t *dcC) 
+{
+    parsec_taskpool_t* replicate_to_rows_taskpool;
+    parsec_replicate_to_rows_taskpool_t* taskpool = NULL;
+
+    /* Create new taskpool instance */
+    taskpool = parsec_replicate_to_rows_new(dcAA, dcC); 
+    replicate_to_rows_taskpool = (parsec_taskpool_t*)taskpool;
+
+    /* Set up arena for destination matrix data types */
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_replicate_to_rows_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, dcC->mb, dcC->nb, dcC->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    /* Set up arena for source matrix data types */
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_replicate_to_rows_AA_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, dcAA->mb, dcAA->nb, dcAA->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return replicate_to_rows_taskpool;
+}
+
+/**
+ * @brief Destroy replicate to rows taskpool
+ * 
+ * @param taskpool Taskpool to destroy
+ */
+void hicma_parsec_replicate_to_rows_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_replicate_to_rows_taskpool_t *replicate_to_rows_taskpool = (parsec_replicate_to_rows_taskpool_t *)taskpool;
+    
+    /* Remove arenas */
+    parsec_del2arena(&replicate_to_rows_taskpool->arenas_datatypes[PARSEC_replicate_to_rows_DEFAULT_ADT_IDX]);
+    parsec_del2arena(&replicate_to_rows_taskpool->arenas_datatypes[PARSEC_replicate_to_rows_AA_ADT_IDX]);
+    
+    /* Free taskpool */
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Execute replicate to rows operation
+ * 
+ * @param parsec PaRSEC context
+ * @param dcAA Source matrix descriptor (diagonal elements)
+ * @param dcC Destination matrix descriptor (to be filled)
+ * @return 0 on success
+ */
+int hicma_parsec_replicate_to_rows(parsec_context_t *parsec, parsec_tiled_matrix_t *dcAA, parsec_tiled_matrix_t *dcC) 
+{
+    parsec_taskpool_t *parsec_replicate_to_rows = NULL;
+    
+    /* Create taskpool */
+    parsec_replicate_to_rows = hicma_parsec_replicate_to_rows_New(dcAA, dcC); 
+
+    if( parsec_replicate_to_rows != NULL ){
+        /* Execute taskpool */
+        parsec_context_add_taskpool(parsec, parsec_replicate_to_rows);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        
+        /* Clean up */
+        hicma_parsec_replicate_to_rows_Destruct(parsec_replicate_to_rows);
+    }
+
+    return 0;
+}
+
+%}

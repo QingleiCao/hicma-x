@@ -1,0 +1,316 @@
+extern "C" %{
+/**
+ * @file matrix_uncompress.jdf
+ * @brief Matrix uncompress operation for low-rank matrices
+ * 
+ * This file implements a PaRSEC task for uncompressing a matrix that has been
+ * stored in a compressed low-rank format. The operation reconstructs the full
+ * matrix from its low-rank factorization (U*V^T) and dense band components.
+ * 
+ * The algorithm handles two types of tiles:
+ * 1. Dense band tiles: directly copied from compressed to uncompressed matrix
+ * 2. Low-rank tiles: reconstructed from U and V factors using matrix multiplication
+ * 
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/* Global parameters for the matrix uncompress operation
+ * uplo:            Specifies upper or lower triangular part
+ * descA0:          The uncompressed matrix descriptor (output)
+ * descA:           The compressed matrix descriptor (input)
+ * descAr:          The rank matrix descriptor (aligned with descA)
+ * analysis:        Matrix analysis containing rank information for each tile
+ * band_size_dense: Size of the dense band (number of diagonal tiles to keep dense)
+ * maxrank:         Maximum rank allowed for low-rank tiles
+ * INFO:            Information array for error reporting
+ */
+uplo            [ type = int ]
+descA0          [ type = "parsec_tiled_matrix_t*" ]
+descA           [ type = "parsec_tiled_matrix_t*" ]
+descAr          [ type = "parsec_tiled_matrix_t*" aligned=descA ]
+analysis        [ type = "hicma_parsec_matrix_analysis_t *" ]
+band_size_dense [ type = "int" ]
+maxrank         [ type = "int" ]
+INFO            [ type = "int*" ]
+
+
+/**************************************************
+ *        Read dense band tiles                   *
+ **************************************************/
+READ_band(m, n)
+
+// Execution space: process tiles in the dense band
+// The dense band includes diagonal tiles and nearby off-diagonal tiles
+m = 0 .. descA->mt-1
+n = %{ return parsec_imax(m-band_size_dense+1, 0); %} .. m
+
+// Parallel partitioning: each tile is processed by one task
+:descA(m, n)
+
+// Parameters: read the dense tile data
+READ D <- descA(m, n)                       
+       -> D matrix_uncompress_band(m, n)           [ type_remote = FULL ]
+
+BODY
+{
+    // This task only reads the data; the actual uncompress happens in matrix_uncompress_band
+}
+END
+
+/**************************************************
+ *        Read low-rank tiles (U and R data)      *
+ **************************************************/
+READ_UR(m, n)
+
+// Execution space: process tiles outside the dense band
+// These tiles are stored in low-rank format
+m = band_size_dense .. descA->mt-1
+n = 0 .. m-band_size_dense
+
+// Control message size to send (determined dynamically)
+size = 0
+
+// Parallel partitioning: each tile is processed by one task
+:descA(m, n)
+
+// Parameters: read U factor and rank information (only if rank > 0)
+READ U <- (%{ return analysis->final_rank[n*descA->mt+m] > 0; %})? descA(m, n): NULL                      
+       -> (%{ return analysis->final_rank[n*descA->mt+m] > 0; %})? U matrix_uncompress_L(m, n)                   [ layout_remote = MPI_DOUBLE count_remote = size ] 
+
+READ R <- (%{ return analysis->final_rank[n*descA->mt+m] > 0; %})? descAr(m, n): NULL                     
+       -> (%{ return analysis->final_rank[n*descA->mt+m] > 0; %})? R matrix_uncompress_L(m, n)                   [ type_remote = AR ]
+
+BODY
+{
+    /* Determine the message size for low-rank tiles */
+    if( analysis->final_rank[n*descA->mt+m] > 0 ) {
+        // Size = mb * rank * 2 (for both U and V factors)
+        this_task->locals.size.value = descA->mb * ((int *)R)[0] * 2;
+        // Debug output (commented out for performance)
+        //fprintf(stderr, "READ_UR %d %d : rank %d\n", m, n, ((int *)R)[0]);
+    }
+}
+END
+
+
+/**************************************************
+ *        Uncompress dense band tiles             *
+ **************************************************/
+matrix_uncompress_band(m, n)
+
+// Execution space: process tiles in the dense band
+m = 0 .. descA0->mt-1
+n = %{ return parsec_imax(m-band_size_dense+1, 0); %} .. m
+
+// Parallel partitioning: each tile is processed by one task
+:descA0(m, n)
+
+// Parameters: read compressed data and write to uncompressed matrix
+READ D  <- D READ_band(m, n)             [ type_remote = FULL ]
+READ D2 <- descA0(m, n)                  
+
+BODY
+{
+    // Get leading dimensions for both matrices
+    int ldD2 = BLKLDD(descA0, m);  // Leading dimension of uncompressed matrix
+    int ldD = BLKLDD(descA, m);    // Leading dimension of compressed matrix
+    
+    // Calculate actual tile dimensions (handle edge tiles)
+    int tempmm = m == descA0->mt-1 ? descA0->m - m * descA0->mb : descA0->mb;
+    int tempnn = tempmm;  // For band tiles, we assume square tiles
+
+    // Copy the dense tile from compressed to uncompressed matrix
+    LAPACKE_dlacpy(LAPACK_COL_MAJOR, 'F', tempmm, tempnn, D, ldD, D2, ldD2);
+}
+END
+
+/**************************************************
+ *        Uncompress low-rank tiles               *
+ **************************************************/
+matrix_uncompress_L(m, n)
+
+// Execution space: process tiles outside the dense band
+m = band_size_dense .. descA->mt-1
+n = 0 .. m-band_size_dense
+
+// Parallel partitioning: each tile is processed by one task
+:descA0(m, n)
+
+// Parameters: read rank info, U factor, and write to uncompressed matrix
+READ D <- (%{ return analysis->final_rank[n*descA->mt+m] > 0; %})? descA0(m, n): NULL                      
+READ R <- (%{ return analysis->final_rank[n*descA->mt+m] > 0; %})? R READ_UR(m, n): NULL                   [ type_remote = AR ]
+READ U <- (%{ return analysis->final_rank[n*descA->mt+m] > 0; %})? U READ_UR(m, n): NULL                   [ type_remote = UV ]
+
+BODY
+{
+    // Get leading dimensions
+    int ldD = BLKLDD(descA0, m);  // Leading dimension of uncompressed matrix
+    int ldU = BLKLDD(descA, m);   // Leading dimension of U factor
+    
+    // Calculate actual tile dimensions (handle edge tiles)
+    int tempmm = m == descA0->mt-1 ? descA0->m - m * descA0->mb : descA0->mb;
+    int tempnn = n == descA0->nt-1 ? descA0->n - n * descA0->nb : descA0->nb;
+    
+    // Reconstruct the tile from low-rank factorization if rank > 0
+    if( analysis->final_rank[n*descA->mt+m] > 0 ) {
+        int rank = ((int *)R)[0];  // Get the rank of this tile
+        
+        // V factor is stored after U factor in the same memory block
+        void *V = (void *)U + descA->mb * rank * sizeof(double); 
+        
+        // Reconstruct tile as D = U * V^T using BLAS
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasTrans, tempmm, tempnn, rank,
+                1.0, U, ldU, V, ldU, 0.0, D, ldD);
+    }
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create a new matrix uncompress taskpool
+ * 
+ * This function creates and initializes a PaRSEC taskpool for uncompressing
+ * a matrix that has been stored in a compressed low-rank format. The taskpool
+ * handles both dense band tiles and low-rank tiles appropriately.
+ * 
+ * @param [in] uplo:            Specifies upper or lower triangular part (currently supports PlasmaLower)
+ * @param [inout] A0:           The uncompressed matrix descriptor, already distributed and allocated
+ * @param [in] A:               The compressed matrix descriptor, already distributed and allocated
+ * @param [in] Ar:              The rank matrix descriptor, already distributed and allocated
+ * @param [in] analysis:        Matrix analysis containing rank information for each tile
+ * @param [in] band_size_dense: Size of the dense band (number of diagonal tiles to keep dense)
+ * @param [in] maxrank:         Maximum rank allowed for low-rank tiles
+ * @param [inout] info:         Information array for error reporting
+ * @return the parsec object to schedule, or NULL on error
+ */
+parsec_taskpool_t*
+hicma_parsec_matrix_uncompress_New(int uplo,
+                  parsec_tiled_matrix_t *A0,
+                  parsec_tiled_matrix_t *A,
+                  parsec_tiled_matrix_t *Ar,
+                  hicma_parsec_matrix_analysis_t *analysis,
+                  int band_size_dense,
+                  int maxrank, 
+                  int *info)
+{
+    parsec_taskpool_t *tp = NULL;
+    parsec_arena_t* default_arena;
+
+    /* Validate input arguments */
+    if ((uplo != PlasmaUpper) && (uplo != PlasmaLower)) {
+        dplasma_error("STARSH_appr_New", "illegal value of uplo");
+        return NULL /*-1*/;
+    }
+
+    *info = 0;
+    
+    // Create the taskpool with the specified parameters
+    parsec_matrix_uncompress_taskpool_t *starsh_check =
+        parsec_matrix_uncompress_new(uplo, A0, A, Ar, analysis, band_size_dense, maxrank, info);
+
+    tp = (parsec_taskpool_t*)starsh_check;
+
+    // Set up arenas for different data types used in the computation
+    // Default arena for general data
+    parsec_add2arena(&starsh_check->arenas_datatypes[PARSEC_matrix_uncompress_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, 1, 1, 1,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    // Arena for full matrix tiles
+    parsec_add2arena(&starsh_check->arenas_datatypes[PARSEC_matrix_uncompress_FULL_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, A->mb, A->mb, A->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    // Arena for U and V factors (up to 2*maxrank columns)
+    parsec_add2arena(&starsh_check->arenas_datatypes[PARSEC_matrix_uncompress_UV_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, A->mb, 2*maxrank, A->mb,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    // Arena for rank information (single integer)
+    parsec_add2arena(&starsh_check->arenas_datatypes[PARSEC_matrix_uncompress_AR_ADT_IDX],
+                            parsec_datatype_int_t, PARSEC_MATRIX_FULL,
+                            1, 1, 1, 1,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return tp;
+}
+
+/**
+ * @brief Destroy the matrix uncompress taskpool
+ * 
+ * @param [inout] taskpool: The PaRSEC taskpool to destroy
+ */
+void hicma_parsec_matrix_uncompress_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_matrix_uncompress_taskpool_t *matrix_uncompress_taskpool = (parsec_matrix_uncompress_taskpool_t *)taskpool;
+
+    // Clean up all arenas
+    parsec_del2arena(&matrix_uncompress_taskpool->arenas_datatypes[PARSEC_matrix_uncompress_DEFAULT_ADT_IDX]);
+    parsec_del2arena(&matrix_uncompress_taskpool->arenas_datatypes[PARSEC_matrix_uncompress_FULL_ADT_IDX]);
+    parsec_del2arena(&matrix_uncompress_taskpool->arenas_datatypes[PARSEC_matrix_uncompress_UV_ADT_IDX]);
+    parsec_del2arena(&matrix_uncompress_taskpool->arenas_datatypes[PARSEC_matrix_uncompress_AR_ADT_IDX]);
+
+    // Free the taskpool
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Uncompress a matrix from low-rank format to full format
+ * 
+ * This function uncompresses a matrix that has been stored in a compressed
+ * low-rank format back to its full representation. The operation handles
+ * both dense band tiles (copied directly) and low-rank tiles (reconstructed
+ * from U*V^T factorization).
+ * 
+ * @param [in] parsec:           PaRSEC context for task scheduling
+ * @param [in] uplo:             Specifies upper or lower triangular part (currently supports PlasmaLower)
+ * @param [inout] dcA0:          The uncompressed matrix descriptor, already distributed and allocated
+ * @param [in] dcA:              The compressed matrix descriptor, already distributed and allocated
+ * @param [in] dcAr:             The rank matrix descriptor, already distributed and allocated
+ * @param [in] analysis:         Matrix analysis containing rank information for each tile
+ * @param [in] band_size_dense:  Size of the dense band (number of diagonal tiles to keep dense)
+ * @param [in] maxrank:          Maximum rank allowed for low-rank tiles
+ * @param [inout] info:          Information array for error reporting
+ * @return 0 on success
+ */
+int hicma_parsec_matrix_uncompress( parsec_context_t *parsec,
+                int uplo,
+                parsec_tiled_matrix_t *dcA0,
+                parsec_tiled_matrix_t *dcA,
+                parsec_tiled_matrix_t *dcAr,
+                hicma_parsec_matrix_analysis_t *analysis,
+                int band_size_dense,
+                int maxrank,
+                int *info)
+{
+    parsec_taskpool_t *parsec_matrix_uncompress = NULL;
+
+    // Create the uncompress taskpool
+    parsec_matrix_uncompress = hicma_parsec_matrix_uncompress_New(
+             uplo, dcA0, dcA, dcAr, analysis, band_size_dense, maxrank, info);
+
+    // Execute the uncompress operation
+    parsec_context_add_taskpool(parsec, parsec_matrix_uncompress);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+
+    // Clean up the taskpool
+    hicma_parsec_matrix_uncompress_Destruct(parsec_matrix_uncompress);
+
+    return 0;
+}
+
+%}

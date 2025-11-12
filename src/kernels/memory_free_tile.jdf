@@ -1,0 +1,140 @@
+extern "C" %{
+/**
+ * @file memory_free_tile.jdf
+ * @brief Memory deallocation for matrix tiles
+ * 
+ * This file implements a PaRSEC task for freeing memory allocated to matrix
+ * tiles. The operation can handle both full matrices and lower triangular
+ * matrices, with support for both CPU and GPU memory deallocation.
+ * 
+ * The algorithm processes tiles in parallel and properly deallocates memory
+ * based on the memory type (CPU or GPU) and the matrix structure indicator.
+ * 
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/* Global parameters for the memory deallocation task
+ * descA:      The tiled matrix descriptor containing the tiles to free
+ * params_tlr: TLR parameters including GPU configuration
+ * indicator:  Flag indicating matrix structure (0=band only, otherwise=all tiles)
+ */
+descA           [ type = "parsec_tiled_matrix_t*" ]
+params_tlr      [ type = "hicma_parsec_params_t *" ]
+indicator       [ type = "int" ]
+
+/**************************************************
+ *        Memory deallocation task                *
+ *        Frees memory for matrix tiles           *
+ **************************************************/
+Free(m, n)
+
+// Execution space: process tiles based on matrix structure
+// If indicator=0: process only band tiles (lower triangular)
+// Otherwise: process all tiles (full matrix)
+m = 0 .. descA->mt-1
+n = 0 .. %{ return indicator? m: descA->nt-1; %}
+
+// Parallel partitioning: each tile is processed by one task
+: descA(m, n)
+
+BODY
+{
+    // Check if the tile has allocated memory
+    if( NULL != PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)) ) {
+        
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        // GPU memory deallocation: use CUDA/HIP free for pinned host memory
+        if( params_tlr->gpus > 0 ) {
+            cudaFreeHost(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)));
+        } else 
+#endif
+        {
+            // CPU memory deallocation: use standard free
+            free(PARSEC_DATA_COPY_GET_PTR(parsec_data_get_copy(data_of_descA(m, n), 0)));
+        }
+    }
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create a new memory deallocation taskpool
+ * 
+ * This function creates and initializes a PaRSEC taskpool for freeing
+ * memory allocated to matrix tiles. The taskpool can handle both full
+ * matrices and lower triangular matrices based on the indicator parameter.
+ * 
+ * @param [inout] dcA:      The matrix descriptor containing tiles to free, already distributed and allocated
+ * @param [in] params:      TLR parameters including GPU configuration
+ * @param [in] indicator:   Flag indicating matrix structure (0=band only, otherwise=all tiles)
+ * @return the parsec object to schedule
+ */
+parsec_taskpool_t*
+parsec_memory_free_tile_New(parsec_tiled_matrix_t *dcA,
+        hicma_parsec_params_t *params, int indicator)
+{
+    parsec_taskpool_t* memory_free_tile_taskpool;
+    parsec_memory_free_tile_taskpool_t* taskpool = NULL;
+
+    // Create the taskpool with the specified parameters
+    taskpool = parsec_memory_free_tile_new(dcA, params, indicator);
+    memory_free_tile_taskpool = (parsec_taskpool_t*)taskpool;
+
+    return memory_free_tile_taskpool;
+}
+
+/**
+ * @brief Destroy the memory deallocation taskpool
+ * 
+ * @param [inout] taskpool: The PaRSEC taskpool to destroy
+ */
+void parsec_memory_free_tile_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_memory_free_tile_taskpool_t *memory_free_tile_taskpool = (parsec_memory_free_tile_taskpool_t *)taskpool;
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Free memory allocated to matrix tiles
+ * 
+ * This function frees memory allocated to matrix tiles by processing each
+ * tile in parallel. It supports both full matrices and lower triangular
+ * matrices, with proper handling of both CPU and GPU memory deallocation.
+ * 
+ * @param [in] parsec:     PaRSEC context for task scheduling
+ * @param [inout] dcA:     The matrix descriptor containing tiles to free, already distributed and allocated
+ * @param [in] params:     TLR parameters including GPU configuration
+ * @param [in] indicator:  Flag indicating matrix structure (0=band only, otherwise=all tiles)
+ * @return 0 on success
+ */
+int parsec_memory_free_tile(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcA,
+        hicma_parsec_params_t *params, int indicator)
+{
+    parsec_taskpool_t *parsec_memory_free_tile = NULL;
+    
+    // Create the memory deallocation taskpool
+    parsec_memory_free_tile = parsec_memory_free_tile_New(dcA, params, indicator); 
+
+    // Execute the memory deallocation operation if taskpool was created successfully
+    if( parsec_memory_free_tile != NULL ){
+        parsec_context_add_taskpool(parsec, parsec_memory_free_tile);
+        parsec_context_start(parsec);
+        parsec_context_wait(parsec);
+        parsec_memory_free_tile_Destruct(parsec_memory_free_tile);
+    }
+
+    return 0;
+}
+
+%}

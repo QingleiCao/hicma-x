@@ -1,0 +1,394 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+#include "hicma_parsec.h"
+
+/**
+ * @brief Print a tile matrix for debugging purposes
+ * @param A Pointer to the matrix data
+ * @param m Number of rows
+ * @param n Number of columns
+ */
+void parsec_print_tile3(float *A, int m, int n){
+    printf("\n");
+    for(int i=0;i<m;i++){
+        for(int j=0;j<n;j++){
+            //printf("[%d,%d]:(%f), ", i, j, tempaa[i*dcA->.super.llm+j]);
+            printf("%f, ", A[j*m+i]);
+        }
+        printf("\n");
+    }
+}
+
+/**
+ * @brief Apply Gaussian kernel transformation to matrix elements
+ * @param m Row index of the tile
+ * @param n Column index of the tile
+ * @param nb Block size
+ * @param lda Leading dimension of matrix A
+ * @param A Pointer to matrix data
+ * @param rad Radius parameter for Gaussian kernel
+ * @param add_diag Value to add to diagonal elements
+ */
+void gaussian_cpu(int m, int n, int nb, int lda, float* A, float rad, float add_diag){
+    float value;
+    float rad2 = (float)rad;
+    for( int i =0; i<nb; i++){
+        for(int j =0; j <nb;j++){
+            // Apply Gaussian kernel: exp(-x^2/(2*rad^2))
+            value= (float) ((A[i+j*lda])/ (2*rad2*rad2));
+            //value = (A[i+j*lda])/rad2;
+            //  printf("\n first %f %ff\n", A[i+j*lda], value);
+            A[i+j*lda] = exp(-value);
+            // Add diagonal correction for diagonal tiles
+            if (m ==n && i == j) {
+                A[i+j*lda] += add_diag;
+            }
+           // printf("\n second %f %f \n", A[i+j*lda], value);
+
+        }
+    }
+}
+
+/**
+ * @brief Fill matrix C with values from vector
+ * @param m Row index of the tile
+ * @param n Column index of the tile
+ * @param tempmm Actual number of rows in this tile
+ * @param tempnn Actual number of columns in this tile
+ * @param C Pointer to matrix C data
+ * @param lda Leading dimension of matrix C
+ * @param vec Pointer to source vector
+ */
+void fillinC(int m, int n, int tempmm, int tempnn, float *C, int lda, float *vec) {
+    int i, j;
+    for (i=0; i<tempmm; i++) {
+        for (j=0; j<tempnn; j++) {
+            C[j*lda+i] = vec[m*lda+i];
+        }
+    }
+}
+
+/**
+ * @brief Fill matrix D with values from vector
+ * @param m Row index of the tile
+ * @param n Column index of the tile
+ * @param tempmm Actual number of rows in this tile
+ * @param tempnn Actual number of columns in this tile
+ * @param D Pointer to matrix D data
+ * @param lda Leading dimension of matrix D
+ * @param vec Pointer to source vector
+ */
+void fillinD(int m, int n, int tempmm, int tempnn, float *D, int lda, float *vec) {
+    int i, j;
+    for (i=0; i<tempmm; i++) {
+        for (j=0; j<tempnn; j++) {
+            D[i*lda+j] = vec[n*lda+i];
+        }
+    }
+}
+
+/**
+ * @brief Hook function that always returns DONE
+ * @param task Pointer to the task
+ * @return PARSEC_HOOK_RETURN_DONE
+ */
+static inline parsec_hook_return_t
+always_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_DONE;
+}
+
+/**
+ * @brief Hook function that always returns NEXT
+ * @param task Pointer to the task
+ * @return PARSEC_HOOK_RETURN_NEXT
+ */
+static inline parsec_hook_return_t
+never_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_NEXT;
+}
+
+
+%}
+
+/* Global parameters for matrix addition task */
+descA     [type = "const parsec_tiled_matrix_t*"]  /* Matrix descriptor */
+vec      [type = "float *"]                        /* Input vector */
+params_tlr   [ type = "hicma_parsec_params_t *" ] /* TLR parameters */
+
+/* GPU workspace */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]
+
+/* GPU number and index */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]
+
+/**
+ * @brief Matrix addition task with Gaussian kernel application
+ * Performs A = A + C + D and applies Gaussian kernel transformation
+ */
+matrix_add(m, n)
+  /* Execution Space - process lower triangular tiles */
+m = 0..(descA->mt-1)
+n = 0.. m
+
+  /* Locality */
+  : descA(m,n)
+
+READ C  <- C fillC(m, n)  /* Read matrix C from fillC task */
+READ D  <- D fillD(m, n)  /* Read matrix D from fillD task */
+
+RW    A  <- descA(m, n)   /* Read-write matrix A */
+        -> descA(m, n)
+
+BODY  [type=CUDA]     
+{
+    // Calculate actual tile dimensions (handle edge tiles)
+    int tempnn = (n==(descA->nt-1)) ? (descA->n-(n*descA->nb)) : descA->nb;
+    int tempmm = (m==(descA->mt-1)) ? (descA->m-(m*descA->mb)) : descA->mb;
+    int lda = BLKLDD( descA, m );
+    float alpha = (float)1.0;
+    float beta = (float)1.0;
+    
+    // Get CUDA BLAS handle from GPU workspace
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+
+    cublasStatus_t status;
+
+    // Perform A = alpha*C + beta*A (A = A + C)
+    cublasSgeam(handle,
+                CUBLAS_OP_N, CUBLAS_OP_N,
+                tempmm, tempnn,
+                &alpha, C, lda,
+                &beta,  A, lda,
+                A, lda);
+
+    // Perform A = alpha*D + beta*A (A = A + D)
+    cublasSgeam(handle,
+                CUBLAS_OP_N, CUBLAS_OP_N,
+                tempmm, tempnn,
+                &alpha, D, lda,
+                &beta,  A, lda,
+                A, lda);
+
+    // Apply Gaussian kernel transformation
+    float gamma = (float) params_tlr->radius;
+    float add_diag = (float)params_tlr->add_diag;
+
+    gaussian_gpu(tempmm, tempnn, m, n, gamma, add_diag, A, lda, cuda_stream->cuda_stream);
+   
+}
+END
+
+
+/*BODY       
+{
+    int tempnn = (n==(descA->nt-1)) ? (descA->n-(n*descA->nb)) : descA->nb;
+    int tempmm = (m==(descA->mt-1)) ? (descA->m-(m*descA->mb)) : descA->mb;
+    int lda = BLKLDD( descA, m );
+
+    //parsec_print_tile3(D, tempmm, tempnn);
+
+    CORE_sgeadd(PlasmaNoTrans, tempmm, tempnn, 1.0, C, lda, 1.0, A, lda);
+    CORE_sgeadd(PlasmaNoTrans, tempmm, tempnn, 1.0, D, lda, 1.0, A, lda);
+
+    //parsec_print_tile3(A, tempmm, tempnn);
+
+    float gamma = (float) params_tlr->radius;
+    float add_diag = (float)params_tlr->add_diag;
+   // printf("\n %s %d %f %f\n", __FILE__, __LINE__, gamma, add_diag);
+    gaussian_cpu(m, n, tempmm, lda, A, gamma, add_diag);
+
+   // parsec_print_tile3(A, tempmm, tempnn);
+}
+END*/
+
+
+/**
+ * @brief Fill matrix C with values from input vector
+ * Creates matrix C by filling it with values from the input vector
+ */
+fillC(m, n)
+  /* Execution Space - process lower triangular tiles */
+m = 0..(descA->mt-1)
+n = 0.. m
+
+  /* Locality */
+  : descA(m,n)
+
+WRITE C  <- NEW
+      -> C matrix_add(m, n)
+
+BODY
+{
+    // Calculate actual tile dimensions (handle edge tiles)
+    int tempnn = (n==(descA->nt-1)) ? (descA->n-(n*descA->nb)) : descA->nb;
+    int tempmm = (m==(descA->mt-1)) ? (descA->m-(m*descA->mb)) : descA->mb;
+    int lda = BLKLDD( descA, m );
+    // Fill matrix C with values from vector
+    fillinC(m, n, tempmm, tempnn, C, lda, vec);
+}
+END
+
+/**
+ * @brief Fill matrix D with values from input vector
+ * Creates matrix D by filling it with values from the input vector
+ */
+fillD(m, n)
+  /* Execution Space - process lower triangular tiles */
+m = 0..(descA->mt-1)
+n = 0.. m
+
+  /* Locality */
+  : descA(m,n)
+
+WRITE D  <- NEW
+      -> D matrix_add(m, n)
+
+BODY
+{
+    // Calculate actual tile dimensions (handle edge tiles)
+    int tempnn = (n==(descA->nt-1)) ? (descA->n-(n*descA->nb)) : descA->nb;
+    int tempmm = (m==(descA->mt-1)) ? (descA->m-(m*descA->mb)) : descA->mb;
+    int lda = BLKLDD( descA, m );
+    // Fill matrix D with values from vector
+    fillinD(m, n, tempmm, tempnn, D, lda, vec);
+}
+END
+
+
+extern "C" %{
+
+/* Print more */
+static int print_more = 0;
+
+/**
+ * @brief GPU evaluation hook for matrix_add task
+ * @param task Pointer to the task
+ * @return PARSEC_HOOK_RETURN_DONE
+ */
+static parsec_hook_return_t evaluate_gpu_matrix_add(parsec_task_t* task) {
+        return PARSEC_HOOK_RETURN_DONE;
+}
+
+/**
+ * @brief Create a new matrix addition taskpool
+ * @param A Matrix descriptor
+ * @param vec Input vector
+ * @param params_tlr TLR parameters
+ * @param data HICMA data structure
+ * @return Pointer to the created taskpool
+ */
+parsec_taskpool_t* hicma_parsec_matrix_add_New(parsec_tiled_matrix_t* A,
+                   float* vec, hicma_parsec_params_t * params_tlr,
+                    hicma_parsec_data_t *data)
+{
+    parsec_matrix_add_taskpool_t* tp;
+    void** eval_gpu_matrix_add;
+    void** eval_gpu_fill;
+
+    int nb = 0, *dev_index;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /** Find all CUDA devices */
+    hicma_parsec_find_cuda_devices(&dev_index, &nb);
+
+#if !GPU_BUFFER_ONCE
+    /* Allocate workspace on GPU in not allocated */
+    gpu_temporay_buffer_init( data, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
+#endif
+#endif
+
+    tp = parsec_matrix_add_new( A, vec, params_tlr);
+
+    /* Find the correct taskclass ID */
+    int matrix_add_id, fill_id, gpu_id = 0;
+    for( int i = 0; i < tp->super.nb_task_classes; i++ ) {
+        if( !strcmp(tp->super.task_classes_array[i]->name, "matrix_add") )
+            matrix_add_id = tp->super.task_classes_array[i]->task_class_id;
+    }
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if( 0 == params_tlr->rank ) printf("add_id= %d fill_id= %d gpu_id= %d\n", matrix_add_id, fill_id, gpu_id);
+
+    /* GPU evaluate of chores */
+    eval_gpu_matrix_add  = (void *)&tp->super.task_classes_array[matrix_add_id]->incarnations[gpu_id].evaluate;
+    *eval_gpu_matrix_add  = &evaluate_gpu_matrix_add;
+
+    tp->_g_ws_gpu = (void *)data->ws_gpu;
+    tp->_g_nb_cuda_devices = nb;
+    tp->_g_cuda_device_index = dev_index;
+#endif
+
+    // Set up arena for float datatype
+    parsec_add2arena( &((parsec_matrix_add_taskpool_t*)tp)->arenas_datatypes[PARSEC_matrix_add_DEFAULT_ADT_IDX],
+            parsec_datatype_float_t, PARSEC_MATRIX_FULL,
+            1, A->mb, A->nb, A->mb,
+            PARSEC_ARENA_ALIGNMENT_SSE, -1);
+
+    return (parsec_taskpool_t*)tp;
+}
+
+
+/**
+ * @brief Destructor for matrix addition taskpool
+ * @param tp Pointer to the taskpool to destroy
+ */
+void hicma_parsec_matrix_add_Destruct( parsec_taskpool_t *tp)
+{
+
+    parsec_matrix_add_taskpool_t *matrix_add_tp = (parsec_matrix_add_taskpool_t*)tp;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    // Free CUDA device index array if allocated
+    if( matrix_add_tp->_g_nb_cuda_devices > 0 ) {
+        if( NULL != matrix_add_tp->_g_cuda_device_index )
+            free(matrix_add_tp->_g_cuda_device_index);
+    }
+#endif 
+    // Remove arena for float datatype
+    parsec_del2arena( &matrix_add_tp->arenas_datatypes[PARSEC_matrix_add_DEFAULT_ADT_IDX] );
+
+    parsec_taskpool_free(tp);
+}
+
+/**
+ * @brief Execute matrix addition with Gaussian kernel application
+ * @param parsec PaRSEC context
+ * @param A Matrix descriptor
+ * @param vec Input vector
+ * @param params_tlr TLR parameters
+ * @param data HICMA data structure
+ * @return 0 on success
+ */
+int hicma_parsec_matrix_add(parsec_context_t *parsec,
+        parsec_tiled_matrix_t* A, 
+        float* vec,
+        hicma_parsec_params_t * params_tlr,
+        hicma_parsec_data_t *data)
+{
+    parsec_taskpool_t *parsec_matrix_add = NULL;
+
+    parsec_matrix_add = hicma_parsec_matrix_add_New(A, vec, params_tlr, data);
+
+    if ( parsec_matrix_add != NULL )
+    {
+        parsec_context_add_taskpool( parsec, parsec_matrix_add);
+        dplasma_wait_until_completion(parsec);
+        hicma_parsec_matrix_add_Destruct( parsec_matrix_add);
+    }
+    return 0;
+}
+
+%}

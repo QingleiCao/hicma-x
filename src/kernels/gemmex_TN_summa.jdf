@@ -1,0 +1,344 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+#include "hicma_parsec.h"
+
+/* Define the different shapes this JDF is using for SUMMA matrix operations */
+#define A_SHAPE 0  // Matrix A shape identifier
+#define B_SHAPE 1  // Matrix B shape identifier  
+#define C_SHAPE 2  // Matrix C shape identifier
+
+
+#include "gemmex_TN_summa.h"
+
+/**
+ * @brief Hook function that always returns DONE
+ * 
+ * This hook function is used for task scheduling control in SUMMA algorithm
+ * and always indicates that the task should proceed to execution.
+ * 
+ * @param[in] task Pointer to the PaRSEC task (unused)
+ * @return PARSEC_HOOK_RETURN_DONE indicating task should proceed
+ */
+static inline parsec_hook_return_t
+always_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_DONE;
+}
+
+/**
+ * @brief Hook function that always returns NEXT
+ * 
+ * This hook function is used for task scheduling control in SUMMA algorithm
+ * and always indicates that the task should not proceed to execution.
+ * 
+ * @param[in] task Pointer to the PaRSEC task (unused)
+ * @return PARSEC_HOOK_RETURN_NEXT indicating task should not proceed
+ */
+static inline parsec_hook_return_t
+never_here(const parsec_task_t* task)
+{
+    (void)task;
+    return PARSEC_HOOK_RETURN_NEXT;
+}
+
+%}
+
+/*
+ * Global Parameters for GEMMEX TN SUMMA (Scalable Universal Matrix Multiplication Algorithm)
+ */
+
+/* GEMMEX operation type - must be first to enable switching between implementations */
+gemmex_type [ type = int hidden=on default="HICMA_GEMM_TN_SUMMA" ]
+
+/* Matrix transpose operations */
+transA [type = int]  // Transpose operation for matrix A
+transB [type = int]  // Transpose operation for matrix B
+
+/* Scalar coefficients for the operation C = alpha * op(A) * op(B) + beta * C */
+alpha  [type = float]  // Scalar multiplier for matrix product
+beta   [type = float]  // Scalar multiplier for matrix C
+
+/* Matrix descriptors */
+descA     [type = "const parsec_tiled_matrix_t*"]  // Input matrix A descriptor
+descB     [type = "const parsec_tiled_matrix_t*"]  // Input matrix B descriptor  
+descC     [type = "const parsec_tiled_matrix_t*"]  // Output matrix C descriptor
+
+/* SUMMA-specific distributed matrix descriptor for communication */
+Cdist  [type = "parsec_data_collection_t *"]  // Distributed matrix for SUMMA communication
+
+/* HICMA TLR (Tile Low-Rank) parameters */
+params_tlr   [ type = "hicma_parsec_params_t *" ]
+
+/* GPU workspace for CUDA operations */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]
+
+/* Memory pool for workspace allocation */
+p_work_int       [ type = "parsec_memory_pool_t *" hidden = on default = NULL ] 
+
+/* GPU device management */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]      // Number of CUDA devices
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]  // Array of CUDA device indices
+
+/* SUMMA process grid dimensions - extracted from matrix C's distribution */
+P      [type = "int" hidden=on default="((parsec_matrix_block_cyclic_t*)descC)->grid.rows"]  // Process grid rows
+Q      [type = "int" hidden=on default="((parsec_matrix_block_cyclic_t*)descC)->grid.cols"]  // Process grid columns
+
+/* Lookahead parameters for pipeline optimization in SUMMA */
+lookP  [type = "int" hidden=on default="dplasma_aux_getGEMMLookahead(descC)"]  // Lookahead in P dimension
+lookQ  [type = "int" hidden=on default="dplasma_aux_getGEMMLookahead(descC)"]  // Lookahead in Q dimension
+
+
+/**************************************************
+ *               Define Arena                     *
+ **************************************************/
+my_arena(k)
+
+// Execution space
+k = 0 .. 0
+
+// Parallel partitioning
+:descC(0, 0)
+
+// Parameters
+READ A1 <- NULL       [ type = FULL_I8 ]
+
+BODY
+{
+}
+END
+
+/**************************************************
+ *                       READ_A                   *
+ **************************************************/
+READ_A(k, m)  [profile = off]
+
+k = 0 .. descA->mt-1
+m = 0 .. descA->nt-1
+
+: descA(k, m)
+
+READ A <- descA(k, m) 
+       -> A RING_A(k, m, k%Q) /* dep OUT: rely on datacopy dtt for sending */  [type_remote=FULL_I8]
+BODY
+{
+    printlog("rank %u <- A(%d,%d)\n", ((parsec_data_collection_t*)descA)->myrank, k, m);
+    #if  defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( nb_cuda_devices > 0 ) {
+        int g = gpu_load_balance_2d( k, m, params_tlr );
+        parsec_advise_data_on_device( _f_A->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+/**************************************************
+ *                       RING_A                   *
+ * SUMMA ring communication for matrix A tiles
+ * Implements the horizontal broadcast in SUMMA algorithm
+ **************************************************/
+RING_A(k, m, q)  [profile = off]
+
+// Iterate over all tiles and process grid columns
+k = 0 .. descA->mt-1  // Tile row index
+m = 0 .. descA->nt-1  // Tile column index
+q = 0 .. Q-1          // Process grid column index
+prevq = (q-1+Q)%Q     // Previous process in ring
+nextq = (q+1)%Q       // Next process in ring
+
+// Data locality - use distributed matrix for communication
+: Cdist(m, q)
+
+// SUMMA ring communication pattern for matrix A
+READ A <- (k%Q == q) ? A READ_A(k, m) : A RING_A(k, m, prevq) [type_remote=FULL_I8]
+       -> A GEMM(m, q .. descC->nt-1 .. Q, k)                 [type_remote=FULL_I8]
+       -> (nextq != (k%Q)) ? A RING_A(k, m, nextq)            [type_remote=FULL_I8]
+
+// Control flow for lookahead optimization
+CTL ctla <- (k >= lookQ) ? ctla GEMM(m, q .. descC->nt-1 .. Q, k-lookQ)
+
+BODY
+{
+    // Debug output for SUMMA communication tracking
+    printlog("rank %u <- A(%d,%d)\n", ((parsec_data_collection_t*)descA)->myrank, k, m);
+}
+END
+
+/**************************************************
+ *                       READ_B                   *
+ **************************************************/
+READ_B(k, n) [profile = off]
+
+k = 0 .. descB->mt-1
+n = 0 .. descB->nt-1
+
+
+: descB(k, n)
+
+READ B <- descB(k, n) 
+       -> B RING_B(k, n, k%P) /* dep OUT: rely on datacopy dtt for sending */ //[type_remote=FULL_I8]
+BODY
+{
+     printlog("rank %u <- B(%d,%d)\n", ((parsec_data_collection_t*)descB)->myrank, k, n);
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( nb_cuda_devices > 0 ) {
+        int g = gpu_load_balance_2d( k, n, params_tlr );
+        parsec_advise_data_on_device( _f_B->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+/**************************************************
+ *                       RING_B                   *
+ * SUMMA ring communication for matrix B tiles
+ * Implements the vertical broadcast in SUMMA algorithm
+ **************************************************/
+RING_B(k, n, p)  [profile = off]
+
+// Iterate over all tiles and process grid rows
+k = 0 .. descB->mt-1  // Tile row index
+n = 0 .. descB->nt-1  // Tile column index
+p = 0 .. P-1          // Process grid row index
+prevp = (p-1+P)%P     // Previous process in ring
+nextp = (p+1)%P       // Next process in ring
+
+// Data locality - use distributed matrix for communication
+: Cdist(p, n)
+
+// SUMMA ring communication pattern for matrix B
+READ B <- (k%P == p) ? B READ_B(k, n) : B RING_B(k, n, prevp) [type_remote=FULL_I8]
+       -> B GEMM(p .. descC->mt-1 .. P, n, k)               [type_remote=FULL_I8]
+       -> (nextp != (k%P)) ? B RING_B(k, n, nextp)          [type_remote=FULL_I8]
+
+// Control flow for lookahead optimization
+CTL ctlb <- (k >= lookP) ? ctlb GEMM(p .. descC->mt-1 .. P, n, k-lookP)
+
+BODY
+{
+    // Debug output for SUMMA communication tracking
+    printlog("rank %u <- B(%d,%d)\n", ((parsec_data_collection_t*)descB)->myrank, k, n);
+}
+END
+
+
+/**************************************************
+ *                       READ_C                   *
+ **************************************************/
+READ_C(m, n) [profile = off]
+
+m = 0 .. descC->mt-1
+n = 0 .. descC->nt-1
+
+: descC(m, n)
+
+READ C <- descC(m, n)
+       -> C GEMM(m, n, 0)      [ type_remote = FULL_SP ]
+
+BODY
+{
+    printlog("rank %u <- C(%d,%d)\n", ((parsec_data_collection_t*)descC)->myrank, m, n);
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( nb_cuda_devices > 0 ) {
+        int g = gpu_load_balance_2d( m, n, params_tlr );
+        parsec_advise_data_on_device( _f_C->original,
+                                    cuda_device_index[g],
+                                    PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+/**************************************************
+ *                       GEMM                     *
+ * Core SUMMA matrix multiplication task: C += A^T * B
+ * Implements the TN (Transpose-NoTranspose) operation with SUMMA algorithm
+ **************************************************/
+GEMM(m, n, k) [flops = inline_c%{ return FLOPS_ZGEMM(CLEAN_MB(descC, m), CLEAN_NB(descC, n), CLEAN_MB(descA, k)); %}]
+
+// Execution space - iterate over all tile positions
+m = 0 .. descC->mt-1  // Tile row index in result matrix C
+n = 0 .. descC->nt-1  // Tile column index in result matrix C
+k = 0 .. descA->mt-1  // Reduction dimension (inner product dimension)
+
+// Parallel partitioning - each task operates on one tile of C
+: descC(m, n)
+
+// SUMMA data dependencies - read from ring communication tasks
+READ A <- A RING_A(k, m, n%Q)                         [type_remote=FULL_I8]  // Read A from horizontal ring
+READ B <- B RING_B(k, n, m%P)                         [type_remote=FULL_I8]  // Read B from vertical ring
+
+// Read-Write dependencies for accumulation pattern
+RW   C <- (k == 0)             ? C READ_C(m, n)         // First iteration: read initial C
+       <- (k != 0)             ? C GEMM( m, n, k-1 )    // Subsequent: read from previous k
+       -> (k == (descA->mt-1)) ? descC(m, n)            // Last iteration: write final result
+       -> (k != (descA->mt-1)) ? C GEMM( m, n, k+1 )    // Not last: pass to next k
+
+// SUMMA control flow for lookahead optimization
+CTL ctla -> (k < (descA->mt-lookQ)) ? ctla RING_A(k+lookQ, m, n%Q)  // Trigger A ring ahead
+CTL ctlb -> (k < (descA->mt-lookP)) ? ctlb RING_B(k+lookP, n, m%P)  // Trigger B ring ahead
+
+BODY [type=CUDA
+      A.size=%{ return descA->mb*descA->nb*parsec_datadist_getsizeoftype(descA->mtype);%}
+      B.size=%{ return descB->mb*descB->nb*parsec_datadist_getsizeoftype(descB->mtype);%}
+      C.size=%{ return descC->mb*descC->nb*parsec_datadist_getsizeoftype(descC->mtype);%}]
+{
+    // Set up scalar coefficients for the SUMMA operation C = alpha * A^T * B + beta * C
+    float lalpha = alpha;                    // Scalar multiplier for matrix product
+    float lbeta  = (k == 0) ? beta : 1.0;   // Beta only applied on first iteration
+
+    // Calculate actual tile dimensions (handle edge cases in SUMMA)
+    int tempmm = m == descC->mt-1 ? descC->m - m * descC->mb : descC->mb;  // Actual rows in C tile
+    int tempnn = n == descC->nt-1 ? descC->n - n * descC->nb : descC->nb;  // Actual cols in C tile
+    int tempkk = k == descA->mt-1 ? descA->m - k * descA->mb : descA->mb;  // Actual cols in A tile
+    int ldak = descA->mb;  // Leading dimension of A tile
+    int ldbk = descB->mb;  // Leading dimension of B tile
+    int ldcm = descC->mb;  // Leading dimension of C tile
+
+    // Get CUDA BLAS handle from GPU workspace for SUMMA computation
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+
+    // Convert float coefficients to integer for mixed precision operation
+    int ialpha=(int)lalpha;
+    int ibeta=(int)lbeta;
+    
+    cublasStatus_t status;
+    
+    // Alternative double-precision implementation (currently disabled)
+#if 0
+    status = cublasDgemmex( handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                        tempmm, tempnn, tempkk,
+                        &lalpha, A, ldak,
+                        B, ldbk,
+                        &lbeta,  C, ldcm );
+    //HiCMA_CUDA_CHECK_ERROR( "cublasSgemmex7", status);
+#else
+    // Perform mixed-precision SUMMA GEMM: A^T (int8) * B (int8) -> C (int32)
+    // This implements the extended GEMM operation with different input/output precisions
+    status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                                   tempmm, tempnn, tempkk,
+                                   &ialpha, A, CUDA_R_8I, ldak,      // A^T as int8
+                                            B, CUDA_R_8I, ldbk,      // B as int8
+                                   &ibeta, C, CUDA_R_32I, ldcm,      // C as int32
+                                            CUDA_R_32I, CUBLAS_GEMM_DEFAULT);
+#endif
+    
+    // Check for CUDA errors and handle appropriately
+    PARSEC_CUDA_CHECK_ERROR( "cublasSgemmex ", status, {return PARSEC_HOOK_RETURN_ERROR;} );
+}
+END

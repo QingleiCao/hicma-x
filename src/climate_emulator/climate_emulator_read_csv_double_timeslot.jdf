@@ -1,0 +1,238 @@
+extern "C" %{
+/**
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2023-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2023-2025     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "climate_emulator.h"
+
+/**
+ * @brief Read double precision data from a CSV file into a matrix
+ * 
+ * This function reads comma-separated double values from a CSV file and stores them
+ * in a matrix data array. The data is read row by row, column by column.
+ * 
+ * @param filename Path to the CSV file to read
+ * @param data Pointer to the destination matrix data array
+ * @param M Number of rows in the matrix
+ * @param N Number of columns in the matrix
+ * @return 0 on success, -1 on file open failure, 1 on read error
+ */
+static int read_csv_double_timeslot_core(const char* filename, double *data, int M, int N) {
+    // Open the CSV file for reading
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        printf("File opening failed: %s", filename);
+        return -1;
+    }
+
+	int status = 0;
+    // Read data row by row, column by column
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            // Read double values separated by commas
+            // fscanf automatically handles the comma separator
+            status = fscanf(fp, "%lf,", &data[j*M+i]);
+            
+#if DEBUG_INFO_CLIMATE_EMULATOR
+            // Check for read errors in debug mode
+            if (status != 1) {
+                fprintf(stderr, "Error reading file at row %d, column %d\n", i, j);
+                fclose(fp);
+                return 1;
+            }
+#endif
+        }
+    }
+
+    // Close the file
+    fclose(fp);
+
+#if DEBUG_INFO_CLIMATE_EMULATOR
+    // Print a subset of the loaded data for debugging
+    climate_emulator_print_matrix_col_double(data, hicma_parsec_min(M, 10), hicma_parsec_min(N, 10), M);
+#endif
+
+    return 0;
+}
+
+%}
+
+/* Matrix descriptor for the destination matrix */
+descA         [ type = "parsec_tiled_matrix_t*" ]
+/* Filename to read data from */
+filename      [ type = "char *" ]
+/* Number of time slots to process in parallel (hidden parameter) */
+batch         [ type = "int" hidden = on default = 20 ]
+
+/* Task definition for reading CSV data with time slot parallelism
+ * Each task processes one tile (m, n) within a specific time slot (k)
+ * The tasks are organized to process data in batches for better parallelism
+ */
+task(m, n, k)
+
+m = 0 .. descA->lmt-1
+k = 0 .. batch-1 
+            
+/* Calculate number of columns per batch */
+num_col = %{ return descA->lnt/batch+1; %}
+/* Calculate column range for current batch */
+n = %{ return k*num_col; %} .. %{ return parsec_imin((k+1)*num_col-1, descA->lnt-1); %}
+
+: descA(m, n)
+
+RW A <- descA(m, n) 
+     -> descA(m, n)
+
+/* Control dependencies for time slot parallelism:
+ * Each task waits for the previous time slot to complete before proceeding
+ * This ensures proper ordering of data processing across time slots
+ */
+CTL ctl1 <- (k > 0)? ctl2 task(m, n-num_col, k-1)
+CTL ctl2 -> (k < batch-1)? ctl1 task(m, n+num_col, k+1)
+
+BODY
+{
+    // Log progress for the first column of each batch
+    if(0 == n % num_col) fprintf(stderr, "climate_emulator_read_csv_double_timeslot k %d n %d\n", k, n);
+    
+    // Read CSV data into the current tile
+    read_csv_double_timeslot_core(filename, A, descA->mb, descA->nb);
+    
+    // Placeholder for potential sum operation (currently disabled)
+    if(0) climate_emulator_sum_double_core(A, descA->mb, descA->nb);
+}
+END
+
+extern "C" %{
+
+/**
+ * @brief Create and initialize a new PaRSEC taskpool for time-slot CSV reading
+ * 
+ * This function sets up the taskpool with matrix descriptor and filename,
+ * initializes the matrix with proper dimensions for time-slot processing,
+ * and configures the arena for double precision data types.
+ * 
+ * @param parsec PaRSEC context
+ * @param filename Path to the CSV file to read
+ * @param desc Matrix descriptor to initialize
+ * @param MB Block size for rows
+ * @param NB Block size for columns
+ * @param params HICMA parameters
+ * @return Pointer to the initialized taskpool
+ */
+parsec_taskpool_t*
+climate_emulator_read_csv_double_timeslot_New(parsec_context_t *parsec,
+        char *filename,
+        parsec_matrix_block_cyclic_t *desc,
+        int MB,
+        int NB,
+        hicma_parsec_params_t *params)
+{
+    // Calculate the number of time slots per node for load balancing
+    int kq = (params->time_slots%params->nodes)? params->time_slots/params->nodes+1 : params->time_slots/params->nodes; 
+    
+    // Initialize the matrix descriptor with block-cyclic distribution for time-slot processing
+    parsec_matrix_block_cyclic_init(desc, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
+            params->rank, MB, NB, MB, NB*params->time_slots, 0, 0,
+            MB, NB*params->time_slots, 1, params->nodes,
+            1, kq, 0, 0);
+    
+    // Allocate memory for the matrix data
+    desc->mat = parsec_data_allocate((size_t)desc->super.nb_local_tiles *
+                                   (size_t)desc->super.bsiz *
+                                   (size_t)parsec_datadist_getsizeoftype(desc->super.mtype));
+
+    // Handle case where filename is NULL
+    if(NULL == filename) {
+        parsec_data_collection_set_key((parsec_data_collection_t*)desc, "desc");
+        VERBOSE_PRINT(params->rank, params->verbose, ("filename is NULL\n"));
+        return NULL;
+    }
+    
+    // Set the filename as the key for the data collection
+    parsec_data_collection_set_key((parsec_data_collection_t*)desc, filename);
+
+    // Create the time-slot CSV reading taskpool
+    parsec_climate_emulator_read_csv_double_timeslot_taskpool_t *taskpool = parsec_climate_emulator_read_csv_double_timeslot_new(&desc->super, filename);
+
+    // Configure the arena for double precision data types
+    parsec_add2arena(&taskpool->arenas_datatypes[PARSEC_climate_emulator_read_csv_double_timeslot_DEFAULT_ADT_IDX],
+                            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+                            1, MB, NB, MB,
+                            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
+    return (parsec_taskpool_t*)taskpool;
+}
+
+/**
+ * @brief Clean up and destroy the PaRSEC time-slot CSV reading taskpool
+ * 
+ * This function properly deallocates the arena and the taskpool itself
+ * to prevent memory leaks.
+ * 
+ * @param taskpool Pointer to the taskpool to destroy
+ */
+void climate_emulator_read_csv_double_timeslot_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_climate_emulator_read_csv_double_timeslot_taskpool_t *climate_emulator_read_csv_double_timeslot_taskpool = (parsec_climate_emulator_read_csv_double_timeslot_taskpool_t *)taskpool;
+    
+    // Remove the arena for double precision data types
+    parsec_del2arena(&climate_emulator_read_csv_double_timeslot_taskpool->arenas_datatypes[PARSEC_climate_emulator_read_csv_double_timeslot_DEFAULT_ADT_IDX]);
+    
+    // Free the taskpool itself
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Main function to execute time-slot CSV reading operation
+ * 
+ * This function orchestrates the entire time-slot CSV reading process:
+ * 1. Creates and configures the time-slot CSV reading taskpool
+ * 2. Executes the reading operations in parallel across all tiles and time slots
+ * 3. Waits for completion and cleans up resources
+ * 
+ * @param parsec PaRSEC context
+ * @param filename Path to the CSV file to read
+ * @param desc Matrix descriptor for the destination matrix
+ * @param MB Block size for rows
+ * @param NB Block size for columns
+ * @param params HICMA parameters
+ * @return 0 on success
+ */
+int climate_emulator_read_csv_double_timeslot(parsec_context_t *parsec,
+        char *filename,
+        parsec_matrix_block_cyclic_t *desc,  
+        int MB,
+        int NB,
+        hicma_parsec_params_t *params)
+{
+    // Log the reading operation
+    VERBOSE_PRINT(params->rank, params->verbose, ("Reading %s\n", filename));
+    
+    // Create the time-slot CSV reading taskpool
+    parsec_taskpool_t *parsec_climate_emulator_read_csv_double_timeslot = NULL;
+    parsec_climate_emulator_read_csv_double_timeslot = climate_emulator_read_csv_double_timeslot_New( parsec, filename, desc, MB, NB, params);
+    
+    if( parsec_climate_emulator_read_csv_double_timeslot != NULL ){
+        // Add the taskpool to the PaRSEC context
+        parsec_context_add_taskpool(parsec, parsec_climate_emulator_read_csv_double_timeslot);
+        
+        // Start execution of all reading tasks
+        parsec_context_start(parsec);
+        
+        // Wait for all tasks to complete
+        parsec_context_wait(parsec);
+        
+        // Clean up the taskpool
+        climate_emulator_read_csv_double_timeslot_Destruct(parsec_climate_emulator_read_csv_double_timeslot);
+    }
+
+    return 0;
+}
+
+%}

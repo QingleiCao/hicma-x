@@ -1,0 +1,238 @@
+extern "C" %{
+/*
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ */
+
+#include "hicma_parsec.h"
+
+
+%}
+
+/* ============================================================================
+ * Parameter declarations for the Cholesky factorization warmup task
+ * ============================================================================ */
+
+/** Input matrix descriptor for Cholesky factorization */
+descA           [ type = "parsec_tiled_matrix_t*" ]
+
+/** Parameters for TLR (Tile Low-Rank) operations */
+params_tlr      [ type = "hicma_parsec_params_t *" ]
+
+/** Symmetry flag: 1 for symmetric, 0 for general matrix */
+sym             [ type = "int" ]
+
+/* GPU device management parameters */
+/** Number of available CUDA devices */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]
+
+/** Array of CUDA device indices for load balancing */
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]
+
+/* ============================================================================
+ * Task: potrf_bind_A - GPU data binding and load balancing
+ * ============================================================================ */
+
+/**
+ * @brief Binds matrix tiles to appropriate GPU devices for optimal performance
+ * 
+ * This task performs GPU load balancing and data binding for Cholesky factorization.
+ * It determines which GPU device should handle each matrix tile based on the 
+ * computational load and available GPU resources.
+ * 
+ * @param m Row index of the matrix tile
+ * @param n Column index of the matrix tile
+ */
+potrf_bind_A(m, n)
+
+/* Execution space: iterate over all matrix tiles */
+m = 0 .. descA->lmt-1
+n = 0 .. %{ return sym? m: descA->lnt-1; %} 
+
+/* Data dependencies: bind to matrix tile */
+: descA(m, n)
+
+/* Data flow: read matrix tile and pass to warmup task */
+READ A <- descA(m, n)
+       -> A warmup_task(m, n)
+
+//CTL ctl -> ctl warmup_task(m, n)
+
+BODY
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)  || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* GPU load balancing and data binding */
+    if( nb_cuda_devices > 0 ) {
+        int g;  /* GPU device index */
+        
+        /* Select appropriate load balancing strategy based on matrix type */
+        if( GENOMICS
+                || DENSE_MP_GPU_FP8 == params_tlr->kind_of_cholesky
+                || DENSE_MP_GPU_FP8_SP == params_tlr->kind_of_cholesky ) { 
+            /* Use 2D load balancing for general matrices or FP8 precision */
+            g = gpu_load_balance_2d( m, n, params_tlr );
+        } else {
+            /* Use standard load balancing for other matrix types */
+            g = gpu_load_balance( m, n, params_tlr );
+        }
+        
+        /* Advise the runtime system about preferred device for this data */
+        parsec_advise_data_on_device( _f_A->original,
+                cuda_device_index[g],
+                PARSEC_DEV_DATA_ADVICE_PREFERRED_DEVICE );
+    }
+#endif
+}
+END
+
+/* ============================================================================
+ * Task: warmup_task - GPU device warmup and initialization
+ * ============================================================================ */
+
+/**
+ * @brief Performs GPU warmup to initialize devices and establish communication
+ * 
+ * This task serves as a warmup phase for GPU devices, ensuring they are properly
+ * initialized and ready for the main Cholesky factorization computation. It helps
+ * reduce the overhead of the first actual computation on each GPU device.
+ * 
+ * @param m Row index of the matrix tile
+ * @param n Column index of the matrix tile
+ */
+warmup_task(m, n)
+
+/* Execution space: iterate over all matrix tiles */
+m = 0 .. descA->lmt-1
+n = 0 .. %{ return sym? m: descA->lnt-1; %} 
+
+/* Data dependencies: bind to matrix tile */
+: descA(m, n)
+
+/* Data flow: receive data from binding task */
+READ A <- A potrf_bind_A(m, n) 
+
+//CTL ctl <- ctl potrf_bind_A(m, n)
+
+/* HIP (AMD GPU) implementation */
+BODY [type=HIP]
+{     
+    /* Print warmup message for the first tile if verbose mode is enabled */
+    if( params_tlr->verbose && 0 == m && 0 == n) printf("Warmup HIP %d %d\n", m, n);
+}
+END
+
+/* CUDA (NVIDIA GPU) implementation */
+BODY [type=CUDA]
+{     
+    /* Print warmup message for the first tile if verbose mode is enabled */
+    if( params_tlr->verbose && 0 == m && 0 == n) printf("Warmup CUDA %d %d\n", m, n);
+}
+END
+
+/* CPU implementation (commented out) */
+//BODY
+//{                                   
+//    printf("CPU %d %d\n", m, n);
+//}
+//END
+
+
+
+extern "C" %{
+
+/* ============================================================================
+ * C Interface Functions for Cholesky Factorization Warmup
+ * ============================================================================ */
+
+/**
+ * @brief Creates a new taskpool for Cholesky factorization warmup
+ * 
+ * This function initializes a new PaRSEC taskpool for performing GPU warmup
+ * before the main Cholesky factorization computation. It sets up GPU device
+ * management and load balancing parameters.
+ * 
+ * @param [in] parsec:     PaRSEC context for task scheduling
+ * @param [in] A:          Input matrix descriptor, already distributed and allocated
+ * @param [in] params:     Parameters for TLR operations and GPU management
+ * @param [in] sym:        Symmetry flag (1 for symmetric, 0 for general matrix)
+ * @return the parsec taskpool object to schedule, or NULL on failure
+ */
+parsec_taskpool_t* hicma_parsec_potrf_L_warmup_New(parsec_context_t *parsec,
+            parsec_tiled_matrix_t *A,
+            hicma_parsec_params_t *params,
+            int sym)
+{
+    parsec_potrf_L_warmup_taskpool_t* taskpool = NULL;
+    
+    /* Create the warmup taskpool with the given parameters */
+    taskpool = parsec_potrf_L_warmup_new(A, params, sym); 
+
+    /* Initialize GPU device management */
+    int nb = 0, *dev_index;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Find all available CUDA/HIP devices in the system */
+    hicma_parsec_find_cuda_devices( &dev_index, &nb);
+
+    /* Set GPU device information in the taskpool */
+    taskpool->_g_nb_cuda_devices = nb;
+    taskpool->_g_cuda_device_index = dev_index;
+#endif
+
+    return (parsec_taskpool_t*)taskpool; 
+}
+
+/**
+ * @brief Destroys the Cholesky factorization warmup taskpool
+ * 
+ * This function properly cleans up the taskpool and frees all associated
+ * resources including GPU device management structures.
+ * 
+ * @param [inout] taskpool:    The parsec taskpool object to destroy
+ */
+void hicma_parsec_potrf_L_warmup_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Executes the Cholesky factorization warmup phase
+ * 
+ * This function performs the warmup phase for GPU devices before the main
+ * Cholesky factorization computation. It only runs if GPU devices are
+ * available and configured in the parameters.
+ * 
+ * @param [in] parsec:     PaRSEC context for task scheduling
+ * @param [in] dcA:        Input matrix descriptor, already distributed and allocated
+ * @param [in] params:     Parameters for TLR operations and GPU management
+ * @param [in] sym:        Symmetry flag (1 for symmetric, 0 for general matrix)
+ * @return 0 on success, non-zero on failure
+ */
+int hicma_parsec_potrf_L_warmup(parsec_context_t *parsec,
+                       parsec_tiled_matrix_t *dcA,
+                       hicma_parsec_params_t *params,
+                       int sym)
+{
+    /* Only perform warmup if GPU devices are available */
+    if( params->gpus > 0) {
+        /* Create the warmup taskpool */
+        parsec_taskpool_t * potrf_L_warmup = hicma_parsec_potrf_L_warmup_New(parsec, dcA, params, sym); 
+        
+        if( potrf_L_warmup != NULL ){
+            /* Schedule and execute the warmup tasks */
+            parsec_context_add_taskpool(parsec, potrf_L_warmup);
+            parsec_context_start(parsec);
+            parsec_context_wait(parsec);
+            
+            /* Clean up the taskpool */
+            hicma_parsec_potrf_L_warmup_Destruct(potrf_L_warmup);
+        }
+    }
+
+    return 0;
+}
+
+%}

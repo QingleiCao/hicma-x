@@ -1,0 +1,184 @@
+extern "C" %{
+/**
+ * @file matrix_sum_vec.jdf
+ * @brief Column-wise sum computation for matrices
+ * 
+ * This file implements a PaRSEC task for computing column-wise sums of matrix
+ * elements. The computation accumulates the squared values of matrix elements
+ * column by column, which is useful for various matrix analysis operations
+ * such as computing column norms or variance calculations.
+ * 
+ * The algorithm processes each tile in parallel and accumulates squared values
+ * into a vector that represents the sum of squares for each column.
+ * 
+ * @copyright (c) 2023-2025     Saint Louis University (SLU)
+ * @copyright (c) 2023-2025     Massachusetts Institute of Technology (MIT)
+ * @copyright (c) 2023-2025     Nvidia Corporation
+ * @copyright (c) 2018-2025     King Abdullah University of Science and Technology (KAUST)
+ * @copyright (c) 2018-2023     The University of Tennessee and The University of Tennessee Research Foundation
+ *                              All rights reserved.
+ **/
+
+#include "hicma_parsec.h"
+
+%}
+
+/* Global parameters for the column-wise sum computation task
+ * descA:      The tiled matrix descriptor containing the matrix data
+ * params_tlr: TLR parameters including matrix dimensions and configuration
+ * vec_tmp:    Array to store per-thread column sum contributions
+ */
+descA           [ type = "parsec_tiled_matrix_t*" ]
+params_tlr      [ type = "hicma_parsec_params_t *" ]
+vec_tmp         [ type = "float *" ]
+
+
+/**************************************************
+ *        Column-wise sum computation task        *
+ *        Accumulates squared values by column    *
+ **************************************************/
+task(m, n)
+
+// Execution space: process all matrix tiles
+m = 0 .. descA->mt-1
+n = 0 .. descA->nt-1
+
+// Parallel partitioning: each tile is processed by one task
+:descA(m, n)
+
+// Parameters: read the matrix tile data
+READ A <- descA(m, n)               
+
+BODY
+{
+    // Get thread ID for per-thread accumulation
+    int tid = es->th_id;
+
+    /* Compute column-wise sum of squared values */
+    if( m == descA->mt-1 ) {
+        // Last row of tiles: handle potential smaller tile size
+        for(int j = 0; j < descA->nb; j++) {
+            for(int i = 0; i < descA->mb; i++) {
+                // Accumulate squared values for each column
+                vec_tmp[tid*params_tlr->N+n*descA->nb+j] += ((float *)A)[j*descA->mb+i] * ((float *)A)[j*descA->mb+i];
+            }
+        }
+    } else {
+        // Regular tiles: process full tile size
+        for(int j = 0; j < descA->nb; j++) {
+            for(int i = 0; i < descA->mb; i++) {
+#if GENOMICS_ALLOCATE_SP
+                // Single precision floating point data
+                vec_tmp[tid*params_tlr->N+n*descA->nb+j] += ((float *)A)[j*descA->mb+i] * ((float *)A)[j*descA->mb+i];
+#else
+                // Integer data (int8_t) converted to float
+                vec_tmp[tid*params_tlr->N+n*descA->nb+j] += (float)((int8_t *)A)[j*descA->mb+i] * (float)((int8_t *)A)[j*descA->mb+i];
+#endif
+            }
+        }
+    }
+}
+END
+
+
+extern "C" %{
+
+/**
+ * @brief Create a new column-wise sum computation taskpool
+ * 
+ * This function creates and initializes a PaRSEC taskpool for computing
+ * column-wise sums of matrix elements. The taskpool will schedule tasks
+ * to accumulate squared values for each column in parallel.
+ * 
+ * @param [in] parsec:   PaRSEC context (unused but required for interface)
+ * @param [in] A:        The tiled matrix descriptor
+ * @param [in] params:   TLR parameters including matrix dimensions
+ * @param [in] vec_tmp:  Array to store per-thread column sum contributions
+ * @return the parsec object to schedule
+ */
+parsec_taskpool_t*
+hicma_parsec_matrix_sum_vec_New( parsec_context_t *parsec,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        float *vec_tmp)
+{
+    // Create the taskpool with the specified parameters
+    parsec_matrix_sum_vec_taskpool_t *matrix_sum_vec = parsec_matrix_sum_vec_new(A, params, vec_tmp);
+    return (parsec_taskpool_t*)matrix_sum_vec ;
+}
+
+/**
+ * @brief Destroy the column-wise sum computation taskpool
+ * 
+ * @param [inout] taskpool: The PaRSEC taskpool to destroy
+ */
+void hicma_parsec_matrix_sum_vec_Destruct(parsec_taskpool_t *taskpool)
+{
+    parsec_matrix_sum_vec_taskpool_t *matrix_sum_vec_taskpool = (parsec_matrix_sum_vec_taskpool_t *)taskpool;
+    parsec_taskpool_free(taskpool);
+}
+
+/**
+ * @brief Compute column-wise sum of squared matrix elements
+ * 
+ * This function computes the sum of squared values for each column of the matrix.
+ * The computation is performed in parallel across multiple threads and processes,
+ * with results accumulated into a vector where each element represents the sum
+ * of squares for the corresponding column.
+ * 
+ * @param [in] parsec:   PaRSEC context for task scheduling
+ * @param [in] A:        The tiled matrix descriptor
+ * @param [in] params:   TLR parameters including matrix dimensions
+ * @param [out] vec:     Output vector containing column-wise sums (must be pre-allocated)
+ */
+void hicma_parsec_matrix_sum_vec( parsec_context_t *parsec,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        float *vec)
+{
+    parsec_taskpool_t *parsec_matrix_sum_vec = NULL;
+
+    /* Ensure single virtual process (simplified parallelization model) */
+    assert( parsec->nb_vp == 1 );
+    int nb_threads = parsec->virtual_processes[0]->nb_cores;
+    
+    // Allocate per-thread accumulation arrays
+    float *vec_tmp = (float *)calloc(sizeof(float) * params->N, nb_threads);
+
+    /* Initialize output vector to zero */ 
+    memset( vec, 0, params->NT * sizeof(float) );
+
+    // Create and execute the column-wise sum computation taskpool
+    parsec_matrix_sum_vec = hicma_parsec_matrix_sum_vec_New( parsec, A, params, vec_tmp );
+
+    parsec_context_add_taskpool(parsec, parsec_matrix_sum_vec);
+    parsec_context_start(parsec);
+    parsec_context_wait(parsec);
+    hicma_parsec_matrix_sum_vec_Destruct(parsec_matrix_sum_vec);
+
+    // Debug output (commented out for performance)
+#if 0
+    for(int i = 0; i < nb_threads; i++) {
+        for(int j = 0; j < params->N; j++) {
+            printf("%.0f ", vec_tmp[i*params->N+j]);
+        }
+        printf("\n");
+    }
+    printf("\nnb_threads %d\n", nb_threads);
+#endif
+
+    /* Reduce per-thread contributions to get process-level column sums */
+    for( int j = 0; j < params->N; j++ ) {
+        for( int i = 0; i < nb_threads; i++ ) {
+            vec[j] += vec_tmp[i*params->N+j];
+        }
+    }
+
+    // Perform MPI reduction to get global column sums across all processes
+    MPI_Allreduce(MPI_IN_PLACE, vec, params->N, MPI_FLOAT, MPI_SUM, MPI_COMM_WORLD);
+
+    // Clean up temporary storage
+    free( vec_tmp );
+}
+
+%}
