@@ -157,9 +157,4 @@ if( CMAKE_Fortran_COMPILER_WORKS )
                           LINKER_LANGUAGE Fortran)
 endif()
 
-install( FILES hicma_parsec_internal.h
-          DESTINATION include )
- install( FILES hicma_parsec.h
-          DESTINATION include )
- install( TARGETS hicma_parsec
-          DESTINATION lib64 )
+# Header and library installation is handled by the top-level CMakeLists.txt

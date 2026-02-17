@@ -393,9 +393,19 @@ if(BUILD_TESTING)
 endif()
 
 # Installation configuration
-install(FILES 
-    src/hicma_parsec_internal.h
-    src/hicma_parsec.h
+install(FILES
+    src/core/hicma_parsec.h
+    src/core/hicma_parsec_internal.h
+    src/core/hicma_parsec_flat_file.h
+    src/core/hicma_parsec_datatype_convert.h
+    src/core/hicma_parsec_decision.h
+    src/core/hicma_parsec_core.h
+    src/core/hicma_parsec_sparse_analysis.h
+    src/core/hicma_parsec_rank_statistics.h
+    src/core/hicma_parsec_io.h
+    src/core/hicma_parsec_gpu.h
+    src/core/hicma_parsec_distribution.h
+    src/core/hicma_parsec_check.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
