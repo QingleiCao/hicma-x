@@ -665,28 +665,28 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Matrix size N is required for most computations
     if( params->N <= 0 ) {
         if( 0 == params->rank )
-            fprintf(stderr, "#XXXXX the matrix size (N) is not set!\n");
-        params->N = 10;  // Set minimal default for testing
+            fprintf(stderr, "Matrix size (N) is not set; set to 2048!\n");
+        params->N = 2048;  // Set minimal default for testing
     }
 
     // Tile size NB is required for tiled algorithms
     if( params->NB <= 0 ) {
         if( 0 == params->rank )
-            fprintf(stderr, "#XXXXX the tile size (NB) is not set!\n");
-        params->NB = 10;  // Set minimal default for testing
+            fprintf(stderr, "Tile size (NB) is not set; set to 2048!\n");
+        params->NB = 2048;  // Set minimal default for testing
     }
 
     // Matrix size M defaults to N if not specified
     if( params->M <= 0 ) {
-        if( 0 == params->rank )
-            fprintf(stderr, "#XXXXX the matrix size (M) is not set! Automatically set to N.\n");
+        if( 0 == params->rank & params->verbose )
+            fprintf(stderr, "Matrix size (M) is not set; Automatically set to N!\n");
         params->M = params->N;
     }
 
     // Matrix size K defaults to N if not specified
     if( params->K <= 0 ) {
-        if( 0 == params->rank )
-            fprintf(stderr, "#XXXXX the matrix size (K) is not set! Automatically set to N.\n");
+        if( 0 == params->rank & params->verbose )
+            fprintf(stderr, "Matrix size (K) is not set; Automatically set to N!\n");
         params->K = params->N;
     }
 
