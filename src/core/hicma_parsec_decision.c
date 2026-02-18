@@ -11,6 +11,7 @@
 #include "potrf_L_dense_tlr_mp.h"
 #include "potrf_L_dense_mp_gpu.h"
 #include "potrf_L_dense_mp_gpu_fp8.h"
+#include "potrf_L_dense_mp_gpu_fp8_adaptive.h"
 #include "potrf_L_dense_mp_gpu_fp8_sp.h"
 
 /**
@@ -428,6 +429,36 @@ int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8(uint16_t *decisions, int m, 
     }
 }
 
+
+/**
+ * @brief Get datatype for POTRF dense mixed precision GPU FP8 tile adaptive
+ *
+ * Determines the appropriate datatype index for POTRF dense mixed precision
+ * GPU FP8 operations based on the decision matrix. Returns the corresponding PaRSEC
+ * ADT index for the specified precision level.
+ *
+ * @param[in] decisions Decision array
+ * @param[in] m Row index
+ * @param[in] n Column index
+ * @param[in] NT Matrix size
+ * @return PaRSEC ADT index for the specified precision
+ */
+int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(uint16_t *decisions, int m, int n, int NT) {
+    switch( decisions[n*NT+m] ) {
+        case DENSE_DP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_DP_ADT_IDX;
+        case DENSE_SP: case DENSE_HP: case DENSE_FP8:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_SP_ADT_IDX;
+        case LOW_RANK_DP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_DP_ADT_IDX;
+        case LOW_RANK_SP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_SP_ADT_IDX;
+        default:
+            fprintf(stderr, "The decision is not correct! \n");
+            return -1;
+    }
+}
+
 /**
  * @brief Get datatype for POTRF dense mixed precision GPU FP8 SP tile
  *
@@ -517,6 +548,39 @@ int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8(uint16_t *decisions, in
             return PARSEC_potrf_L_dense_mp_gpu_fp8_UV_DP_ADT_IDX;
         case LOW_RANK_SP:
             return PARSEC_potrf_L_dense_mp_gpu_fp8_UV_SP_ADT_IDX;
+        default:
+            fprintf(stderr, "The decision is not correct! \n");
+            return -1;
+    }
+}
+
+/**
+ * @brief Get datatype for POTRF dense mixed precision GPU FP8 send tile adaptive
+ *
+ * Determines the appropriate datatype index for POTRF dense mixed precision
+ * GPU FP8 send operations based on the decision matrix. Returns the corresponding PaRSEC
+ * ADT index for the specified precision level.
+ *
+ * @param[in] decisions Decision array
+ * @param[in] m Row index
+ * @param[in] n Column index
+ * @param[in] NT Matrix size
+ * @return PaRSEC ADT index for the specified precision
+ */
+int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_adaptive(uint16_t *decisions, int m, int n, int NT) {
+    switch( decisions[n*NT+m] ) {
+        case DENSE_DP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_DP_ADT_IDX;
+        case DENSE_SP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_SP_ADT_IDX;
+        case DENSE_HP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_HP_ADT_IDX;
+        case DENSE_FP8:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_FULL_FP8_ADT_IDX;
+        case LOW_RANK_DP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_DP_ADT_IDX;
+        case LOW_RANK_SP:
+            return PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_SP_ADT_IDX;
         default:
             fprintf(stderr, "The decision is not correct! \n");
             return -1;

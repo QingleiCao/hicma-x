@@ -138,6 +138,22 @@ int decision_datatype_tile_potrf_L_dense_mp_gpu(uint16_t *decisions, int m, int 
  */
 int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8(uint16_t *decisions, int m, int n, int NT);
 
+
+/**
+ * @brief Get datatype for POTRF dense mixed precision GPU FP8 tile adaptive
+ * 
+ * Determines the optimal datatype for a specific tile in dense mixed precision
+ * Cholesky factorization (POTRF) operations on GPU using FP8 arithmetic.
+ * The decision optimizes for memory efficiency while maintaining numerical stability.
+ * 
+ * @param[in] decisions Decision array containing datatype choices for all tiles
+ * @param[in] m Row index of the tile
+ * @param[in] n Column index of the tile
+ * @param[in] NT Total number of tiles in the matrix
+ * @return Datatype identifier for the specified tile
+ */
+int decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(uint16_t *decisions, int m, int n, int NT);
+
 /**
  * @brief Get datatype for POTRF dense mixed precision GPU FP8 single precision tile
  * 
@@ -245,6 +261,21 @@ int decision_datatype_tile_send_potrf_L_dense_mp_gpu(uint16_t *decisions, int m,
  * @return Datatype identifier for the specified tile
  */
 int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8(uint16_t *decisions, int m, int n, int NT);
+
+/**
+ * @brief Get datatype for sending POTRF dense mixed precision GPU FP8 adaptive
+ * 
+ * Determines the optimal datatype for sending a specific tile during dense mixed
+ * precision Cholesky factorization (POTRF) operations on GPU using FP8 arithmetic.
+ * The decision optimizes for communication efficiency and memory usage.
+ * 
+ * @param[in] decisions Decision array containing datatype choices for all tiles
+ * @param[in] m Row index of the tile
+ * @param[in] n Column index of the tile
+ * @param[in] NT Total number of tiles in the matrix
+ * @return Datatype identifier for the specified tile
+ */
+int decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_adaptive(uint16_t *decisions, int m, int n, int NT);
 
 /**
  * @brief Get datatype for sending POTRF dense mixed precision GPU FP8 single precision tile

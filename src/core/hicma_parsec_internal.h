@@ -353,6 +353,7 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define SPARSE_TLR_DP_BALANCE 7  /**< Sparse TLR double precision balanced (workload-balanced sparse) */
 #define DENSE_MP_GPU_FP8      8  /**< Dense mixed precision GPU FP8 (FP8 precision on GPU) */
 #define DENSE_MP_GPU_FP8_SP   9  /**< Dense mixed precision GPU FP8 single (FP8 + SP on GPU) */
+#define DENSE_MP_GPU_FP8_ADAPTIVE   10  /**< Dense mixed precision GPU FP8 single (FP8 + SP on GPU) */
 
 /* TLR boundary conditions - control off-band computation */
 #define TLR_BOUND_WITHOUT_OFFBAND_GEMM      0  /**< Skip off-band GEMM operations */
@@ -546,6 +547,7 @@ typedef struct hicma_parsec_params_s {
     int compmaxrank;          /**< Max rank for computation */
     int fixedrk;              /**< Fixed rank threshold for HCORE_GEMM recompression */
     int adaptive_decision;    /**< Enable adaptive tile format decisions */
+    int adaptive_decision_runtime;    /**< Enable adaptive tile format decisions during runtime */
     int adaptive_memory;      /**< Enable adaptive memory allocation: 0=memory allocated once; 1=memory reallocated per tile after precision decision */
     int lookahead;            /**< Lookahead depth */
     int kind_of_problem;      /**< Type of problem being solved */
@@ -1445,6 +1447,22 @@ int potrf_L_dense_tlr_dp( parsec_context_t *parsec,
  * @return 0 on success, non-zero on failure
  */
 int potrf_L_dense_mp_gpu( parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params );
+
+/**
+ * @brief GPU implementation of mixed-precision dense Cholesky factorization
+ *        Adaptively change precision during runtime
+ * 
+ * Performs mixed-precision dense Cholesky factorization on GPU using
+ * optimized cuBLAS and cuSOLVER kernels.
+ * 
+ * @param[in] parsec PaRSEC context
+ * @param[in] data HICMA PaRSEC data structure
+ * @param[in] params HICMA PaRSEC parameters
+ * @return 0 on success, non-zero on failure
+ */
+int potrf_L_dense_mp_gpu_fp8_adaptive( parsec_context_t *parsec,
         hicma_parsec_data_t *data,
         hicma_parsec_params_t *params );
 

@@ -319,6 +319,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"band_dist", "If 0: normal two_dim_block_cyclic; if >0: with band distribution", 0, &params->band_size_dist},
         {"band_p", "Row process grid on band, default 1", 0, &params->band_p},
         {"adaptive_decision", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach", 0, &params->adaptive_decision},
+        {"adaptive_decision_runtime", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach during runtime", 0, &params->adaptive_decision_runtime},
         {"adaptive_memory", "0: memory allocated once; 1: memory reallocated per tile after precision decision", 0, &params->adaptive_memory},
         {"adaptive_maxrank", "In -D 6, adaptively set the maxrank used in Cholesky based on the generation", 0, &params->adaptive_maxrank},
         {"kind_of_cholesky", "Cholesky type", 0, &params->kind_of_cholesky},
@@ -388,6 +389,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         printf("  %-2d SPARSE_TLR_DP_GENERAL - Sparse TLR double precision general (sparse + low-rank)\n", SPARSE_TLR_DP_GENERAL);
         printf("  %-2d SPARSE_TLR_DP_BALANCE - Sparse TLR double precision balanced (workload-balanced sparse)\n", SPARSE_TLR_DP_BALANCE);
         printf("  %-2d DENSE_MP_GPU_FP8      - Dense mixed precision GPU FP8 (FP8 precision on GPU)\n", DENSE_MP_GPU_FP8);
+        printf("  %-2d DENSE_MP_GPU_FP8_ADAPTIVE      - Dense mixed precision GPU FP8 adaptively during runtime (FP8 precision on GPU)\n", DENSE_MP_GPU_FP8_ADAPTIVE);
         printf("  %-2d DENSE_MP_GPU_FP8_SP   - Dense mixed precision GPU FP8 single (FP8 + SP on GPU)\n", DENSE_MP_GPU_FP8_SP);
         
         printf("\nSpecial options:\n");
@@ -553,6 +555,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     
     // Adaptive computation settings - control dynamic behavior
     params->adaptive_decision = 0;          // Disable adaptive tile format decision (0=disabled, >0=enabled)
+    params->adaptive_decision_runtime = 0;  // Disable adaptive tile format decision during runtime (0=disabled, >0=enabled)
     // TODO: Need to test the overhead and restructure memory allocation strategy
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
     params->lookahead = -1;                 // Lookahead depth (auto-tuned based on band_size_dense)
@@ -748,6 +751,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
             && !(params->kind_of_cholesky == DENSE_TLR_MP
                 || params->kind_of_cholesky == DENSE_MP_GPU
                 || params->kind_of_cholesky == DENSE_MP_GPU_FP8
+                || params->kind_of_cholesky == DENSE_MP_GPU_FP8_ADAPTIVE
                 || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP
                 || params->kind_of_cholesky == DENSE_SP_HP_BAND)
         ) {
@@ -755,6 +759,14 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
             fprintf( stderr, RED "Wrong Cholesky version is selected!\n" RESET );
         }
         exit(1);
+    }
+
+    // If adaptive decision during runtime
+    if( params->adaptive_decision_runtime != 0 ) {
+        params->kind_of_cholesky = DENSE_MP_GPU_FP8_ADAPTIVE;
+        if( 0 == params->rank ) {
+            fprintf( stderr, RED "Cholesky version is set to DENSE_MP_GPU_FP8_ADAPTIVE\n" RESET );
+        }
     }
 
     /* Kernel Parameter Default Adjustment */
@@ -1250,7 +1262,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
         printf("kind_of_problem=%d %s\n", params->kind_of_problem, params->str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
-        printf("send_full_tile=%d lookahead= %d adaptive_decision= %d adaptive_memory= %d\n", params->send_full_tile, params->lookahead, params->adaptive_decision, params->adaptive_memory);
+        printf("send_full_tile=%d lookahead= %d adaptive_decision= %d adaptive_decision_runtime= %d adaptive_memory= %d\n", params->send_full_tile, params->lookahead, params->adaptive_decision, params->adaptive_decision_runtime, params->adaptive_memory);
         printf("band_size_dist= %d band_size_dense_dp:%d band_size_dense_sp:%d band_size_dense_hp: %d band_size_dense: %d band_size_low_rank_dp:%d NT= %d band_p= %d\n", params->band_size_dist, params->band_size_dense_dp, params->band_size_dense_sp, params->band_size_dense_hp, params->band_size_dense, params->band_size_low_rank_dp, params->NT, params->band_p);
         printf("band_size_auto_tuning_termination= %lf band_size_dense_gpu_memory_max= %d exe_file_path= %s\n", params->band_size_auto_tuning_termination, params->band_size_dense_gpu_memory_max, params->exe_file_path);
         printf("max_rank=%d gen=%d comp=%d\n", params->maxrank, params->genmaxrank, params->compmaxrank);
@@ -1311,7 +1323,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%d %lf %lf %lf %lf %lf %lf %lf    ", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
         printf("%e %d %d %e %e %e %e ", params->result_accuracy, params->left_looking, params->gpu_type, params->norm_global_diff, params->fixedacc * params->norm_global, params->log_det_dp, params->log_det_mp);
         printf("%lf %lf %lf %d  ", params->time_decision_kernel, params->time_decision_sender, params->time_syrk_app, params->numobj);
-        printf("%d %d %d %g %g  ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density);
+        printf("%d %d %d %g %g %d ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density, params->adaptive_decision_runtime);
 #ifdef GITHASH
         printf("%s ", xstr(GITHASH));
 #else
