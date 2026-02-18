@@ -554,7 +554,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Adaptive computation settings - control dynamic behavior
     params->adaptive_decision = 0;          // Disable adaptive tile format decision (0=disabled, >0=enabled)
     // TODO: Need to test the overhead and restructure memory allocation strategy
-    params->adaptive_memory = 1;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
+    params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
     params->lookahead = -1;                 // Lookahead depth (auto-tuned based on band_size_dense)
     
     // Problem configuration - define the computational problem
@@ -563,7 +563,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->HNB = 300;                      // Subtile size for recursive algorithms (inner block size)
     params->auto_band = 0;                  // Disable automatic band size tuning (0=manual, 1=auto)
     params->reorder_gemm = 0;               // Disable GEMM reordering (0=disabled, 1=enabled)
-    params->kind_of_cholesky = DENSE_TLR_MP; // Default Cholesky type: Dense TLR Mixed Precision
+    params->kind_of_cholesky = DENSE_MP_GPU; // Default Cholesky type: Dense Mixed Precision
     
     // Matrix dimensions (must be set by user via command line)
     params->P = 0;                          // Row process grid (auto-set to number of nodes if 0)
@@ -1054,13 +1054,15 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
      * =========================================== */
     
     // Copy full executable path
-    sprintf( params->exe_file_path, "%s", argv[0] ); 
-    
     // Find the executable name within the path and truncate to get directory
-    char *tmp = strstr( params->exe_file_path, argv[0] );
-    int index = tmp - params->exe_file_path; 
-    params->exe_file_path[index] = '\0';
+    sprintf(params->exe_file_path, "%s", argv[0]); 
 
+    char *slash = strrchr(params->exe_file_path, '/');
+    if (!slash) {
+        params->exe_file_path[0] = '\0';          // no '/', nothing before it
+    }
+    *(slash + 1) = '\0';
+    
     /* ===========================================
      * Initialize decision counters
      * =========================================== */
@@ -1627,6 +1629,14 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
         params->adaptive_memory = 0;
     }
 
+    // Get the right kind_of_cholesky
+    if(params->auto_band) {
+        params->kind_of_cholesky = DENSE_TLR_MP;
+        if( params->rank == 0 ) {
+            fprintf(stderr, RED "Auto_band enabled, so kind_of_cholesky = DENSE_TLR_MP\n" RESET);
+        }
+    }
+
     // Validate lookahead parameter (must be >= -1, where -1 means auto-tune)
     assert(params->lookahead >= -1);
 
@@ -1986,9 +1996,17 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
         
         // Allocate memory for dense matrix descriptor
 #if !GENOMICS
-        data->dcAd.mat = parsec_data_allocate((size_t)data->dcAd.super.nb_local_tiles *
+        size_t allocate_size = (size_t)data->dcAd.super.nb_local_tiles *
                 (size_t)data->dcAd.super.bsiz *
-                (size_t)parsec_datadist_getsizeoftype(data->dcAd.super.mtype));
+                (size_t)parsec_datadist_getsizeoftype(data->dcAd.super.mtype);
+        data->dcAd.mat = parsec_data_allocate(allocate_size);
+        // Register memory in advance
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        data->dcAd.super.super.register_memory = NULL;
+        data->dcAd.super.super.unregister_memory = NULL;
+        cudaHostRegister(data->dcAd.mat, allocate_size, cudaHostRegisterDefault); 
+#endif
+        
 #endif
 
         // Allocate memory for matrix copy if needed for prediction/checking
@@ -2634,6 +2652,9 @@ void hicma_parsec_memory_flush_choleksy( parsec_context_t *parsec,
 #if GENOMICS
         parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t*)&data->dcAd, params, 1);
 #else
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        cudaHostUnregister(data->dcAd.mat);
+#endif
         parsec_data_free(data->dcAd.mat);
 #endif
 #if PREDICTION || CHECKSOLVE
