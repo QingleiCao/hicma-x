@@ -201,6 +201,7 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
  * ============================================================================ */
 
 /* Matrix format types - define storage formats for different precision levels */
+#define NB_DECISIONS 6
 #define DENSE_DP    1  /**< Dense double precision (64-bit floating point) */
 #define DENSE_SP    2  /**< Dense single precision (32-bit floating point) */
 #define LOW_RANK_DP 3  /**< Low-rank double precision (compressed representation) */
@@ -210,10 +211,10 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Matrix format checking macros - determine tile storage format */
 #define IS_DENSE(m, n) (                                 \
-       DENSE_DP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_SP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_HP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] \
+       DENSE_DP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_SP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_HP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_FP8 == params_tlr->decisions[n*params_tlr->NT+m] \
     )  /**< Check if tile (m,n) is stored in dense format */
 
 #define IS_ALLOCATE_DP(m, n) (                           \
@@ -353,6 +354,7 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define SPARSE_TLR_DP_BALANCE 7  /**< Sparse TLR double precision balanced (workload-balanced sparse) */
 #define DENSE_MP_GPU_FP8      8  /**< Dense mixed precision GPU FP8 (FP8 precision on GPU) */
 #define DENSE_MP_GPU_FP8_SP   9  /**< Dense mixed precision GPU FP8 single (FP8 + SP on GPU) */
+#define DENSE_MP_GPU_FP8_ADAPTIVE   10  /**< Dense mixed precision GPU FP8 single (FP8 + SP on GPU) */
 
 /* TLR boundary conditions - control off-band computation */
 #define TLR_BOUND_WITHOUT_OFFBAND_GEMM      0  /**< Skip off-band GEMM operations */
@@ -450,6 +452,8 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define PASTE_CODE_FLOPS( FORMULA, PARAMS, flops ) \
     flops = FORMULA PARAMS;  /**< Calculate FLOPS using specified formula and parameters */
 
+typedef uint16_t hicma_parsec_decision_enum_t; 
+
 /* ============================================================================
  * Utility functions
  * ============================================================================ */
@@ -494,7 +498,6 @@ static inline int hicma_parsec_process_grid_calculation(int nb_process) {
     }
     return P;
 }
-
 
 /* ============================================================================
  * Data structures
@@ -546,6 +549,7 @@ typedef struct hicma_parsec_params_s {
     int compmaxrank;          /**< Max rank for computation */
     int fixedrk;              /**< Fixed rank threshold for HCORE_GEMM recompression */
     int adaptive_decision;    /**< Enable adaptive tile format decisions */
+    int adaptive_decision_runtime;    /**< Enable adaptive tile format decisions during runtime */
     int adaptive_memory;      /**< Enable adaptive memory allocation: 0=memory allocated once; 1=memory reallocated per tile after precision decision */
     int lookahead;            /**< Lookahead depth */
     int kind_of_problem;      /**< Type of problem being solved */
@@ -618,6 +622,7 @@ typedef struct hicma_parsec_params_s {
     double nb_dense_fp8;      /**< Number of dense FP8 precision tiles */
     double nb_low_rank_dp;    /**< Number of low-rank double precision tiles */
     double nb_low_rank_sp;    /**< Number of low-rank single precision tiles */
+    uint64_t *nb_gemms;
 
     /* ========================================================================
      * Performance metrics
@@ -874,6 +879,7 @@ typedef struct hicma_parsec_data_s {
     parsec_matrix_sym_block_cyclic_t dcAcpy;     /**< Copy of dense mixed-precision matrix */
     parsec_matrix_sym_block_cyclic_band_t dcA;        /**< Main matrix for TLR or mixed-precision+TLR */
     parsec_matrix_sym_block_cyclic_band_t dcAr;       /**< Rank matrix */
+    parsec_matrix_sym_block_cyclic_band_t dcNorm;     /**< Norm matrix */
     parsec_matrix_sym_block_cyclic_band_t dcDist;     /**< Distribution matrix for kernel execution */
     parsec_matrix_sym_block_cyclic_band_t dcRank;     /**< Rank information matrix (if PRINT_RANK enabled) */
     parsec_matrix_block_cyclic_t dcFake;              /**< Fake matrix for auto-band distribution */
@@ -1445,6 +1451,22 @@ int potrf_L_dense_tlr_dp( parsec_context_t *parsec,
  * @return 0 on success, non-zero on failure
  */
 int potrf_L_dense_mp_gpu( parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params );
+
+/**
+ * @brief GPU implementation of mixed-precision dense Cholesky factorization
+ *        Adaptively change precision during runtime
+ * 
+ * Performs mixed-precision dense Cholesky factorization on GPU using
+ * optimized cuBLAS and cuSOLVER kernels.
+ * 
+ * @param[in] parsec PaRSEC context
+ * @param[in] data HICMA PaRSEC data structure
+ * @param[in] params HICMA PaRSEC parameters
+ * @return 0 on success, non-zero on failure
+ */
+int potrf_L_dense_mp_gpu_fp8_adaptive( parsec_context_t *parsec,
         hicma_parsec_data_t *data,
         hicma_parsec_params_t *params );
 

@@ -255,6 +255,38 @@ void hicma_parsec_core_syrk_cpu(parsec_tiled_matrix_t* descA,
                                 parsec_memory_pool_t *p_work_rr,
                                 void *T, void *A, int m, int k, int rank);
 
+/**
+ * @brief CPU implementation of symmetric rank-k update (SYRK)
+ *        Adaptive decision during runtime
+ * 
+ * Performs symmetric rank-k update using CPU computation.
+ * 
+ * @param[in] descA Matrix descriptor
+ * @param[in] descRank Rank matrix descriptor
+ * @param[in] params_tlr HICMA parameters
+ * @param[in] es Execution stream
+ * @param[in] p_work Memory pool for workspace
+ * @param[in] p_work_full_dp Memory pool for double precision workspace
+ * @param[in] p_work_uv_dp Memory pool for UV double precision workspace
+ * @param[in] p_work_mbr Memory pool for MBR workspace
+ * @param[in] p_work_rr Memory pool for RR workspace
+ * @param[in] T Workspace array
+ * @param[in] A Input matrix
+ * @param[in] m Number of rows
+ * @param[in] k Current step in factorization
+ * @param[in] rank Rank of matrix A
+ */
+void hicma_parsec_core_syrk_runtime_decision_cpu(parsec_tiled_matrix_t* descA,
+                                parsec_tiled_matrix_t* descRank,
+                                hicma_parsec_params_t *params_tlr,
+                                parsec_execution_stream_t *es,
+                                parsec_memory_pool_t *p_work,
+                                parsec_memory_pool_t *p_work_full_dp,
+                                parsec_memory_pool_t *p_work_uv_dp,
+                                parsec_memory_pool_t *p_work_mbr,
+                                parsec_memory_pool_t *p_work_rr,
+                                void *T, void *A, int m, int k, int rank, void *A_norm);
+
 /* ============================================================================
  * Data type conversion functions
  * ============================================================================ */
@@ -323,7 +355,53 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu(parsec_tiled_matrix_t* desc
                                                      parsec_memory_pool_t *p_work_rr,
                                                      void *C, void *A, void *B,
                                                      int m, int n, int k,
-                                                     int Crank, int Arank, int Brank);
+                                                     int Crank, int Arank, int Brank,
+                                                     double Anorm, double Bnorm);
+/**
+ * @brief CPU implementation of dense GEMM with dense C, dense A, dense B
+ *        Adaptive decision during runtime
+ * 
+ * Performs matrix multiplication C = alpha * A * B + beta * C where all matrices are dense.
+ * 
+ * @param[in] descA Matrix descriptor
+ * @param[in] descRank Rank matrix descriptor
+ * @param[in] params_tlr HICMA parameters
+ * @param[in] es Execution stream
+ * @param[in] p_work Memory pool for workspace
+ * @param[in] p_work_full_dp Memory pool for double precision workspace
+ * @param[in] p_work_full_sp Memory pool for single precision workspace
+ * @param[in] p_work_full_hp Memory pool for half precision workspace
+ * @param[in] p_work_uv_dp Memory pool for UV double precision workspace
+ * @param[in] p_work_uv_sp Memory pool for UV single precision workspace
+ * @param[in] p_work_mbr Memory pool for MBR workspace
+ * @param[in] p_work_rr Memory pool for RR workspace
+ * @param[in] C Result matrix (dense)
+ * @param[in] A Input matrix A (dense)
+ * @param[in] B Input matrix B (dense)
+ * @param[in] m Number of rows
+ * @param[in] n Number of columns
+ * @param[in] k Inner dimension
+ * @param[in] Crank Rank of matrix C
+ * @param[in] Arank Rank of matrix A
+ * @param[in] Brank Rank of matrix B
+ */
+void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu(parsec_tiled_matrix_t* descA,
+                                                     parsec_tiled_matrix_t* descRank,
+                                                     hicma_parsec_params_t *params_tlr,
+                                                     parsec_execution_stream_t *es,
+                                                     parsec_memory_pool_t *p_work,
+                                                     parsec_memory_pool_t *p_work_full_dp,
+                                                     parsec_memory_pool_t *p_work_full_sp,
+                                                     parsec_memory_pool_t *p_work_full_hp,
+                                                     parsec_memory_pool_t *p_work_uv_dp,
+                                                     parsec_memory_pool_t *p_work_uv_sp,
+                                                     parsec_memory_pool_t *p_work_mbr,
+                                                     parsec_memory_pool_t *p_work_rr,
+                                                     void *C, void *A, void *B,
+                                                     int m, int n, int k,
+                                                     int Crank, int Arank, int Brank,
+                                                     void *Anorm, void *Bnorm);
+
 
 /**
  * @brief CPU implementation of GEMM with dense C, low-rank A, dense B
@@ -543,7 +621,7 @@ void hicma_parsec_core_potrf_gpu(parsec_tiled_matrix_t* descA,
  */
 void hicma_parsec_core_trsm_gpu(parsec_tiled_matrix_t* descA,
                                 hicma_parsec_params_t *params_tlr,
-                                parsec_potrf_workspace_t *ws_gpu,
+                                parsec_potrf_stream_workspace_t *stream_found,
                                 parsec_device_cuda_module_t *cuda_device,
                                 parsec_gpu_task_t *gpu_task,
                                 parsec_cuda_exec_stream_t *cuda_stream,

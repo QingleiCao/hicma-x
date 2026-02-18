@@ -215,12 +215,44 @@ endif()
 list(APPEND HCORE_STARSH_LIB starsh)
 message(STATUS "STARSH configured from submodule")
 
-# Sanitizer configuration
+# Sanitizer configuration.
 if(ENABLE_SANITIZER)
+    # Keep compile-time ASan instrumentation enabled.
     add_definitions(-DENABLE_SANITIZER)
     add_compile_options(-fsanitize=address -fno-omit-frame-pointer -Wall)
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address")
+
+    # Portable path: prefer compiler-driven sanitizer linking.
+    set(HICMA_ASAN_LINKS_WITH_COMPILER_FLAGS FALSE)
+    cmake_push_check_state()
+    list(APPEND CMAKE_REQUIRED_FLAGS "-fsanitize=address -fno-omit-frame-pointer")
+    list(APPEND CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=address")
+    check_c_source_compiles("int main(void) { return 0; }" HICMA_ASAN_LINKS_WITH_COMPILER_FLAGS)
+    cmake_pop_check_state()
+
+    if(HICMA_ASAN_LINKS_WITH_COMPILER_FLAGS)
+        add_link_options(-fsanitize=address)
+        message(STATUS "AddressSanitizer runtime: compiler-managed (-fsanitize=address)")
+    else()
+        # Fallback path for environments with broken/missing compiler runtime resolution.
+        set(HICMA_ASAN_RUNTIME_LIBRARY "" CACHE FILEPATH
+            "Optional absolute path to libasan runtime (e.g. /path/to/libasan.so.8)")
+        if(HICMA_ASAN_RUNTIME_LIBRARY)
+            if(EXISTS "${HICMA_ASAN_RUNTIME_LIBRARY}")
+                add_link_options("-Wl,--no-as-needed" "${HICMA_ASAN_RUNTIME_LIBRARY}")
+                message(STATUS "AddressSanitizer runtime: ${HICMA_ASAN_RUNTIME_LIBRARY}")
+            else()
+                message(FATAL_ERROR
+                    "HICMA_ASAN_RUNTIME_LIBRARY is set but does not exist: "
+                    "${HICMA_ASAN_RUNTIME_LIBRARY}")
+            endif()
+        else()
+            message(FATAL_ERROR
+                "ENABLE_SANITIZER is ON, but linker probe with -fsanitize=address failed.\n"
+                "Provide -DHICMA_ASAN_RUNTIME_LIBRARY=/absolute/path/to/libasan.so "
+                "or configure with -DENABLE_SANITIZER=OFF.")
+        endif()
+    endif()
+
     message(STATUS "AddressSanitizer enabled")
 endif()
 

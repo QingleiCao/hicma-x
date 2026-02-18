@@ -640,6 +640,7 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
                     || DENSE_TLR_MP == kind_of_cholesky
                     || DENSE_MP_GPU == kind_of_cholesky
                     || DENSE_MP_GPU_FP8 == kind_of_cholesky
+                    || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
                     || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
                 assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_A);
@@ -655,6 +656,7 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
                     || DENSE_TLR_MP == kind_of_cholesky
                     || DENSE_MP_GPU == kind_of_cholesky
                     || DENSE_MP_GPU_FP8 == kind_of_cholesky
+                    || DENSE_MP_GPU_FP8_ADAPTIVE == kind_of_cholesky
                     || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr = zone_malloc( cuda_device->super.memory, mb * maxrank * sizeof(double) );
                 assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr);

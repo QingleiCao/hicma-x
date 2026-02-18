@@ -2075,14 +2075,12 @@ int hicma_parsec_print_array_values(const void *array, int mb, int nb, int lda, 
  * @note Handles both DENSE_DP and LOW_RANK_DP tile types
  * @note Conversion is performed element-wise using float_to_half_rtne function
  */
-void hicma_parsec_convert_2h_bit( hicma_parsec_params_t *params_tlr,
-        void *A, float *A_use, int m, int n, int mb, int nb ) {
+void hicma_parsec_convert_2h_bit(void *A, float *A_use, int mb, int nb, uint16_t decision) {
     FP32 f;
     FP16 h;
 
     /* If A is DP */ 
-    if( DENSE_DP == params_tlr->decisions[n*params_tlr->NT+m]
-            || LOW_RANK_DP == params_tlr->decisions[n*params_tlr->NT+m] ) {
+    if( DENSE_DP == decision || LOW_RANK_DP == decision ) {
 
         double *A_d = (double *)A;
         for( int j = 0; j < nb; j++ ) {
@@ -2133,9 +2131,11 @@ void float2half_CPU( int nrows, int ncols,
  * @return true if datatype conversion should be performed, false otherwise
  */
 bool hicma_parsec_convert_in_trsm( hicma_parsec_params_t *params_tlr, int m, int n) {
-    return ( (DENSE_SP == params_tlr->decisions_send[n*params_tlr->NT+m]
-                && DENSE_DP == params_tlr->decisions[n*params_tlr->NT+m])
-            || DENSE_HP == params_tlr->decisions_send[n*params_tlr->NT+m]
-            || DENSE_FP8 == params_tlr->decisions_send[n*params_tlr->NT+m]
+    return ( !params_tlr->adaptive_decision_runtime
+            && ( (DENSE_SP == params_tlr->decisions_send[n*params_tlr->NT+m]
+                    && DENSE_DP == params_tlr->decisions[n*params_tlr->NT+m])
+                || DENSE_HP == params_tlr->decisions_send[n*params_tlr->NT+m]
+                || DENSE_FP8 == params_tlr->decisions_send[n*params_tlr->NT+m]
+               )
            );
 } 

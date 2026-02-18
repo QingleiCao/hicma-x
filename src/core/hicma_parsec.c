@@ -258,6 +258,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
             || params->kind_of_cholesky == DENSE_TLR_MP
             || params->kind_of_cholesky == DENSE_MP_GPU
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8
+            || params->kind_of_cholesky == DENSE_MP_GPU_FP8_ADAPTIVE
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP
       ) {
         SYNC_TIME_START();
@@ -269,6 +270,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
     if( params->verbose > 2 && (DENSE_TLR_MP == params->kind_of_cholesky
                 || DENSE_MP_GPU == params->kind_of_cholesky
                 || DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+                || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky
                 || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky)
             && params->band_size_dense >= params->NT ) {
         hicma_parsec_matrix_check_norm_diff( parsec, data, params, params_kernel );
@@ -299,6 +301,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
  * - DENSE_SP_HP_BAND: Single precision high precision band Cholesky
  * - DENSE_MP_GPU: Mixed precision GPU-accelerated Cholesky
  * - DENSE_MP_GPU_FP8: Mixed precision GPU with FP8 support
+ * - DENSE_MP_GPU_FP8_ADAPTIVE: Mixed precision GPU with FP8 support during runtime
  * - DENSE_MP_GPU_FP8_SP: Mixed precision GPU with FP8 and single precision
  * 
  * Performance optimizations include:
@@ -402,6 +405,11 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             potrf_L_dense_mp_gpu_fp8_sp( parsec, data, params );
             break;
 
+        case DENSE_MP_GPU_FP8_ADAPTIVE: 
+            /* Mixed precision GPU-accelerated Cholesky with FP8 */
+            potrf_L_dense_mp_gpu_fp8_adaptive( parsec, data, params );
+            break;
+
         default:
             /* Invalid Cholesky type specified */
             if( 0 == params->rank ) {
@@ -484,6 +492,25 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
     }
 #endif
 
+
+    /* Statistics for number of GEMMs in different precision */
+    if(params->verbose > 1) {
+        if(params->gpus > 0) {
+            printf("TODO\n");
+        } else {
+            int cores = params->cores;
+            for( int i = 0; i < NB_DECISIONS+1; i++ ) {
+                for( int j = 1; j < cores; j++ ) {
+                    params->nb_gemms[i*cores] += params->nb_gemms[i*cores+j]; 
+                }
+            }
+            MPI_Allreduce(MPI_IN_PLACE, params->nb_gemms, (NB_DECISIONS+1)*params->cores, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+            fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu\n"RESET,
+                    params->nb_gemms[DENSE_DP*params->cores], params->nb_gemms[DENSE_SP*params->cores], params->nb_gemms[DENSE_HP*params->cores],
+                    params->nb_gemms[LOW_RANK_DP*params->cores], params->nb_gemms[LOW_RANK_DP*params->cores]);
+        }
+    }
+
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     if( params->gpus > 0) {
         /* Process GPU error information and map to global error index */
@@ -531,11 +558,17 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
             || params->kind_of_cholesky == DENSE_TLR_MP
             || params->kind_of_cholesky == DENSE_MP_GPU
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8
+            || params->kind_of_cholesky == DENSE_MP_GPU_FP8_ADAPTIVE
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP
       ) {
         SYNC_TIME_START();
         hicma_parsec_convert_s2d( parsec, data, params);
         SYNC_TIME_PRINT(params->rank, ("Convert S2D\n"));
+    }
+
+    if(params->verbose > 9) {
+        get_decisions(params->decisions, (size_t)params->MB * params->NB);
+        print_decisions(params);
     }
 
 #if 0

@@ -1562,6 +1562,23 @@ hipblasStatus_t my_cublasGemmEx(hipblasHandle_t handle,
 
 /****************************************************************************************************/
 
+__global__ void store_float_as_double_kernel(double* dst, float x)
+{
+  if (hipThreadIdx_x == 0 && hipBlockIdx_x == 0) {
+    dst[0] = (double)x;
+  }
+}
+
+// d_dst: device pointer to 1 double (cudaMalloc)
+// x: host float
+// stream: stream to enqueue the kernel (0 = default)
+extern "C" void copy_float_to_device_double(double* d_dst, float x, cudaStream_t stream)
+{
+  if (!d_dst) return;
+  store_float_as_double_kernel<<<1, 1, 0, stream>>>(d_dst, x);
+}
+/****************************************************************************************************/
+
 #if 0
 __global__ void dcmg_array_GPU_kernel(double *A, int m, int n, int m0,
         int n0, double* l1_x_cuda, double* l1_y_cuda, double* l2_x_cuda, double* l2_y_cuda,

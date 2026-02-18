@@ -1279,13 +1279,11 @@ bool hicma_parsec_convert_in_trsm(hicma_parsec_params_t *params_tlr, int m, int 
  * techniques. This function is optimized for performance-critical applications
  * where speed is more important than absolute precision.
  * 
- * @param[in] params_tlr HICMA PaRSEC parameters structure containing conversion settings
  * @param[in] A Input data buffer to convert
  * @param[out] A_use Output buffer for converted half precision data
- * @param[in] m Number of rows in the matrix
- * @param[in] n Number of columns in the matrix
  * @param[in] mb Block size in rows
  * @param[in] nb Block size in columns
+ * @param[in] decision 
  * 
  * @note This function uses bit manipulation for faster conversion
  * @note Precision may be slightly lower than standard conversion methods
@@ -1294,7 +1292,7 @@ bool hicma_parsec_convert_in_trsm(hicma_parsec_params_t *params_tlr, int m, int 
  * 
  * @see hicma_parsec_params_t for parameter structure details
  */
-void hicma_parsec_convert_2h_bit(hicma_parsec_params_t *params_tlr, void *A, float *A_use, int m, int n, int mb, int nb);
+void hicma_parsec_convert_2h_bit(void *A, float *A_use, int mb, int nb, uint16_t decision);
 
 /**
  * @brief Convert float to half precision
