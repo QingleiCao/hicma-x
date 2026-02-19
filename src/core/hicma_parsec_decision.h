@@ -408,6 +408,14 @@ float hicma_parsec_matrix_ssum(parsec_context_t *parsec,
                          parsec_tiled_matrix_t *Ar,
                          uint16_t *decisions);
 
+/**
+ * @brief Determine the precision of that tile 
+ *
+ * @return The precision decision 
+ */
+void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
+        hicma_parsec_decision_enum_t *new_decision, double norm_tile, int m, int n);
+
 #ifdef __cplusplus
 }
 #endif

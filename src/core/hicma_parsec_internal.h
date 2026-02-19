@@ -210,10 +210,10 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 
 /* Matrix format checking macros - determine tile storage format */
 #define IS_DENSE(m, n) (                                 \
-       DENSE_DP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_SP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_HP == params_tlr->decisions[n*descA->lmt+m] \
-    || DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] \
+       DENSE_DP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_SP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_HP == params_tlr->decisions[n*params_tlr->NT+m] \
+    || DENSE_FP8 == params_tlr->decisions[n*params_tlr->NT+m] \
     )  /**< Check if tile (m,n) is stored in dense format */
 
 #define IS_ALLOCATE_DP(m, n) (                           \
@@ -451,6 +451,8 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define PASTE_CODE_FLOPS( FORMULA, PARAMS, flops ) \
     flops = FORMULA PARAMS;  /**< Calculate FLOPS using specified formula and parameters */
 
+typedef uint16_t hicma_parsec_decision_enum_t; 
+
 /* ============================================================================
  * Utility functions
  * ============================================================================ */
@@ -495,7 +497,6 @@ static inline int hicma_parsec_process_grid_calculation(int nb_process) {
     }
     return P;
 }
-
 
 /* ============================================================================
  * Data structures
