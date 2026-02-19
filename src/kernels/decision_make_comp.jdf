@@ -60,10 +60,7 @@ BODY
 
     /* Make precision decisions based on current tile type */
     // Handle dense tile precision decisions (DP, SP, HP, FP8)
-    if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m]
-            || DENSE_SP == params_tlr->decisions[n*descA->lmt+m]
-            || DENSE_HP == params_tlr->decisions[n*descA->lmt+m]
-            || DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
+    if( IS_DENSE(m, n) ) {
         // Precision selection hierarchy: FP8 -> HP -> SP -> DP (if supported)
 #if HAVE_FP8
         if( decision_fp8 ) {
@@ -98,7 +95,7 @@ BODY
             new_decisions[n*descA->lmt+m] = DENSE_DP;
 #endif
         }
-    } else if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] || LOW_RANK_SP == params_tlr->decisions[n*descA->lmt+m] ) {
+    } else { 
         // Handle low-rank tile precision decisions
         if( decision_sp ) {
             new_decisions[n*descA->lmt+m] = LOW_RANK_SP;
