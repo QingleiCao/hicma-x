@@ -10,11 +10,6 @@ extern "C" %{
 
 #include "hicma_parsec.h"
 
-/*void compute_norm(double *A, int nb, double *current_value){
-    for (int i=0;i<nb;i++)
-         for(int j=0;i<nb;j++)
-            *current_value = A[i+j*nb];
-}*/
 %}
 
 /** Matrix compression and low-rank approximation generation

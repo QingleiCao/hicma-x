@@ -766,8 +766,9 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
         params->kind_of_cholesky = DENSE_MP_GPU_FP8_ADAPTIVE;
         params->adaptive_decision = 1; 
         params->datatype_convert = 0; 
+        params->adaptive_memory = 0;
         if( 0 == params->rank ) {
-            fprintf( stderr, RED "Cholesky version is set to DENSE_MP_GPU_FP8_ADAPTIVE, enable adaptive_decision, datatype_convert 0\n" RESET );
+            fprintf( stderr, RED "kind_of_cholesky=DENSE_MP_GPU_FP8_ADAPTIVE, adaptive_decision=1, datatype_convert=0, adaptive_memory =0\n" RESET );
         }
     }
 

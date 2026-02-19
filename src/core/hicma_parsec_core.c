@@ -825,18 +825,29 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         parsec_memory_pool_t *p_work_rr,
         void *C, void *A, void *B,
         int m, int n, int k,
-        int Crank, int Arank, int Brank )
+        int Crank, int Arank, int Brank,
+        double Anorm, double Bnorm )
 {
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int ldam = BLKLDD( descA, m );
+    int ldan = BLKLDD( descA, n );
     void *A_use = A;
     void *B_use = B;
     void *A_d, *A_s, *B_d, *B_s, *A_h, *B_h;
 
+    // Get new decision during runtime
+    uint16_t runtime_decision = params_tlr->decisions[n*descA->lmt+m];
+    if(params_tlr->adaptive_decision_runtime) {
+        hicma_parsec_get_precision_tile(params_tlr, &runtime_decision, Anorm*Bnorm, m, n);
+        if(runtime_decision != params_tlr->decisions[n*descA->lmt+m]) {
+            //printf("The decision in gemm(%d, %d, %d) has been changed from %u to %u: norm_old %lf norm_new %.16lf (Anorm %.16lf Bnorm %.16lf)\n", m, n, k, params_tlr->decisions[n*descA->lmt+m], runtime_decision, params_tlr->norm_tile[n*params_tlr->NT+m], Anorm * Bnorm, Anorm, Bnorm);
+            //printf("GEMM Norm %d %d : %.10lf\n", m, k, Anorm);
+            //printf("GEMM Norm %d %d : %.10lf\n", n, k, Bnorm);
+        }
+    }
+
     if(DEBUG_INFO) printf("GEMM_CPU (%d, %d, %d) : %d %d %d : C_DENSE, A_DENSE, B_DENSE\n",
             m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
-
-    int ldam = BLKLDD( descA, m );
-    int ldan = BLKLDD( descA, n );
 
     /* If dgemm */
     if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {

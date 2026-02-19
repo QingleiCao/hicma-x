@@ -605,6 +605,7 @@ BODY
     } else { 
         this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(float);
     }
+    //printf("TRSM Norm %d %d: %.10lf\n", m, k, ((double *)C_norm)[0]);
 
 }
 END
@@ -1167,6 +1168,8 @@ BODY
     int Crank = IS_DENSE(m, n)? 0: ((int*)Cr)[0];
     int Arank = IS_DENSE(m, k)? 0: ((int*)Ar)[0];
     int Brank = IS_DENSE(n, k)? 0: ((int*)Br)[0];
+    double Anorm = (params_tlr->adaptive_decision_runtime)? ((double *)A_norm)[0]: 0; 
+    double Bnorm = (params_tlr->adaptive_decision_runtime)? ((double *)B_norm)[0]: 0; 
 
     /* Calculate actual matrix dimensions */
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
@@ -1186,7 +1189,7 @@ BODY
         hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( descA, descRank, params_tlr, es,
             p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
             p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
-            C, A, B, m, n, k, Crank, Arank, Brank );
+            C, A, B, m, n, k, Crank, Arank, Brank, Anorm, Bnorm );
     }
     /* Case 2: C is dense, A is low-rank, B is dense - mixed precision GEMM */
     else if(  IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 

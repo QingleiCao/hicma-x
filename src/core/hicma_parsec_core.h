@@ -323,7 +323,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu(parsec_tiled_matrix_t* desc
                                                      parsec_memory_pool_t *p_work_rr,
                                                      void *C, void *A, void *B,
                                                      int m, int n, int k,
-                                                     int Crank, int Arank, int Brank);
+                                                     int Crank, int Arank, int Brank,
+                                                     double Anorm, double Bnorm);
 
 /**
  * @brief CPU implementation of GEMM with dense C, low-rank A, dense B

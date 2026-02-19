@@ -1266,7 +1266,7 @@ BODY
         hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( descA, descRank, params_tlr, es,
             p_work, p_work_full_dp, p_work_full_sp, p_work_full_hp,
             p_work_uv_dp, p_work_uv_sp, p_work_mbr, p_work_rr,
-            C, A, B, m, n, k, Crank, Arank, Brank );
+            C, A, B, m, n, k, Crank, Arank, Brank, 0, 0 );
     }
     /* C is dense, A is low-rank, B is dense */
     else if(  IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 
