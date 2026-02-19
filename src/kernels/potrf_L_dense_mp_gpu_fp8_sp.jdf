@@ -569,7 +569,9 @@ BODY [type=CUDA]
 
     //printf("TRSM GPU: %d %d ; mb %d, nb: %d, band_size_dense: %d\n", m, k, descA->mb, descA->nb, params_tlr->band_size_dense);
 
-    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update send size, how many bytes */
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
@@ -591,7 +593,9 @@ BODY [type=HIP]
 
     //printf("TRSM GPU HIP: %d %d ; mb %d, nb: %d, band_size_dense: %d\n", m, k, descA->mb, descA->nb, params_tlr->band_size_dense);
 
-    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update send size, how many bytes */
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {

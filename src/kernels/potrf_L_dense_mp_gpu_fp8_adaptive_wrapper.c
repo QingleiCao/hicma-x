@@ -453,6 +453,7 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
     parsec_tiled_matrix_t *Ar = (parsec_tiled_matrix_t *)&data->dcAr;
     parsec_tiled_matrix_t *Rank = (parsec_tiled_matrix_t *)&data->dcRank;
     parsec_tiled_matrix_t *Fake = (parsec_tiled_matrix_t *)&data->dcFake;
+    parsec_tiled_matrix_t *Norm = (parsec_tiled_matrix_t *)&data->dcNorm;
 
     // Validate input parameters
     if ((uplo != PlasmaLower)) {
@@ -487,7 +488,7 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
     // Initialize error status and create the main taskpool
     params->info = 0;
     parsec_potrf_L_dense_mp_gpu_fp8_adaptive_taskpool_t *hicma_dpotrf =
-        parsec_potrf_L_dense_mp_gpu_fp8_adaptive_new( A, Ar, Rank, Fake, params ); 
+        parsec_potrf_L_dense_mp_gpu_fp8_adaptive_new( A, Ar, Rank, Norm, Fake, params ); 
 
     // Identify task class IDs for different kernel types
     int potrf_id, trsm_id, syrk_id, gemm_id;
@@ -704,6 +705,11 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
             1, 1, 1, 1,
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
+    parsec_add2arena(&hicma_dpotrf->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_NORM_ADT_IDX],
+            parsec_datatype_double_t, PARSEC_MATRIX_FULL,
+            1, 1, 1, 1,
+            PARSEC_ARENA_ALIGNMENT_SSE, -1 );
+
     return (parsec_taskpool_t*)hicma_dpotrf;
 }
 
@@ -745,6 +751,7 @@ void potrf_L_dense_mp_gpu_fp8_adaptive_Destruct(parsec_taskpool_t* _tp)
     parsec_del2arena( &tp->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_UV_SP_ADT_IDX] );
     parsec_del2arena( &tp->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_BYTE_ADT_IDX] );
     parsec_del2arena( &tp->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_AR_ADT_IDX] );
+    parsec_del2arena( &tp->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_fp8_adaptive_NORM_ADT_IDX] );
     
     // Clean up all memory pools
     parsec_private_memory_fini( tp->_g_p_work );

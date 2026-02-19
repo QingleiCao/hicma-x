@@ -928,6 +928,11 @@ void hicma_parsec_hamming_merge_GPU(int nrows, int ncols, int *aout, int *ain, i
  */
 void hicma_parsec_memcpy_int32_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
 
+// d_dst: device pointer to 1 double (cudaMalloc)
+// x: host float
+// stream: stream to enqueue the kernel (0 = default)
+void copy_float_to_device_double(double* d_dst, float x, cudaStream_t stream);
+
 /* ============================================================================
  * GPU core operations
  * ============================================================================ */

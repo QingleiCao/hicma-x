@@ -72,6 +72,7 @@ static parsec_key_t my_make_key_potrf_dgemm(const parsec_taskpool_t * tp, const 
 descA        [ type = "parsec_tiled_matrix_t*" ]        /* Main matrix descriptor for the input matrix A */
 descAr       [ type = "parsec_tiled_matrix_t*" aligned = descA ]  /* Rank matrix descriptor for low-rank compression */
 descRank     [ type = "parsec_tiled_matrix_t*" aligned = descA ]  /* Matrix descriptor for rank information storage */
+descNorm     [ type = "parsec_tiled_matrix_t*" aligned = descA ]        /* Norm descriptor used for norm */
 descFake     [ type = "parsec_tiled_matrix_t*" ]        /* Fake descriptor used for termination tasks */
 params_tlr   [ type = "hicma_parsec_params_t *" ]       /* TLR (Tile Low-Rank) parameters and configuration */
 
@@ -441,6 +442,11 @@ READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
 
+RW  C_norm <- (params_tlr->adaptive_decision_runtime)? descNorm(m, k): NULL
+           -> (params_tlr->adaptive_decision_runtime)? A_norm potrf_dgemm(m, k+1..m-1, k)              [ type_remote = NORM ]
+           -> (params_tlr->adaptive_decision_runtime)? B_norm potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = NORM ]
+           //-> descNorm(m, k)
+
 CTL ctl  <- (params_tlr->lookahead == 1 && m > params_tlr->lookahead+k)? ctl potrf_dsyrk(k, k+1)
 CTL ctl1 <- (params_tlr->lookahead > 1 && m > params_tlr->lookahead+k)? ctl2 potrf_dtrsm(k+2, k)
 CTL ctl2 -> (params_tlr->lookahead > 1 && m == k+2)? ctl1 potrf_dtrsm(params_tlr->lookahead+k+1 .. descA->mt-1, k)
@@ -459,13 +465,30 @@ BODY [type=CUDA]
         return PARSEC_HOOK_RETURN_NEXT;
     }
 
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+
     /* GPU-accelerated triangular solve using CUDA */
-    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update communication size based on data type */
+    /* Calculate F norm */
+    //cublasSetPointerMode(stream_found->handle_cublas, CUBLAS_POINTER_MODE_DEVICE);
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+        if(params_tlr->adaptive_decision_runtime) {
+            double C_norm_dp = 0.0;
+            cublasDnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_dp);
+            //printf("%d %d: norm %lf\n", m, k, C_norm_dp); 
+            cudaMemcpy(C_norm, &C_norm_dp, sizeof(double), cudaMemcpyHostToDevice);
+        }
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
     } else { 
+        if(params_tlr->adaptive_decision_runtime) {
+            float C_norm_sp = 0.0f;
+            cublasSnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_sp);
+            copy_float_to_device_double(C_norm, C_norm_sp, cuda_stream->cuda_stream);
+            //printf("%d %d: norm %f\n", m, k, C_norm_sp); 
+        }
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
     }
 #endif
@@ -480,14 +503,31 @@ BODY [type=HIP]
         return PARSEC_HOOK_RETURN_NEXT;
     }
 
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
+    cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
+
     /* GPU-accelerated triangular solve using HIP (AMD ROCm) */
-    hicma_parsec_core_trsm_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, C, m, k );
+    hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update communication size based on data type */
+    /* Calculate F norm */
+    //cublasSetPointerMode(stream_found->handle_cublas, CUBLAS_POINTER_MODE_DEVICE);
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+        if(params_tlr->adaptive_decision_runtime) {
+            double C_norm_dp = 0.0;
+            cublasDnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_dp);
+            //printf("%d %d: norm %lf\n", m, k, C_norm_dp);
+            cudaMemcpy(C_norm, &C_norm_dp, sizeof(double), cudaMemcpyHostToDevice);
+        }
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
-    } else { 
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+    } else {  
+        if(params_tlr->adaptive_decision_runtime) {
+            float C_norm_sp = 0.0f;
+            cublasSnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_sp);
+            copy_float_to_device_double(C_norm, C_norm_sp, cuda_stream->cuda_stream);
+            //printf("%d %d: norm %f\n", m, k, C_norm_sp);
+        }
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float); 
     }
 #endif
 }
@@ -555,8 +595,11 @@ BODY
     /* Update communication size based on data type and rank */
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+        ((double *)C_norm)[0] = LAPACKE_dlange(LAPACK_COL_MAJOR, 'F', descA->mb, descA->nb, C, descA->mb);
     } else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        float C_norm_sp = LAPACKE_slange(LAPACK_COL_MAJOR, 'F', descA->mb, descA->nb, C, descA->mb);
+        ((double *)C_norm)[0] = C_norm_sp; 
     } else if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
     } else { 
@@ -896,6 +939,8 @@ RW  Cr <- (k == 0 && m-n >= params_tlr->band_size_dense) ? descAr(m, n)
        -> (n == k+1 && m-n >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, n)                  [ type_remote = AR ]
        -> (n != k+1 && m-n >= params_tlr->band_size_dense) ? Cr potrf_dgemm(m, n, k+1)             [ type_remote = AR ]
 
+READ  A_norm <- (params_tlr->adaptive_decision_runtime)? C_norm potrf_dtrsm(m, k): NULL            [ type_remote = NORM ]
+READ  B_norm <- (params_tlr->adaptive_decision_runtime)? C_norm potrf_dtrsm(n, k): NULL            [ type_remote = NORM ]
 
 CTL ctl_left <- (params_tlr->left_looking > 0 && k == 0 && n >= params_tlr->Q*params_tlr->left_looking)? ctl_left potrf_dtrsm(m, n-params_tlr->Q*params_tlr->left_looking) 
 

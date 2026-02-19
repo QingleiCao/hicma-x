@@ -543,7 +543,7 @@ void hicma_parsec_core_potrf_gpu(parsec_tiled_matrix_t* descA,
  */
 void hicma_parsec_core_trsm_gpu(parsec_tiled_matrix_t* descA,
                                 hicma_parsec_params_t *params_tlr,
-                                parsec_potrf_workspace_t *ws_gpu,
+                                parsec_potrf_stream_workspace_t *stream_found,
                                 parsec_device_cuda_module_t *cuda_device,
                                 parsec_gpu_task_t *gpu_task,
                                 parsec_cuda_exec_stream_t *cuda_stream,

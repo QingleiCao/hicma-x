@@ -764,8 +764,10 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // If adaptive decision during runtime
     if( params->adaptive_decision_runtime != 0 ) {
         params->kind_of_cholesky = DENSE_MP_GPU_FP8_ADAPTIVE;
+        params->adaptive_decision = 1; 
+        params->datatype_convert = 0; 
         if( 0 == params->rank ) {
-            fprintf( stderr, RED "Cholesky version is set to DENSE_MP_GPU_FP8_ADAPTIVE\n" RESET );
+            fprintf( stderr, RED "Cholesky version is set to DENSE_MP_GPU_FP8_ADAPTIVE, enable adaptive_decision, datatype_convert 0\n" RESET );
         }
     }
 
@@ -2058,11 +2060,6 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
     }
 #endif
 
-    /* Init two_dim_block_cyclic_band_t structure */
-    if( (auto_band || band_size_dense > 1) && 0 == sparse && band_size_dist )
-        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcA, nodes, rank, band_size_dist );
-    else
-        parsec_matrix_sym_block_cyclic_band_init( &data->dcA, nodes, rank, band_size_dist );
     parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcA, "dcA_off_band");
     parsec_data_collection_set_key(&data->dcA.band.super.super, "dcA_band");
 
@@ -2113,11 +2110,6 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
                               band_size_dist, RANK_MAP_BUFF*NT, band_p, nodes/band_p,
                               1, 1, 0, 0);
 
-    /* Init two_dim_block_cyclic_band_t structure */
-    if( (auto_band || band_size_dense > 1) && 0 == sparse && band_size_dist )
-        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcRank, nodes, rank, band_size_dist );
-    else
-        parsec_matrix_sym_block_cyclic_band_init( &data->dcRank, nodes, rank, band_size_dist );
     parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcRank, "dcRank_super");
     parsec_data_collection_set_key(&data->dcRank.band.super.super, "dcRank_band");
 
@@ -2136,6 +2128,41 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
             (size_t)data->dcFake.super.bsiz *
             (size_t)parsec_datadist_getsizeoftype(data->dcFake.super.mtype));
     parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcFake, "dcFake");
+
+    /* dcNorm data descriptor */
+    parsec_matrix_sym_block_cyclic_init(&data->dcNorm.off_band, PARSEC_MATRIX_DOUBLE,
+            rank, 1, 1, NT, NT, 0, 0,
+            NT, NT, P, nodes/P, uplo);
+
+    /* Init band */
+    parsec_matrix_block_cyclic_init(&data->dcNorm.band, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
+            rank, 1, 1, band_size_dist, NT, 0, 0,
+            band_size_dist, NT, band_p, nodes/band_p,
+            1, 1, 0, 0);
+
+    /* Allocate memory on band */
+    data->dcNorm.band.mat = parsec_data_allocate((size_t)data->dcNorm.band.super.nb_local_tiles *
+            (size_t)data->dcNorm.band.super.bsiz *
+            (size_t)parsec_datadist_getsizeoftype(data->dcNorm.band.super.mtype));
+
+    /* Allocate memory off band */
+    data->dcNorm.off_band.mat = parsec_data_allocate((size_t)data->dcNorm.off_band.super.nb_local_tiles *
+            (size_t)data->dcNorm.off_band.super.bsiz *
+            (size_t)parsec_datadist_getsizeoftype(data->dcNorm.off_band.super.mtype));
+
+    parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcNorm, "dcNorm_off_band");
+    parsec_data_collection_set_key(&data->dcNorm.band.super.super, "dcNorm_band");
+
+    /* Init two_dim_block_cyclic_band_t structure */
+    if( (auto_band || band_size_dense > 1) && 0 == sparse && band_size_dist ) {
+        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcA, nodes, rank, band_size_dist );
+        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcRank, nodes, rank, band_size_dist );
+        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcNorm, nodes, rank, band_size_dist );
+    } else {
+        parsec_matrix_sym_block_cyclic_band_init( &data->dcA, nodes, rank, band_size_dist );
+        parsec_matrix_sym_block_cyclic_band_init( &data->dcRank, nodes, rank, band_size_dist );
+        parsec_matrix_sym_block_cyclic_band_init( &data->dcNorm, nodes, rank, band_size_dist );
+    }
 
 #if GENOMICS
     /* desc for pheno, X, and prediction*/
@@ -2549,6 +2576,17 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcAr );
     parsec_tiled_matrix_destroy( &data->dcAr.band.super );
     parsec_tiled_matrix_destroy( &data->dcAr.off_band.super );
+
+    /* ===========================================
+     * Destroy rank matrix descriptor (dcNorm)
+     * =========================================== */
+
+    // Free rank matrix data and destroy descriptor
+    parsec_data_free(data->dcNorm.band.mat);
+    parsec_data_free(data->dcNorm.off_band.mat);
+    parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcNorm );
+    parsec_tiled_matrix_destroy( &data->dcNorm.band.super );
+    parsec_tiled_matrix_destroy( &data->dcNorm.off_band.super );
 
     /* ===========================================
      * Destroy reordering matrix descriptor (dcReorder)
