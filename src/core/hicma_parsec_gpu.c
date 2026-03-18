@@ -480,7 +480,6 @@ void gpu_handle_fini( hicma_parsec_data_t *data ) {
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
 void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int maxrank, int kind_of_cholesky ) {
-
     /* Only allocated memory for cases including GPU */
     /*   if( !(DENSE_TLR_DP == kind_of_cholesky
          || DENSE_MP_BAND == kind_of_cholesky
@@ -656,11 +655,15 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
                     || DENSE_MP_GPU == kind_of_cholesky
                     || DENSE_MP_GPU_FP8 == kind_of_cholesky
                     || DENSE_MP_GPU_FP8_SP == kind_of_cholesky ) {
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr = zone_malloc( cuda_device->super.memory, mb * maxrank * sizeof(double) );
-                assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr);
+                if( maxrank > 0 ) {
+                    data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr =
+                        zone_malloc( cuda_device->super.memory, mb * maxrank * sizeof(double) );
+                    assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_mbr);
 
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr = zone_malloc( cuda_device->super.memory, maxrank * maxrank * sizeof(double) );
-                assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr);
+                    data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr =
+                        zone_malloc( cuda_device->super.memory, maxrank * maxrank * sizeof(double) );
+                    assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_rr);
+                }
             }
 
         }
@@ -678,7 +681,6 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
 void gpu_temporay_buffer_fini( hicma_parsec_data_t *data, int kind_of_cholesky ) {
-
     /* Only free memory for cases including GPU */
 #if 0
     if( !(DENSE_TLR_DP == kind_of_cholesky

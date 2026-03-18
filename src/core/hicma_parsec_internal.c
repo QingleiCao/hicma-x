@@ -291,10 +291,16 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         // PaRSEC specific options
         {"cores", "Number of concurrent threads (default: number of physical hyper-threads)", 0, &params->cores},
         {"gpus", "Number of GPUs (default: 0)", 0, &params->gpus},
-        {"grid_rows", "Rows (P) in the PxQ process grid (default: NP)", 0, &params->P},
-        {"grid_cols", "Columns (Q) in the PxQ process grid (default: NP/P)", 0, &params->Q},
-        {"N", "Dimension (N) of the matrices (required)", 0, &params->N},
-        {"NB", "Tile size (required)", 0, &params->NB},
+        {"P", "Rows (P) in the PxQ process grid (default: NP)", 0, &params->P},
+        {"Q", "Columns (Q) in the PxQ process grid (default: NP/P)", 0, &params->Q},
+        {"KP", "Block rows (KP) in the PxQ process grid (default: 1)", 0, &params->KP},
+        {"KQ", "Block columns (KQ) in the PxQ process grid (default: 1)", 0, &params->KQ},
+        {"M", "Row dimension (M) of the matrices (required)", 0, &params->M},
+        {"N", "Column dimension (N) of the matrices (required)", 0, &params->N},
+        {"K", "Dimension (K) of the matrices (required)", 0, &params->K},
+        {"MB", "Row tile size (required)", 0, &params->MB},
+        {"NB", "Column tile size (required)", 0, &params->NB},
+        {"KB", "Column tile size (required)", 0, &params->KB},
         {"check", "Verify the results", 3, &params->check},
         {"verbose", "Extra verbose output: 1=normal, >1=more verbose about decisions", 0, &params->verbose},
         {"help", "Show this help message", 3, NULL},
@@ -567,10 +573,14 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     
     // Matrix dimensions (must be set by user via command line)
     params->P = 0;                          // Row process grid (auto-set to number of nodes if 0)
-    params->N = 0;                          // Matrix size N (must be specified, typically square matrices)
-    params->NB = 0;                         // Tile size (must be specified, affects memory usage and performance)
+    params->KP = 1;                         // Row block cyclic 1 
+    params->KQ = 1;                         // Column block cyclic 1 
     params->M = 0;                          // Matrix size M (must be specified, defaults to N if not set)
+    params->N = 0;                          // Matrix size N (must be specified, typically square matrices)
     params->K = 0;                          // Matrix size K (must be specified, defaults to N if not set)
+    params->MB = 0;                         // Tile size (must be specified, affects memory usage and performance)
+    params->NB = 0;                         // Tile size (must be specified, affects memory usage and performance)
+    params->KB = 0;                         // Tile size (must be specified, affects memory usage and performance)
     params->RHS = 1;                        // Number of right-hand side vectors (for linear systems)
     
     // Algorithm parameters - control numerical behavior and accuracy
@@ -688,6 +698,20 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
         if( 0 == params->rank & params->verbose )
             fprintf(stderr, "Matrix size (K) is not set; Automatically set to N!\n");
         params->K = params->N;
+    }
+
+    // Matrix size M defaults to N if not specified
+    if( params->MB <= 0 ) {
+        if( 0 == params->rank & params->verbose )
+            fprintf(stderr, "Tile size (MB) is not set; Automatically set to NB!\n");
+        params->MB = params->NB;
+    }
+
+    // Matrix size M defaults to N if not specified
+    if( params->KB <= 0 ) {
+        if( 0 == params->rank & params->verbose )
+            fprintf(stderr, "Tile size (KB) is not set; Automatically set to NB!\n");
+        params->KB = params->NB;
     }
 
     /* Diagonal Regularization Setup */
@@ -813,7 +837,7 @@ static void print_arguments(hicma_parsec_params_t *params)
 #endif
 
 		fprintf(stderr, "#+++++ MB x NB              : %d x %d\n",
-				params->NB, params->NB);
+				params->MB, params->NB);
 		fprintf(stderr, "#+++++ HMB x HNB            : %d x %d\n", params->HNB, params->HNB);
 	}
 }
@@ -833,7 +857,7 @@ static void print_arguments(hicma_parsec_params_t *params)
  * @note This function may exit the program if initialization fails
  * @note GPU support is automatically detected and configured if available
  */
-parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * params)
+parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_params_t * params)
 {
 	// Set verbose flag for rank 0 only (avoid duplicate output in parallel execution)
 	int verbose = params->verbose;
@@ -996,7 +1020,7 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
  * @note This function should be called before program termination
  * @note CUDA handles are automatically cleaned up by the CUDA runtime
  */
-void cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params) 
+void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params) 
 {
     // Cleanup CUDA handles if CUDA support is available
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -1045,9 +1069,9 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
      * =========================================== */
     
     // Calculate number of tiles in each dimension (round up if not evenly divisible)
-    params->MT = (params->M % params->NB == 0) ? (params->M/params->NB) : (params->M/params->NB + 1);
+    params->MT = (params->M % params->MB == 0) ? (params->M/params->MB) : (params->M/params->MB + 1);
     params->NT = (params->N % params->NB == 0) ? (params->N/params->NB) : (params->N/params->NB + 1);
-    params->KT = (params->K % params->NB == 0) ? (params->K/params->NB) : (params->K/params->NB + 1);    
+    params->KT = (params->K % params->KB == 0) ? (params->K/params->KB) : (params->K/params->KB + 1);    
 
     /* ===========================================
      * Extract executable path
@@ -1102,6 +1126,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Precision decision arrays for different matrices
     params->decisions = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));      // Main matrix decisions
+    params->decisionsB = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));      // Main matrix decisions
 
     // Data type conversion decisions
     params->decisions_send = (uint16_t *)calloc(params->NT * params->NT, sizeof(uint16_t));
@@ -1115,6 +1140,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Norm tracking for each tile
     params->norm_tile = (double *)calloc( params->MT * params->NT, sizeof(double) );        // Main matrix norms
+    params->norm_tileB = (double *)calloc( params->MT * params->NT, sizeof(double) );        // Main matrix norms
 
     /* ===========================================
      * Initialize problem type strings
@@ -1178,7 +1204,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
         params->op_path = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
         params->op_offpath = (unsigned long *)calloc(params->cores, sizeof(unsigned long));
     }
-    PASTE_CODE_FLOPS(FLOPS_DPOTRF, ((double)params->N), params->flops);
+    HICMA_PASTE_CODE_FLOPS(FLOPS_DPOTRF, ((double)params->N), params->flops);
 
     /* check results accuracy */
     double result_accuracy = 0.0;
@@ -1246,7 +1272,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
 {
     // Only print on rank 0 to avoid duplicate output in parallel execution
     if( 0 == params->rank ) {
-        printf("\nM=%d N=%d NB=%d NB=%d HNB=%d HNB=%d\n", params->N, params->N, params->NB, params->NB, params->HNB, params->HNB);
+        printf("\nM=%d N=%d MB=%d NB=%d HNB=%d HNB=%d\n", params->M, params->N, params->MB, params->NB, params->HNB, params->HNB);
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
         printf("kind_of_problem=%d %s\n", params->kind_of_problem, params->str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
@@ -2288,7 +2314,7 @@ int hicma_parsec_band_size_dense_auto_tuning( parsec_context_t *parsec,
         }
 
         if( params->verbose > 9 ) {
-            print_decisions( params );
+            print_decisions( params, params->decisions, params->uplo );
         }
     }
 
@@ -2622,7 +2648,9 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     free( params->decisions );
     free( params->decisions_send);
     free( params->decisions_gemm_gpu);
+    free( params->decisionsB );
     free( params->norm_tile );
+    free( params->norm_tileB );
 
     /* Others */
     if (params->gpus > 0) {

@@ -128,6 +128,7 @@
 #define cudaGetErrorName hipGetErrorName                  // Get error name from error code
 #define cudaGetErrorString hipGetErrorString              // Get error description from error code
 #define cudaGetLastError hipGetLastError                  // Get last error from device
+#define PARSEC_CUDA_CHECK_ERROR DPLASMA_HIPBLAS_CHECK_ERROR
 
 /* ============================================================================
  * CUDA to HIP enum value mappings
@@ -214,6 +215,7 @@
 #define CUBLAS_OP_N HIPBLAS_OP_N                           // No transpose operation
 #define CUBLAS_FILL_MODE_LOWER HIPBLAS_FILL_MODE_LOWER     // Lower triangular fill mode
 #define CUBLAS_SIDE_RIGHT HIPBLAS_SIDE_RIGHT               // Right side operation
+#define dplasma_cublas_op dplasma_hipblas_op               // op 
 
 /* ============================================================================
  * CUDA to HIP datatype mappings

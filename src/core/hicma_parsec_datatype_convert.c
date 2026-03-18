@@ -631,6 +631,13 @@ void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb) {
              target[j*mb+i] = (__fp16)source[j*mb+i];
 }
 
+void convert_d2h_unary_CPU(double *data, int mb, int nb) {
+    __fp16 *data_h = (__fp16*)data;
+    for( int j = 0; j < nb; j++ )
+        for( int i = 0; i < mb; i++ )
+            data_h[j*mb+i] = (float)data[j*mb+i];
+}
+
 /**
  * @brief Converts half precision to double precision (non-destructive)
  * 
@@ -649,6 +656,13 @@ void convert_h2d_binary_CPU(double *_target, __fp16 *_source, int mb, int nb) {
      for( int j = 0; j < nb; j++ )
          for( int i = 0; i < mb; i++ )
              target[j*mb+i] = (double)source[j*mb+i];
+}
+
+void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb) {
+    double *data_d = (double *)data;
+    for( int j = nb-1; j >= 0; j-- )
+        for( int i = mb-1; i >= 0; i-- )
+            data_d[j*mb+i] = (double)data[j*mb+i];
 }
 
 /**
@@ -2119,6 +2133,49 @@ void float2half_CPU( int nrows, int ncols,
          for( int i = 0; i < nrows; i++ )
              target[j*ld_t+i] = float32_to_float16( source[j*ld_s+i] ); 
 }
+
+
+int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, size_t *size) {
+    /* Validate input parameters */
+    if (!A || !size) {
+        return -1;
+    }
+
+    /* High precision -> low precision */
+    if(0 == convert_direction) {
+        /* Handle different conversion types with appropriate function calls */
+        if (DENSE_SP == decision) {
+            /* Double to Single precision conversion */
+            convert_d2s_unary_CPU((double*)A, mb, nb);
+            *size = mb * nb * sizeof(float);
+        }
+#if HAVE_HP_CPU
+        else if (DENSE_HP == decision) {
+            /* Double to Half precision conversion */
+            convert_d2h_binary_CPU((double*)A, mb, nb);
+            *size = mb * nb * sizeof(__fp16);
+            return 0;
+        }
+#endif
+    } else { /* Low precision -> high precision */
+        if (DENSE_SP == decision) {
+            /* Double to Single precision conversion */
+            convert_s2d_unary_CPU((float*)A, mb, nb);
+            *size = mb * nb * sizeof(double);
+        }
+#if HAVE_HP_CPU
+        else if (DENSE_HP == decision) {
+            /* Half to Double precision conversion */
+            convert_h2d_unary_CPU((__fp16*)A, mb, nb);
+            *size = mb * nb * sizeof(double);
+            return 0;
+        }
+#endif
+    }
+
+    return 0;
+}
+
 
 /**
  * @brief Checks whether to convert datatype in TRSM operation

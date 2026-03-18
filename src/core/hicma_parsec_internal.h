@@ -447,7 +447,7 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
  * ============================================================================ */
 
 /* FLOPS calculation macro - compute floating point operations */
-#define PASTE_CODE_FLOPS( FORMULA, PARAMS, flops ) \
+#define HICMA_PASTE_CODE_FLOPS( FORMULA, PARAMS, flops ) \
     flops = FORMULA PARAMS;  /**< Calculate FLOPS using specified formula and parameters */
 
 /* ============================================================================
@@ -518,6 +518,8 @@ typedef struct hicma_parsec_params_s {
     int gpu_type;             /**< NVIDIA GPU architecture type */
     int P;                    /**< Number of rows in process grid */
     int Q;                    /**< Number of columns in process grid */
+    int KP;                   /**< Number of block rows in process grid */
+    int KQ;                   /**< Number of block columns in process grid */
     int mpi_initialized_by_hicma; /**< Whether HiCMA performed MPI_Init */
     
     /* ========================================================================
@@ -528,6 +530,7 @@ typedef struct hicma_parsec_params_s {
     int K;                    /**< K dimension for GEMM operations */
     int MB;                   /**< Number of rows in a tile */
     int NB;                   /**< Number of columns in a tile */
+    int KB;                   /**< Number of K rows in a tile */
     int NP;                   /**< Number of processes */
     int HMB;                  /**< Small MB for recursive H-DAGs */
     int HNB;                  /**< Small NB for recursive H-DAGs */
@@ -646,6 +649,7 @@ typedef struct hicma_parsec_params_s {
     uint16_t *decisions;      /**< Precision decisions for each tile */
     uint16_t *decisions_send; /**< Data conversion decisions for each tile */
     uint16_t *decisions_gemm_gpu; /**< GPU GEMM type decisions for each tile */
+    uint16_t *decisionsB;      /**< Precision decisions for each tile */
 
     /* ========================================================================
      * Problem type strings
@@ -677,8 +681,10 @@ typedef struct hicma_parsec_params_s {
      * ======================================================================== */
     int band_size_norm;       /**< Band size for norm calculation */
     double norm_global;       /**< Global matrix norm */
+    double norm_globalB;
     double norm_global_diff;  /**< Global norm difference */
     double* norm_tile;        /**< Per-tile norm array */
+    double* norm_tileB;
 
     /* ========================================================================
      * Log-likelihood calculations
@@ -999,7 +1005,7 @@ typedef struct hicma_parsec_matrix_analysis_s {
  * @note The function modifies params to reflect the actual system configuration
  * @note MPI must be initialized before calling this function
  */
-parsec_context_t *setup_parsec(int argc, char* argv[], hicma_parsec_params_t *params);
+parsec_context_t *hicma_parsec_setup_parsec(int argc, char* argv[], hicma_parsec_params_t *params);
 
 /**
  * @brief Clean up and finalize PaRSEC runtime system
@@ -1022,7 +1028,7 @@ parsec_context_t *setup_parsec(int argc, char* argv[], hicma_parsec_params_t *pa
  * @note CUDA handles are automatically cleaned up by the CUDA runtime
  * @note All allocated memory should be freed before calling this function
  */
-void cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params); 
+void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t *params); 
 
 /**
  * @brief Parse command line arguments for HiCMA configuration
@@ -2265,6 +2271,7 @@ int dplasma_isyrk( parsec_context_t *parsec,
                parsec_tiled_matrix_t *C, int inttype, 
                hicma_parsec_params_t * params_tlr, 
                hicma_parsec_data_t *data);
+
 
 /**
  * @brief Single precision symmetric rank-k update operation

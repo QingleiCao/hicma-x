@@ -717,6 +717,8 @@ void convert_d2s_binary_CPU(float *_target, double *_source, int mb, int nb);
  */
 void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb);
 
+void convert_d2h_unary_CPU(double *data, int mb, int nb);
+
 /**
  * @brief Convert half precision to double precision (binary version)
  * 
@@ -729,6 +731,8 @@ void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb);
  * @param[in] nb Number of columns
  */
 void convert_h2d_binary_CPU(double *_target, __fp16 *_source, int mb, int nb);
+
+void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb);
 
 /**
  * @brief Convert single precision to half precision (binary version)
@@ -1320,6 +1324,24 @@ void hicma_parsec_convert_2h_bit(hicma_parsec_params_t *params_tlr, void *A, flo
  * @see convert_s2h_binary_CPU() for binary conversion
  */
 void float2half_CPU(int nrows, int ncols, const float *_source, int ld_s, void *_target, int ld_t);
+
+int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, size_t *size);
+
+/**
+ * @brief Perform datatype conversion on a dense matrix
+ *
+ * @param [in] parsec: The PaRSEC context
+ * @param [in] uplo: Upper or lower triangular part to convert
+ * @param [inout] A: The matrix to convert, already distributed and allocated
+ * @param [in] decisions: Type of conversion to perform
+ * @param [in] convert_direction: 0: high->low; 1: low->high
+ * @return 0 on success
+ */
+int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        uint16_t *decisions,
+        int convert_direction);
 
 #ifdef __cplusplus
 }

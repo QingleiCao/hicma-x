@@ -11,6 +11,7 @@ set(SRC
     core/hicma_parsec.c
     core/hicma_parsec_internal.c
     core/hicma_parsec_core.c
+    core/hicma_parsec_core_trmm.c
     core/hicma_parsec_gpu.c
     
     # Wrapper files
@@ -23,6 +24,7 @@ set(SRC
     kernels/potrf_L_dense_mp_band_wrapper.c
     kernels/potrf_L_dense_mp_gpu_fp8_wrapper.c
     kernels/potrf_L_dense_mp_gpu_fp8_sp_wrapper.c
+    kernels/trmm_mp_wrapper.c
     kernels/isyrk_wrapper.c
     kernels/gemm_wrapper.c
     kernels/gemmex_wrapper.c
@@ -77,6 +79,7 @@ set(JDF
     kernels/potrf_L_dense_mp_band.jdf
     kernels/potrf_L_dense_mp_gpu_fp8.jdf
     kernels/potrf_L_dense_mp_gpu_fp8_sp.jdf
+    kernels/trmm_mp_LLN.jdf
     
     # GEMM and related JDF files
     kernels/isyrk_LT.jdf
@@ -103,6 +106,7 @@ set(JDF
     kernels/convert_d2s.jdf
     kernels/convert_s2d.jdf
     kernels/datatype_convert_dense_static.jdf
+    kernels/datatype_convert_dense_adaptive.jdf
     kernels/memory_allocation_dense_static.jdf
     kernels/matrix_dsum.jdf
     kernels/matrix_check_norm_diff.jdf

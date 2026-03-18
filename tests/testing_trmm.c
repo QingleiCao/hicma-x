@@ -1,0 +1,346 @@
+#include "hicma_parsec.h"
+#include "dplasma/tests/common.h"
+#include <sys/time.h>
+
+static int check_solution( parsec_context_t *parsec, int loud,
+                           dplasma_enum_t side, dplasma_enum_t uplo, dplasma_enum_t trans, dplasma_enum_t diag,
+                           double alpha,
+                           int Am, int An, int Aseed,
+                           int M,  int N,  int Cseed,
+                           parsec_matrix_block_cyclic_t *dcCfinal );
+
+int main(int argc, char ** argv)
+{
+    parsec_context_t* parsec;
+    hicma_parsec_params_t params;
+    hicma_parsec_data_t data;
+    int ret = 0;
+    int Aseed = 3872;
+    int Cseed = 2873;
+    double alpha = 3.5;
+    parsec_tiled_matrix_t *dcA;
+
+#if defined(PRECISION_z) || defined(PRECISION_c)
+    alpha -= I * 4.2;
+#endif
+
+    /* Parse command line arguments */
+    parse_arguments(&argc, &argv, &params);
+
+    /* Initialize HiCMA parameters */
+    hicma_parsec_params_init(&params, argv);
+    
+    /* Initialize PaRSEC */
+    parsec = hicma_parsec_setup_parsec(argc, argv, &params);
+    
+    /* Print initial parameters */
+    hicma_parsec_params_print_initial(&params);
+    
+    SYNC_TIME_PRINT(params.rank, ("HiCMA and PaRSEC initialization completed in %.6f seconds\n", sync_time_elapsed));
+
+    int M = params.M;
+    int N = params.N;
+    int MB = params.MB;
+    int NB = params.NB;
+    int nodes = params.nodes;
+    int rank = params.rank;
+    int P = params.P;
+    int Q = params.Q;
+    int KP = params.KP;
+    int KQ = params.KQ;
+    int IP = 0;
+    int JQ = 0;
+    int check = params.check;
+    int uplo = params.uplo;
+    int nruns = params.nruns;
+    int loud = params.verbose;
+    int gpus = params.gpus;
+
+    /* initializing matrix structure */
+    int Am = max(M, N);
+    int LDA = Am;
+    int LDC = M;
+    //int LDA = max(LDA, Am);
+    //int LDC = max(LDC, M);
+    PASTE_CODE_ALLOCATE_MATRIX(dcA0, 1,
+        parsec_matrix_block_cyclic, (&dcA0, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
+                               rank, MB, NB, LDA, Am, 0, 0,
+                               Am, Am, P, nodes/P, KP, KQ, IP, JQ));
+    PASTE_CODE_ALLOCATE_MATRIX(dcC, 1,
+        parsec_matrix_block_cyclic, (&dcC, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
+                               rank, MB, NB, LDC, N, 0, 0,
+                               M, N, P, nodes/P, KP, KQ, IP, JQ));
+
+    /* Allocate memory for GPU workspace */
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
+    gpu_temporay_buffer_init( &data, MB, NB, 0, params.kind_of_cholesky );
+#endif
+
+    if(!check)
+    {
+        dplasma_enum_t side  = dplasmaLeft;
+        dplasma_enum_t trans = dplasmaNoTrans;
+        uplo = dplasmaLower; 
+        int sidx = 0; /* dplasmaLeft */
+        int uidx = 1; /* dplasmaLower */
+        int tidx = 0; /* dplasmaNoTrans */
+
+        PASTE_CODE_FLOPS(FLOPS_DTRMM, (side, (DagDouble_t)M, (DagDouble_t)N));
+
+        /* Make A square */
+        if (side == dplasmaLeft) {
+            dcA = parsec_tiled_matrix_submatrix( (parsec_tiled_matrix_t *)&dcA0, 0, 0, M, M );
+        } else {
+            dcA = parsec_tiled_matrix_submatrix( (parsec_tiled_matrix_t *)&dcA0, 0, 0, N, N );
+        }
+
+        /* matrix generation */
+        if(loud > 2) printf("+++ Generate matrices ... ");
+        dplasma_dplgsy( parsec, 0., uplo, dcA, Aseed);
+        dplasma_dplrnt( parsec, 0,        (parsec_tiled_matrix_t *)&dcC, Cseed);
+        if(loud > 2) printf("Done\n");
+
+        int t, d;
+        for(t = 0; t < nruns; t++) {
+            //parsec_devices_release_memory();
+            for(d = 0; d < 2; d++) {
+                struct timeval tstart, tend;
+                double run_time;
+
+#if defined(PARSEC_HAVE_MPI)
+                MPI_Barrier(MPI_COMM_WORLD);
+#endif
+                gettimeofday(&tstart, NULL);
+                if (hicma_parsec_trmm(parsec, side, uplo, trans, diags[d],
+                                      alpha, dcA, (parsec_tiled_matrix_t *)&dcC, &data, &params) != 0) {
+                    ret |= 1;
+                }
+#if defined(PARSEC_HAVE_MPI)
+                MPI_Barrier(MPI_COMM_WORLD);
+#endif
+                gettimeofday(&tend, NULL);
+
+                run_time = (tend.tv_sec - tstart.tv_sec) +
+                           (tend.tv_usec - tstart.tv_usec) / 1.0e6;
+                gflops = (run_time > 0.0) ? (flops * 1e-9) / run_time : 0.0;
+
+                if (rank == 0) {
+                    printf("TRMM run %d/%d (%s, %s, %s, %s): %.6f s, %.3f Gflop/s "
+                           "(nodes= %d gpus= %d P= %d Q= %d MB= %d NB= %d M= %d N= %d)\n",
+                           t + 1, nruns, sidestr[sidx], uplostr[uidx], transstr[tidx], diagstr[d],
+                           run_time, gflops, nodes, gpus, P, Q, MB, NB, M, N);
+                }
+            }
+
+            //parsec_devices_reset_load(parsec);
+        }
+        free(dcA);
+    }
+    else
+    {
+        int d;
+        int info_solution;
+
+        PASTE_CODE_ALLOCATE_MATRIX(dcC2, 1,
+            parsec_matrix_block_cyclic, (&dcC2, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
+                                   rank, MB, NB, LDC, N, 0, 0,
+                                   M, N, P, nodes/P, KP, KQ, IP, JQ));
+
+        dplasma_dplrnt( parsec, 0, (parsec_tiled_matrix_t *)&dcC2, Cseed);
+
+        dplasma_enum_t side  = dplasmaLeft;
+        dplasma_enum_t uplo  = dplasmaLower;
+        dplasma_enum_t trans = dplasmaNoTrans;
+        int sidx = 0; /* dplasmaLeft  */
+        int uidx = 1; /* dplasmaLower */
+        int tidx = 0; /* dplasmaNoTrans */
+
+        /* Left-side TRMM uses an MxM triangular matrix A. */
+        Am = M;
+        dcA = parsec_tiled_matrix_submatrix( (parsec_tiled_matrix_t *)&dcA0, 0, 0, M, M );
+        dplasma_dplgsy( parsec, 0., dplasmaUpperLower, dcA, Aseed);
+
+        /* Get norm and decisions */
+        hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double"); 
+        printf("norm_global %lf\n", params.norm_global);
+        hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions); 
+        print_decisions(&params, params.decisions, params.uplo);
+        parsec_datatype_convert_dense_adaptive(parsec, params.uplo, dcA, params.decisions, 0);
+
+        for (d = 0; d < 2; d++) {
+            if ( rank == 0 ) {
+                printf("***************************************************\n");
+                printf(" ----- TESTING DTRMM (%s, %s, %s, %s) -------- \n",
+                        sidestr[sidx], uplostr[uidx], transstr[tidx], diagstr[d]);
+            }
+
+            /* matrix generation */
+            printf("Generate matrices ... ");
+            dplasma_dlacpy( parsec, dplasmaUpperLower,
+                    (parsec_tiled_matrix_t *)&dcC2, (parsec_tiled_matrix_t *)&dcC );
+            printf("Done\n");
+
+            /* Get norm and decisions */
+            hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                    &params, params.norm_tileB, &params.norm_globalB, "double");
+            hicma_parsec_decision_make_comp(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                    &params, params.norm_tileB, params.norm_globalB, params.decisionsB); 
+            print_decisions(&params, params.decisionsB, dplasmaUpperLower);
+            parsec_datatype_convert_dense_adaptive(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
+
+            /* Compute */
+            printf("Compute ... ... ");
+            if (hicma_parsec_trmm(parsec, side, uplo, trans, diags[d],
+                        alpha, dcA, (parsec_tiled_matrix_t *)&dcC, &data, &params) != 0) {
+                if (rank == 0) {
+                    printf("hicma_parsec_trmm execution failed\n");
+                }
+                ret |= 1;
+            }
+            printf("Done\n");
+
+            /* Convert back to DP */
+            parsec_datatype_convert_dense_adaptive(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 1);
+
+            /* Check the solution */
+            info_solution = check_solution(parsec, rank == 0 ? loud : 0,
+                    side, uplo, trans, diags[d],
+                    alpha, Am, Am, Aseed,
+                    M,  N,  Cseed,
+                    &dcC);
+            if ( rank == 0 ) {
+                if (info_solution == 0) {
+                    printf(" ---- TESTING DTRMM (%s, %s, %s, %s) ...... PASSED !\n",
+                           sidestr[sidx], uplostr[uidx], transstr[tidx], diagstr[d]);
+                }
+                else {
+                    printf(" ---- TESTING DTRMM (%s, %s, %s, %s) ... FAILED !\n",
+                           sidestr[sidx], uplostr[uidx], transstr[tidx], diagstr[d]);
+                    ret |= 1;
+                }
+                printf("***************************************************\n");
+            }
+        }
+        free(dcA);
+        parsec_data_free(dcC2.mat);
+        parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&dcC2);
+    }
+
+    /* Free parameter arrays */
+    free(params.rank_array);
+    free(params.op_band);
+    free(params.op_offband);
+    free(params.op_path);
+    free(params.op_offpath);
+    free(params.gather_time);
+    free(params.gather_time_tmp);
+    free(params.decisions);
+    free(params.decisions_send);
+    free(params.decisions_gemm_gpu);
+    free(params.decisionsB);
+    free(params.norm_tile);
+
+    /* GPU workspace */
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
+    gpu_temporay_buffer_fini( &data, params.kind_of_cholesky );
+#endif
+
+    parsec_data_free(dcA0.mat);
+    parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&dcA0);
+    parsec_data_free(dcC.mat);
+    parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&dcC);
+
+    /* Clean up PaRSEC */
+    hicma_parsec_cleanup_parsec(parsec, &params);
+
+    return ret;
+}
+
+
+/**********************************
+ * static functions
+ **********************************/
+
+/*------------------------------------------------------------------------
+ *  Check the accuracy of the solution
+ */
+static int check_solution( parsec_context_t *parsec, int loud,
+                           dplasma_enum_t side, dplasma_enum_t uplo, dplasma_enum_t trans, dplasma_enum_t diag,
+                           double alpha,
+                           int Am, int An, int Aseed,
+                           int M,  int N,  int Cseed,
+                           parsec_matrix_block_cyclic_t *dcCfinal )
+{
+    int info_solution = 1;
+    double Anorm, Cinitnorm, Cdplasmanorm, Clapacknorm, Rnorm;
+    double eps, result;
+    int MB = dcCfinal->super.mb;
+    int NB = dcCfinal->super.nb;
+    int LDA = Am;
+    int LDC = M;
+    int rank  = dcCfinal->super.super.myrank;
+
+    eps = LAPACKE_dlamch_work('e');
+
+    PASTE_CODE_ALLOCATE_MATRIX(dcA, 1,
+        parsec_matrix_block_cyclic, (&dcA, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_LAPACK,
+                               rank, MB, NB, LDA, An, 0, 0,
+                               Am, An, 1, 1, 1, 1, 0, 0));
+    PASTE_CODE_ALLOCATE_MATRIX(dcC, 1,
+        parsec_matrix_block_cyclic, (&dcC, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_LAPACK,
+                               rank, MB, NB, LDC, N, 0, 0,
+                               M, N, 1, 1, 1, 1, 0, 0));
+
+    dplasma_dplgsy( parsec, 0., dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcA, Aseed);
+    dplasma_dplrnt( parsec, 0, (parsec_tiled_matrix_t *)&dcC, Cseed );
+
+    Anorm        = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)&dcA );
+    Cinitnorm    = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)&dcC );
+    Cdplasmanorm = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)dcCfinal );
+
+    if ( rank == 0 ) {
+        cblas_dtrmm(CblasColMajor,
+                    (CBLAS_SIDE)side, (CBLAS_UPLO)uplo,
+                    (CBLAS_TRANSPOSE)trans, (CBLAS_DIAG)diag,
+                    M, N,
+                    (alpha), dcA.mat, LDA,
+                                        dcC.mat, LDC );
+    }
+
+    Clapacknorm = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)&dcC );
+
+    dplasma_dgeadd( parsec, dplasmaNoTrans,
+                    -1.0, (parsec_tiled_matrix_t*)dcCfinal,
+                     1.0, (parsec_tiled_matrix_t*)&dcC );
+
+    Rnorm = dplasma_dlange( parsec, dplasmaMaxNorm, (parsec_tiled_matrix_t*)&dcC );
+
+    result = Rnorm / (Clapacknorm * max(M,N) * eps);
+
+    if ( rank == 0 ) {
+        if ( loud > 2 ) {
+            printf("  ||A||_inf = %e, ||C||_inf = %e\n"
+                   "  ||lapack(a*A*C)||_inf = %e, ||dplasma(a*A*C)||_inf = %e, ||R||_m = %e, res = %e\n",
+                   Anorm, Cinitnorm, Clapacknorm, Cdplasmanorm, Rnorm, result);
+        }
+
+        if (  isinf(Clapacknorm) || isinf(Cdplasmanorm) ||
+              isnan(result) || isinf(result) || (result > 10.0) ) {
+            info_solution = 1;
+        }
+        else {
+            info_solution = 0;
+        }
+    }
+
+#if defined(PARSEC_HAVE_MPI)
+    MPI_Bcast(&info_solution, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+
+    parsec_data_free(dcA.mat);
+    parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&dcA);
+    parsec_data_free(dcC.mat);
+    parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&dcC);
+
+    return info_solution;
+}

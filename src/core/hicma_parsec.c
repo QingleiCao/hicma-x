@@ -91,7 +91,7 @@ parsec_context_t * hicma_parsec_init( int argc, char ** argv,
     hicma_parsec_params_check(params);
 
     /* Step 6: Create and configure PaRSEC execution context */
-    parsec = setup_parsec(argc, argv, params);
+    parsec = hicma_parsec_setup_parsec(argc, argv, params);
 
     /* Step 7: Display initial parameter configuration for verification */
     hicma_parsec_params_print_initial(params);
@@ -638,7 +638,7 @@ void hicma_parsec_fini( parsec_context_t* parsec,
     hicma_parsec_free_memory( parsec, data, params, params_kernel, analysis );
 
     /* Clean up PaRSEC context and MPI resources */
-    cleanup_parsec(parsec, params);
+    hicma_parsec_cleanup_parsec(parsec, params);
 }
 
 /**

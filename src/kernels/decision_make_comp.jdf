@@ -13,8 +13,11 @@ extern "C" %{
 %}
 
 // Input parameters for the decision making computation task
+uplo            [type = "dplasma_enum_t"]
 descA           [ type = "parsec_tiled_matrix_t*" ]  // Matrix descriptor for the tiled matrix
 params_tlr      [ type = "hicma_parsec_params_t *" ] // TLR (Tile Low Rank) parameters containing precision decisions
+norm_tile       [ type = "double *" ]
+norm_global     [ type = "double " ]
 new_decisions   [ type = "uint16_t *" ]              // Output array to store new precision decisions
 
 // Task definition for computing precision decisions for each matrix tile
@@ -22,7 +25,7 @@ Task(m, n)
 
 // Iterate over lower triangular matrix tiles (m >= n)
 m = 0 .. descA->lmt-1  // Row index from 0 to number of tiles in rows - 1
-n = 0 .. m             // Column index from 0 to current row (lower triangular)
+n = 0 .. %{ return ((uplo == dplasmaUpper) ? m: descA->lnt-1); %}             // Column index from 0 to current row (lower triangular)
 
 : descA(m, n)  // Depend on the matrix tile at position (m,n)
 
@@ -30,7 +33,8 @@ n = 0 .. m             // Column index from 0 to current row (lower triangular)
 BODY
 {
     // Initialize new decision with current decision
-    new_decisions[n*descA->lmt+m] = params_tlr->decisions[n*descA->lmt+m];
+    //new_decisions[n*descA->lmt+m] = params_tlr->decisions[n*descA->lmt+m];
+    new_decisions[n*descA->lmt+m] = DENSE_DP;  
 
     /* Diagonal tiles are always computed in double precision (DP) */
     if( m == n ) { 
@@ -49,14 +53,14 @@ BODY
     
     // Determine precision decisions based on tile norm relative to global norm and tolerance
     // Each decision checks if the normalized tile norm is below the precision-specific threshold
-    bool decision_hp_gpu = params_tlr->norm_tile[n*params_tlr->NT+m] * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_HP_GPU;
-    bool decision_hp = params_tlr->norm_tile[n*params_tlr->NT+m] * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_HP; 
-    bool decision_sp = params_tlr->norm_tile[n*params_tlr->NT+m] * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_SP; 
-    bool decision_fp8 = params_tlr->norm_tile[n*params_tlr->NT+m] * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_FP8; 
+    bool decision_hp_gpu = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP_GPU;
+    bool decision_hp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_HP; 
+    bool decision_sp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_SP; 
+    bool decision_fp8 = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_FP8; 
 
     // Debug print statement (commented out)
-    //printf("\n (%d, %d), params_tlr->norm_global:%f, tile norm:%f, res:%f %f %f %f\n", m, n, params_tlr->norm_global,  params_tlr->norm_tile[n*params_tlr->NT+m],
-    //params_tlr->norm_tile[n*params_tlr->NT+m] * scalar_factore / params_tlr->norm_global, params_tlr->fixedacc / EPS_FP8, params_tlr->fixedacc / EPS_HP, params_tlr->fixedacc / EPS_SP);
+    //printf("\n (%d, %d), norm_global:%f, tile norm:%f, res:%f %f %f %f\n", m, n, norm_global,  norm_tile[n*params_tlr->NT+m],
+    //norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global, params_tlr->fixedacc / EPS_FP8, params_tlr->fixedacc / EPS_HP, params_tlr->fixedacc / EPS_SP);
 
     /* Make precision decisions based on current tile type */
     // Handle dense tile precision decisions (DP, SP, HP, FP8)
@@ -113,7 +117,7 @@ BODY
         // CUDA-specific GPU precision selection
         if( decision_hp_gpu && ENABLE_TF16_A16_B16_C16_OP16 ) { 
             params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C16_OP16; 
-            //printf("%d %d : %g %g\n", m, n, params_tlr->norm_tile[n*params_tlr->NT+m], params_tlr->norm_global);
+            //printf("%d %d : %g %g\n", m, n, norm_tile[n*params_tlr->NT+m], norm_global);
         } else if( decision_hp ) { 
 #elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         // HIP-specific GPU precision selection
@@ -134,6 +138,8 @@ BODY
 #endif
         }
     }
+
+    //printf("New decision: %d %d %u\n", m, n, new_decisions[n*descA->lmt+m]);
 }
 END
 
@@ -147,15 +153,18 @@ extern "C" %{
  * @return the parsec taskpool object to schedule
  */
 parsec_taskpool_t*
-parsec_decision_make_comp_New(parsec_tiled_matrix_t *A,
+parsec_decision_make_comp_New(dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
         hicma_parsec_params_t *params,
+        double *norm_tile,
+        double norm_global,
         uint16_t *new_decisions )
 {
     parsec_taskpool_t* decision_make_comp_taskpool;
     parsec_decision_make_comp_taskpool_t* taskpool = NULL;
 
     // Create the taskpool for decision making computation
-    taskpool = parsec_decision_make_comp_new( A, params, new_decisions );
+    taskpool = parsec_decision_make_comp_new( uplo, A, params, norm_tile, norm_global, new_decisions );
     decision_make_comp_taskpool = (parsec_taskpool_t*)taskpool;
 
     return decision_make_comp_taskpool;
@@ -179,15 +188,19 @@ void parsec_decision_make_comp_Destruct(parsec_taskpool_t *taskpool)
  * @return 0 on success
  */
 int hicma_parsec_decision_make_comp(parsec_context_t *parsec,
-                         parsec_tiled_matrix_t *A,
-                         hicma_parsec_params_t *params )
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params,
+        double *norm_tile,
+        double norm_global,
+        uint16_t *decisions )
 {
     parsec_taskpool_t *parsec_decision_make_comp = NULL;
     // Allocate array to store new precision decisions
     uint16_t *new_decisions = (uint16_t *)calloc( sizeof(uint16_t), A->lmt * A->lnt );
     
     // Create and schedule the decision making taskpool
-    parsec_decision_make_comp = parsec_decision_make_comp_New( A, params, new_decisions );
+    parsec_decision_make_comp = parsec_decision_make_comp_New( uplo, A, params, norm_tile, norm_global, new_decisions );
 
     if( parsec_decision_make_comp != NULL ){
         parsec_context_add_taskpool(parsec, parsec_decision_make_comp);
@@ -198,7 +211,8 @@ int hicma_parsec_decision_make_comp(parsec_context_t *parsec,
 
     // Reduce decisions across all MPI processes and update parameters
     MPI_Allreduce(MPI_IN_PLACE, new_decisions, A->lmt * A->lnt, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
-    memcpy( (void *)params->decisions, (void *)new_decisions, A->lmt * A->lnt * sizeof(uint16_t) ); 
+    memcpy( (void *)decisions, (void *)new_decisions, A->lmt * A->lnt * sizeof(uint16_t) ); 
+    printf("NEW: %u \n", decisions[0]);
     free( new_decisions );
 
     return 0;
