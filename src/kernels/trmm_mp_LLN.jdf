@@ -126,6 +126,49 @@ dtrmm(m, n) [ flops = inline_c %{ return FLOPS_DTRMM(side, CLEAN_MB(descB, m), C
 
   CTL   ctl0 <- ctl0 dgemm(0..(m-1), n, descB->mt-m-1)
 
+
+BODY [ type = CUDA ]
+{
+    int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
+    int tempnn = ((n)==(descB->nt-1)) ? (descB->n-(n*descB->nb)) : descB->nb;
+    int lda = BLKLDD(descA, A);
+    int ldb = BLKLDD(descB, B);
+
+    printlog("CORE_dtrmm(%d, %d)\n"
+            "\t(side, uplo, trans, diag, tempmm, tempnn, alpha, A(%d,%d)[%p], lda, B(%d,%d)[%p], ldb)\n",
+            m, n, (descB->mt-1)-m, (descB->mt-1)-m, A, (descB->mt-1)-m, n, B);
+
+    hicma_parsec_trmm_core_trmm_lln_gpu(
+            params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+            side, uplo, trans,
+            diag, tempmm, tempnn,
+            alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
+            B /* descB((descB->mt-1)-m,n) */, ldb,
+            m, n );
+}
+END
+
+BODY [ type = HIP ]
+{
+    int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
+    int tempnn = ((n)==(descB->nt-1)) ? (descB->n-(n*descB->nb)) : descB->nb;
+    int lda = BLKLDD(descA, A);
+    int ldb = BLKLDD(descB, B);
+
+    printlog("CORE_dtrmm(%d, %d)\n"
+            "\t(side, uplo, trans, diag, tempmm, tempnn, alpha, A(%d,%d)[%p], lda, B(%d,%d)[%p], ldb)\n",
+            m, n, (descB->mt-1)-m, (descB->mt-1)-m, A, (descB->mt-1)-m, n, B);
+
+    hicma_parsec_trmm_core_trmm_lln_gpu(
+            params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+            side, uplo, trans,
+            diag, tempmm, tempnn,
+            alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
+            B /* descB((descB->mt-1)-m,n) */, ldb,
+            m, n );
+}
+END
+
 BODY
 {
     int tempmm = (((descB->mt-1)-m)==(descB->mt-1)) ? (descB->m-(((descB->mt-1)-m)*descB->mb)) : descB->mb;
@@ -134,12 +177,22 @@ BODY
     int ldb = BLKLDD(descB, B);
 
     printlog("CORE_dtrmm(%d, %d)\n"
-             "\t(side, uplo, trans, diag, tempmm, tempnn, alpha, A(%d,%d)[%p], lda, B(%d,%d)[%p], ldb)\n",
-             m, n, (descB->mt-1)-m, (descB->mt-1)-m, A, (descB->mt-1)-m, n, B);
-        CORE_dtrmm(side, uplo, trans,
-                   diag, tempmm, tempnn,
-                   alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
-                   B /* descB((descB->mt-1)-m,n) */, ldb );
+            "\t(side, uplo, trans, diag, tempmm, tempnn, alpha, A(%d,%d)[%p], lda, B(%d,%d)[%p], ldb)\n",
+            m, n, (descB->mt-1)-m, (descB->mt-1)-m, A, (descB->mt-1)-m, n, B);
+#if 1
+    hicma_parsec_trmm_core_trmm_lln_cpu(params_tlr, es,
+            p_work_full_dp, p_work_full_sp, p_work_full_hp,
+            side, uplo, trans,
+            diag, tempmm, tempnn,
+            alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
+            B /* descB((descB->mt-1)-m,n) */, ldb,
+            m, n );
+#else
+    CORE_dtrmm(side, uplo, trans,
+            diag, tempmm, tempnn,
+            alpha, A /* descA((descB->mt-1)-m,(descB->mt-1)-m) */, lda,
+            B /* descB((descB->mt-1)-m,n) */, ldb );
+#endif
 }
 END
 
@@ -245,6 +298,7 @@ BODY
 
 #if 1
     hicma_parsec_trmm_core_gemm_lln_cpu(params_tlr, es,
+            p_work_full_dp, p_work_full_sp, p_work_full_hp,
             trans, dplasmaNoTrans, tempmm, tempnn, descB->mb,
             alpha, A /* descA((descB->mt-1)-m,k) */, lda,
             B /* descB(k,n) */,               ldb,

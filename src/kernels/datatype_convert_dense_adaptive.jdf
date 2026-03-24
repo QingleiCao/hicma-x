@@ -24,6 +24,11 @@ descA         [ type = "parsec_tiled_matrix_t *" ] // Matrix descriptor for inpu
 decisions     [type = "uint16_t *"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
 convert_direction [type = "int"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
 
+/* GPU-related variables */
+ws_gpu       [ type = "void *" hidden = on default = NULL ]  /* GPU workspace memory */
+nb_cuda_devices      [ type = "int"   hidden = on default = 0 ]  /* Number of available CUDA devices */
+cuda_device_index    [ type = "int *" hidden = on default = "NULL"]  /* Array of CUDA device indices for load balancing */
+
 /**
  * @brief PaRSEC task for converting datatypes in dense matrix tiles
  * 
@@ -52,25 +57,21 @@ n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLo
 RW A <- descA(m, n)    
      -> descA(m, n)
 
-BODY
+BODY [ type = CUDA ]
 {
-    // Calculate actual tile dimensions (handle edge tiles)
-    int tempmm, tempnn, ldam, ldbm;
-    
-    // Actual number of rows in this tile (handle last tile in column)
-    // For the last tile in a column, use remaining rows instead of full tile size
-    tempmm = ((m)==((descA->mt)-1)) ? ((descA->m)-(m*(descA->mb))) : (descA->mb);
-    
-    // Actual number of columns in this tile (handle last tile in row)
-    // For the last tile in a row, use remaining columns instead of full tile size
-    tempnn = ((n)==((descA->nt)-1)) ? ((descA->n)-(n*(descA->nb))) : (descA->nb);
-    
-    // Leading dimension of the tile (stride between rows)
-    ldam = BLKLDD( descA, m );
-    
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
-    convert_datatype_adaptive_unary_CPU(A, tempmm, tempnn, ldam, decisions[n*descA->lmt+m], convert_direction, &this_task->data._f_A.data_out->original->nb_elts);
+    //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, &this_task->data._f_A.data_out->original->nb_elts);
+    //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
+}
+END
+
+BODY
+{
+    // Perform the datatype conversion on the tile
+    // This function handles the actual conversion logic based on decisions
+    convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, &this_task->data._f_A.data_out->original->nb_elts);
 }
 END
 
@@ -84,15 +85,36 @@ extern "C" %{
  * @return The parsec object to schedule
  */
 parsec_taskpool_t*
-parsec_datatype_convert_dense_adaptive_New( dplasma_enum_t uplo,
+parsec_datatype_convert_dense_adaptive_New(hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params,
+        dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         uint16_t *decisions,
         int convert_direction)
 {
     parsec_datatype_convert_dense_adaptive_taskpool_t* datatype_convert_dense_adaptive_taskpool = NULL;
+
+    // GPU device detection and initialization
+    int nb = 0, *dev_index;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    // Find and initialize available GPU devices
+    hicma_parsec_find_cuda_devices( &dev_index, &nb); 
+ 
+#if !GPU_BUFFER_ONCE
+    // Allocate GPU workspace buffers if not already allocated
+    gpu_temporay_buffer_init( data, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
+#endif 
+#endif
     
     // Create the taskpool for datatype conversion
     datatype_convert_dense_adaptive_taskpool = parsec_datatype_convert_dense_adaptive_new(uplo, A, decisions, convert_direction);
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    // Configure GPU workspace and device information
+    datatype_convert_dense_adaptive_taskpool->_g_ws_gpu = (void *)data->ws_gpu;
+    datatype_convert_dense_adaptive_taskpool->_g_nb_cuda_devices = nb;
+    datatype_convert_dense_adaptive_taskpool->_g_cuda_device_index = dev_index;
+#endif
 
     // Add arena for double precision data type
     // This arena manages memory allocation and data type handling for the conversion
@@ -130,6 +152,8 @@ void parsec_datatype_convert_dense_adaptive_Destruct(parsec_taskpool_t *taskpool
  * @return 0 on success
  */
 int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params,
         dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         uint16_t *decisions,
@@ -138,7 +162,7 @@ int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
     parsec_taskpool_t *parsec_datatype_convert_dense_adaptive = NULL;
     
     // Create the taskpool for datatype conversion
-    parsec_datatype_convert_dense_adaptive = parsec_datatype_convert_dense_adaptive_New(uplo, A, decisions, convert_direction);
+    parsec_datatype_convert_dense_adaptive = parsec_datatype_convert_dense_adaptive_New(data, params, uplo, A, decisions, convert_direction);
     
     if( parsec_datatype_convert_dense_adaptive != NULL ){
         // Add the taskpool to the PaRSEC context for execution

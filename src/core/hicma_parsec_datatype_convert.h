@@ -1338,10 +1338,23 @@ int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16
  * @return 0 on success
  */
 int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params,
         dplasma_enum_t uplo,
         parsec_tiled_matrix_t *A,
         uint16_t *decisions,
         int convert_direction);
+
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
+        parsec_device_cuda_module_t *cuda_device,
+        parsec_gpu_task_t *gpu_task,
+        parsec_cuda_exec_stream_t *cuda_stream,
+        void *A, int mb, int nb, int lda,
+        uint16_t decision, int convert_direction, size_t *size);
+#endif
+
 
 #ifdef __cplusplus
 }

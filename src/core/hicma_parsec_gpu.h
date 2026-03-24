@@ -733,6 +733,9 @@ void int_2double_array(int nrows, int ncols,
  */
 void memcpy_float_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
 
+
+void memcpy_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
+
 /**
  * @brief Copy half-precision data from source to destination on GPU
  * 

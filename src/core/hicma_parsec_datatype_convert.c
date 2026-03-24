@@ -2195,4 +2195,56 @@ bool hicma_parsec_convert_in_trsm( hicma_parsec_params_t *params_tlr, int m, int
             || DENSE_HP == params_tlr->decisions_send[n*params_tlr->NT+m]
             || DENSE_FP8 == params_tlr->decisions_send[n*params_tlr->NT+m]
            );
-} 
+}
+
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
+        parsec_device_cuda_module_t *cuda_device,
+        parsec_gpu_task_t *gpu_task,
+        parsec_cuda_exec_stream_t *cuda_stream,
+        void *A, int mb, int nb, int lda,
+        uint16_t decision, int convert_direction, size_t *size) {
+
+    /* Validate input parameters */
+    if (!A || !size) {
+        return -1; 
+    }
+
+    /* Find workspace */
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    void *A_tmp = stream_found->gpu_buffer_A;
+
+    //cublasSetStream( handle, cuda_stream->cuda_stream );
+    
+    /* High precision -> low precision */
+    if(0 == convert_direction) {
+        /* Handle different conversion types with appropriate function calls */
+        if (DENSE_SP == decision) {
+            double2float_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            memcpy_float_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
+            *size = mb * nb * sizeof(float);
+        } 
+        else if (DENSE_HP == decision) { 
+            double2half_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            memcpy_half_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
+            *size = mb * nb * sizeof(float) / 2;
+        }
+    } else { /* Low precision -> high precision */
+        if (DENSE_SP == decision) {
+            float2double_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            memcpy_double_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
+            *size = mb * nb * sizeof(double);
+        }
+        else if (DENSE_HP == decision) {
+            half2double_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            memcpy_double_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
+            *size = mb * nb * sizeof(double);
+        }
+    }
+
+    return 0;
+}
+
+#endif

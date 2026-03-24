@@ -25,19 +25,29 @@ Task(m, n)
 
 // Iterate over lower triangular matrix tiles (m >= n)
 m = 0 .. descA->lmt-1  // Row index from 0 to number of tiles in rows - 1
-n = 0 .. %{ return ((uplo == dplasmaUpper) ? m: descA->lnt-1); %}             // Column index from 0 to current row (lower triangular)
+//n = 0 .. %{ return ((uplo == dplasmaUpper) ? m: descA->lnt-1); %}             
+n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLower) ? m : descA->lnt-1; %}
 
 : descA(m, n)  // Depend on the matrix tile at position (m,n)
 
 
 BODY
 {
+//new_decisions[n*descA->lmt+m] = DENSE_SP; return PARSEC_HOOK_RETURN_DONE;
+
+//if(uplo == dplasmaUpperLower) {
+//new_decisions[n*descA->lmt+m] = DENSE_DP; return PARSEC_HOOK_RETURN_DONE;
+//}
+
     // Initialize new decision with current decision
-    //new_decisions[n*descA->lmt+m] = params_tlr->decisions[n*descA->lmt+m];
-    new_decisions[n*descA->lmt+m] = DENSE_DP;  
+    if(uplo == dplasmaUpperLower) {
+        new_decisions[n*descA->lmt+m] = DENSE_DP; 
+    } else {
+        new_decisions[n*descA->lmt+m] = params_tlr->decisions[n*descA->lmt+m];
+    }
 
     /* Diagonal tiles are always computed in double precision (DP) */
-    if( m == n ) { 
+    if( m == n && uplo != dplasmaUpperLower ) { 
 #if GENOMICS
         // For gene computation, use single precision on GPU
         params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32;
@@ -58,13 +68,24 @@ BODY
     bool decision_sp = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_SP; 
     bool decision_fp8 = norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global  < params_tlr->fixedacc / EPS_FP8; 
 
+    /* Protect on CPU */
+    if(params_tlr->gpus < 1) {
+        decision_hp_gpu = false;
+        decision_fp8 = false;
+    }
+
+    if(params_tlr->gpus < 1 && !HAVE_HP_CPU) {
+        decision_hp = false;
+    }
+
     // Debug print statement (commented out)
-    //printf("\n (%d, %d), norm_global:%f, tile norm:%f, res:%f %f %f %f\n", m, n, norm_global,  norm_tile[n*params_tlr->NT+m],
+    //printf("(%d, %d), norm_global:%f, tile norm:%f, res:%f %f %f %f\n", m, n, norm_global,  norm_tile[n*params_tlr->NT+m],
     //norm_tile[n*params_tlr->NT+m] * scalar_factore / norm_global, params_tlr->fixedacc / EPS_FP8, params_tlr->fixedacc / EPS_HP, params_tlr->fixedacc / EPS_SP);
 
     /* Make precision decisions based on current tile type */
     // Handle dense tile precision decisions (DP, SP, HP, FP8)
-    if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m]
+    if( uplo == dplasmaUpperLower
+            || DENSE_DP == params_tlr->decisions[n*descA->lmt+m]
             || DENSE_SP == params_tlr->decisions[n*descA->lmt+m]
             || DENSE_HP == params_tlr->decisions[n*descA->lmt+m]
             || DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
@@ -138,8 +159,6 @@ BODY
 #endif
         }
     }
-
-    //printf("New decision: %d %d %u\n", m, n, new_decisions[n*descA->lmt+m]);
 }
 END
 
@@ -212,7 +231,6 @@ int hicma_parsec_decision_make_comp(parsec_context_t *parsec,
     // Reduce decisions across all MPI processes and update parameters
     MPI_Allreduce(MPI_IN_PLACE, new_decisions, A->lmt * A->lnt, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
     memcpy( (void *)decisions, (void *)new_decisions, A->lmt * A->lnt * sizeof(uint16_t) ); 
-    printf("NEW: %u \n", decisions[0]);
     free( new_decisions );
 
     return 0;

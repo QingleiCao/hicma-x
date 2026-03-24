@@ -1217,6 +1217,54 @@ void memcpy_float_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream
         memcpy_float_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
 }
 
+
+__global__ void memcpy_double_GPU_kernel( int nrows, int ncols,
+               double *src, double *dest ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        // Bounds checking
+        if( idx >= nrows || idy >= ncols ) {
+            return;
+        }
+
+        // Copy matrix element from source to destination
+        dest[idy*nrows+idx] = src[idy*nrows+idx];
+}
+
+/**
+ * @brief GPU wrapper function for single precision matrix copy
+ * 
+ * Launches the copy kernel with appropriate grid and block dimensions.
+ * Handles type casting from void pointers to single precision.
+ * 
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param _src Source matrix (single precision, void pointer)
+ * @param _dest Destination matrix (single precision, void pointer)
+ * @param stream CUDA stream for asynchronous execution
+ */
+extern "C"
+void memcpy_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream ) {
+        // Calculate grid dimensions based on matrix size and chunk size
+        int nBlockx = (nrows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (ncols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        // Define thread block and grid dimensions
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        // Cast void pointers to single precision
+        double *src = (double *)_src;
+        double *dest = (double *)_dest;
+
+        // Launch kernel with calculated dimensions
+        memcpy_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+
 /****************************************************************************************************/
 
 

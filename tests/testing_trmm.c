@@ -7,7 +7,8 @@ static int check_solution( parsec_context_t *parsec, int loud,
                            double alpha,
                            int Am, int An, int Aseed,
                            int M,  int N,  int Cseed,
-                           parsec_matrix_block_cyclic_t *dcCfinal );
+                           parsec_matrix_block_cyclic_t *dcCfinal,
+                           double fixedacc );
 
 int main(int argc, char ** argv)
 {
@@ -26,6 +27,9 @@ int main(int argc, char ** argv)
 
     /* Parse command line arguments */
     parse_arguments(&argc, &argv, &params);
+
+    /* Disable adaptive decision in memory */
+    params.adaptive_memory = 0;
 
     /* Initialize HiCMA parameters */
     hicma_parsec_params_init(&params, argv);
@@ -100,6 +104,23 @@ int main(int argc, char ** argv)
         dplasma_dplrnt( parsec, 0,        (parsec_tiled_matrix_t *)&dcC, Cseed);
         if(loud > 2) printf("Done\n");
 
+        /* Get norm and decisions */
+        hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double");
+        //printf("norm_global %lf\n", params.norm_global);
+        hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions);
+        parsec_datatype_convert_dense_adaptive(parsec, &data, &params, params.uplo, dcA, params.decisions, 0);
+
+        hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                &params, params.norm_tileB, &params.norm_globalB, "double");
+        hicma_parsec_decision_make_comp(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                &params, params.norm_tileB, params.norm_globalB, params.decisionsB);
+        parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
+
+        if(params.verbose > 9) {
+            print_decisions(&params, params.decisions, params.uplo);
+            print_decisions(&params, params.decisionsB, dplasmaUpperLower);
+        }
+
         int t, d;
         for(t = 0; t < nruns; t++) {
             //parsec_devices_release_memory();
@@ -162,10 +183,10 @@ int main(int argc, char ** argv)
 
         /* Get norm and decisions */
         hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double"); 
-        printf("norm_global %lf\n", params.norm_global);
+        //printf("norm_global %lf\n", params.norm_global);
         hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions); 
         print_decisions(&params, params.decisions, params.uplo);
-        parsec_datatype_convert_dense_adaptive(parsec, params.uplo, dcA, params.decisions, 0);
+        parsec_datatype_convert_dense_adaptive(parsec, &data, &params, params.uplo, dcA, params.decisions, 0);
 
         for (d = 0; d < 2; d++) {
             if ( rank == 0 ) {
@@ -186,7 +207,7 @@ int main(int argc, char ** argv)
             hicma_parsec_decision_make_comp(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
                     &params, params.norm_tileB, params.norm_globalB, params.decisionsB); 
             print_decisions(&params, params.decisionsB, dplasmaUpperLower);
-            parsec_datatype_convert_dense_adaptive(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
+            parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
 
             /* Compute */
             printf("Compute ... ... ");
@@ -200,14 +221,14 @@ int main(int argc, char ** argv)
             printf("Done\n");
 
             /* Convert back to DP */
-            parsec_datatype_convert_dense_adaptive(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 1);
+            parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 1);
 
             /* Check the solution */
             info_solution = check_solution(parsec, rank == 0 ? loud : 0,
                     side, uplo, trans, diags[d],
                     alpha, Am, Am, Aseed,
                     M,  N,  Cseed,
-                    &dcC);
+                    &dcC, params.fixedacc);
             if ( rank == 0 ) {
                 if (info_solution == 0) {
                     printf(" ---- TESTING DTRMM (%s, %s, %s, %s) ...... PASSED !\n",
@@ -269,7 +290,8 @@ static int check_solution( parsec_context_t *parsec, int loud,
                            double alpha,
                            int Am, int An, int Aseed,
                            int M,  int N,  int Cseed,
-                           parsec_matrix_block_cyclic_t *dcCfinal )
+                           parsec_matrix_block_cyclic_t *dcCfinal,
+                           double fixedacc )
 {
     int info_solution = 1;
     double Anorm, Cinitnorm, Cdplasmanorm, Clapacknorm, Rnorm;
@@ -307,6 +329,11 @@ static int check_solution( parsec_context_t *parsec, int loud,
                                         dcC.mat, LDC );
     }
 
+    if(loud > 99) {
+        dplasma_dprint(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t*)dcCfinal);
+        dplasma_dprint(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t*)&dcC);
+    }
+
     Clapacknorm = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)&dcC );
 
     dplasma_dgeadd( parsec, dplasmaNoTrans,
@@ -315,7 +342,7 @@ static int check_solution( parsec_context_t *parsec, int loud,
 
     Rnorm = dplasma_dlange( parsec, dplasmaMaxNorm, (parsec_tiled_matrix_t*)&dcC );
 
-    result = Rnorm / (Clapacknorm * max(M,N) * eps);
+    result = Rnorm / (Clapacknorm * max(M,N) * fmax(fixedacc, eps));
 
     if ( rank == 0 ) {
         if ( loud > 2 ) {

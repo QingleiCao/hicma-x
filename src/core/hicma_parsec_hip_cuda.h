@@ -215,7 +215,10 @@
 #define CUBLAS_OP_N HIPBLAS_OP_N                           // No transpose operation
 #define CUBLAS_FILL_MODE_LOWER HIPBLAS_FILL_MODE_LOWER     // Lower triangular fill mode
 #define CUBLAS_SIDE_RIGHT HIPBLAS_SIDE_RIGHT               // Right side operation
-#define dplasma_cublas_op dplasma_hipblas_op               // op 
+#define dplasma_cublas_op dplasma_hipblas_op               
+#define dplasma_cublas_side dplasma_hipblas_side
+#define dplasma_cublas_fill dplasma_hipblas_fill
+#define dplasma_cublas_diag dplasma_hipblas_diag
 
 /* ============================================================================
  * CUDA to HIP datatype mappings
