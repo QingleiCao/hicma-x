@@ -99,10 +99,10 @@ int main(int argc, char ** argv)
         }
 
         /* matrix generation */
-        if(loud > 2) printf("+++ Generate matrices ... ");
+        if(loud > 2 && 0 == rank) printf("+++ Generate matrices ... ");
         dplasma_dplgsy( parsec, 0., uplo, dcA, Aseed);
         dplasma_dplrnt( parsec, 0,        (parsec_tiled_matrix_t *)&dcC, Cseed);
-        if(loud > 2) printf("Done\n");
+        if(loud > 2 && 0 == rank)  printf("Done\n");
 
         /* Get norm and decisions */
         hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double");
@@ -196,10 +196,10 @@ int main(int argc, char ** argv)
             }
 
             /* matrix generation */
-            printf("Generate matrices ... ");
+            if(loud > 2 && 0 == rank) printf("Generate matrices ... ");
             dplasma_dlacpy( parsec, dplasmaUpperLower,
                     (parsec_tiled_matrix_t *)&dcC2, (parsec_tiled_matrix_t *)&dcC );
-            printf("Done\n");
+            if(loud > 2 && 0 == rank)  printf("Done\n");
 
             /* Get norm and decisions */
             hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
@@ -210,7 +210,7 @@ int main(int argc, char ** argv)
             parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
 
             /* Compute */
-            printf("Compute ... ... ");
+            if(loud > 2 && 0 == rank) printf("Compute ... ... ");
             if (hicma_parsec_trmm(parsec, side, uplo, trans, diags[d],
                         alpha, dcA, (parsec_tiled_matrix_t *)&dcC, &data, &params) != 0) {
                 if (rank == 0) {
@@ -218,7 +218,7 @@ int main(int argc, char ** argv)
                 }
                 ret |= 1;
             }
-            printf("Done\n");
+            if(loud > 2 && 0 == rank) printf("Done\n");
 
             /* Convert back to DP */
             parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 1);
@@ -301,17 +301,24 @@ static int check_solution( parsec_context_t *parsec, int loud,
     int LDA = Am;
     int LDC = M;
     int rank  = dcCfinal->super.super.myrank;
-
+    int nodes = dcCfinal->super.super.nodes;
+    int P = dcCfinal->grid.rows;
+    int Q = dcCfinal->grid.cols;
+    int KP = dcCfinal->grid.krows;
+    int KQ = dcCfinal->grid.kcols;
+    int IP = dcCfinal->grid.ip;
+    int JQ = dcCfinal->grid.jq;
+    
     eps = LAPACKE_dlamch_work('e');
 
     PASTE_CODE_ALLOCATE_MATRIX(dcA, 1,
         parsec_matrix_block_cyclic, (&dcA, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_LAPACK,
                                rank, MB, NB, LDA, An, 0, 0,
-                               Am, An, 1, 1, 1, 1, 0, 0));
+                               Am, An, P, nodes/P, KP, KQ, IP, JQ));
     PASTE_CODE_ALLOCATE_MATRIX(dcC, 1,
         parsec_matrix_block_cyclic, (&dcC, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_LAPACK,
                                rank, MB, NB, LDC, N, 0, 0,
-                               M, N, 1, 1, 1, 1, 0, 0));
+                               M, N, P, nodes/P, KP, KQ, IP, JQ));
 
     dplasma_dplgsy( parsec, 0., dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcA, Aseed);
     dplasma_dplrnt( parsec, 0, (parsec_tiled_matrix_t *)&dcC, Cseed );
@@ -320,6 +327,7 @@ static int check_solution( parsec_context_t *parsec, int loud,
     Cinitnorm    = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)&dcC );
     Cdplasmanorm = dplasma_dlange( parsec, dplasmaInfNorm, (parsec_tiled_matrix_t*)dcCfinal );
 
+#if 0
     if ( rank == 0 ) {
         cblas_dtrmm(CblasColMajor,
                     (CBLAS_SIDE)side, (CBLAS_UPLO)uplo,
@@ -328,6 +336,17 @@ static int check_solution( parsec_context_t *parsec, int loud,
                     (alpha), dcA.mat, LDA,
                                         dcC.mat, LDC );
     }
+#else
+    parsec_taskpool_t *parsec_dtrmm = NULL;
+    parsec_dtrmm = dplasma_dtrmm_New(side, uplo, trans, diag, alpha, (parsec_tiled_matrix_t*)&dcA, (parsec_tiled_matrix_t*)&dcC);
+    if ( parsec_dtrmm != NULL )
+    {
+        hicma_parsec_disable_GPU(parsec_dtrmm);
+        parsec_context_add_taskpool( parsec, (parsec_taskpool_t*)parsec_dtrmm);
+        dplasma_wait_until_completion(parsec);
+        dplasma_dtrmm_Destruct( parsec_dtrmm );
+    }
+#endif
 
     if(loud > 99) {
         dplasma_dprint(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t*)dcCfinal);
