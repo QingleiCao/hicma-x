@@ -186,7 +186,12 @@ endif(HICMA_PARSEC_HAVE_CUDA)
 if(HICMA_PARSEC_HAVE_HIP)
     set_source_files_properties(core/hicma_parsec_hip.cu PROPERTIES LANGUAGE HIP)
     set_source_files_properties(core/hicma_parsec_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
-    list(APPEND SRC core/hicma_parsec_hip.cu)
+    set_source_files_properties(core/hicma_parsec_stochastic_rounding_hip.cu PROPERTIES LANGUAGE HIP)
+    set_source_files_properties(core/hicma_parsec_stochastic_rounding_hip.cu PROPERTIES COMPILE_FLAGS "-x hip")
+    list(APPEND SRC
+        core/hicma_parsec_hip.cu
+        core/hicma_parsec_stochastic_rounding_hip.cu
+    )
     message(STATUS "Adding HIP files")
 endif(HICMA_PARSEC_HAVE_HIP)
 

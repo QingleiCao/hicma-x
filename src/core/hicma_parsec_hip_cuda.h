@@ -130,6 +130,9 @@
 #define cudaGetLastError hipGetLastError                  // Get last error from device
 #define PARSEC_CUDA_CHECK_ERROR DPLASMA_HIPBLAS_CHECK_ERROR
 
+// CUDA Func
+#define curand_uniform hiprand_uniform
+
 /* ============================================================================
  * CUDA to HIP enum value mappings
  * ============================================================================ */
