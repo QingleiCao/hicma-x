@@ -132,6 +132,7 @@
 
 // CUDA Func
 #define curand_uniform hiprand_uniform
+#define curandState hiprandState 
 
 /* ============================================================================
  * CUDA to HIP enum value mappings
