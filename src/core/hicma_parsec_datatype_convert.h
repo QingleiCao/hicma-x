@@ -1325,7 +1325,7 @@ void hicma_parsec_convert_2h_bit(hicma_parsec_params_t *params_tlr, void *A, flo
  */
 void float2half_CPU(int nrows, int ncols, const float *_source, int ld_s, void *_target, int ld_t);
 
-int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, size_t *size);
+int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size);
 
 /**
  * @brief Convert double precision to single precision on CPU

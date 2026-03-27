@@ -2,21 +2,22 @@
 #include <math.h>
 #include <stdint.h>
 
-static inline uint32_t hicma_parsec_hash_u32(uint32_t x)
+static inline uint64_t hicma_parsec_splitmix64(uint64_t x)
 {
-    x ^= x >> 16;
-    x *= 0x7feb352dU;
-    x ^= x >> 15;
-    x *= 0x846ca68bU;
-    x ^= x >> 16;
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    x ^= x >> 31;
     return x;
 }
 
 static inline float hicma_parsec_u01_from_coords(int i, int j, int ld)
 {
-    uint32_t seed = (uint32_t)i ^ ((uint32_t)j * 0x9e3779b9U) ^ ((uint32_t)ld * 0x85ebca6bU);
-    uint32_t rnd = hicma_parsec_hash_u32(seed);
-    return (float)(rnd & 0x00FFFFFFU) / 16777216.0f;
+    uint64_t seed = (uint64_t)(uint32_t)i;
+    seed ^= ((uint64_t)(uint32_t)j << 21);
+    seed ^= ((uint64_t)(uint32_t)ld << 42);
+    uint64_t rnd = hicma_parsec_splitmix64(seed);
+    return (float)((rnd >> 11) * (1.0 / 9007199254740992.0)); /* 53-bit mantissa to [0,1) */
 }
 
 static inline float hicma_parsec_next_float(float x)
@@ -59,8 +60,8 @@ static inline float hicma_parsec_stochastic_round_fp32(double value, float rando
 }
 
 void double2float_round_CPU(int nrows, int ncols,
-                      const double *D, int ldd,
-                      float *F, int ldf)
+                            const double *D, int ldd,
+                            float *F, int ldf)
 {
     for (int j = 0; j < ncols; ++j) {
         for (int i = 0; i < nrows; ++i) {
@@ -69,3 +70,4 @@ void double2float_round_CPU(int nrows, int ncols,
         }
     }
 }
+

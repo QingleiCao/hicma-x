@@ -29,6 +29,7 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
     void *B_use = B;
     void *A_d, *A_s, *B_d, *B_s;
     int NT = params_tlr->NT;
+    int enable_stochastic_rounding = params_tlr->enable_stochastic_rounding;
     uint16_t decisionA = params_tlr->decisions[((NT-1)-m)*NT+(NT-1)-m];
     uint16_t decisionB = params_tlr->decisionsB[((NT-1)-m)*NT+n];
 
@@ -62,7 +63,11 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
     } else if(DENSE_SP == decisionB) {
         if(DENSE_DP == decisionA) {
             A_s = parsec_private_memory_pop( p_work_full_sp );
-            convert_d2s_binary_CPU( A_s, A, mb, mb );
+            if(enable_stochastic_rounding) {
+                double2float_round_CPU(mb, mb, A, mb, A_s, mb);
+            } else {
+                convert_d2s_binary_CPU( A_s, A, mb, mb );
+            }
             A_use = A_s;
         }
 #if HAVE_HP_CPU
@@ -91,7 +96,11 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
     else if(DENSE_HP == decisionB) {
         if(DENSE_DP == decisionA) {
             A_s = parsec_private_memory_pop( p_work_full_sp );
-            convert_d2s_binary_CPU( A_s, A, mb, mb );
+            if(enable_stochastic_rounding) {
+                double2float_round_CPU(mb, mb, A, mb, A_s, mb);
+            } else {
+                convert_d2s_binary_CPU( A_s, A, mb, mb );
+            }
             A_use = A_s;
         }
 #if HAVE_HP_CPU
@@ -147,6 +156,7 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
     void *B_use = B;
     void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h;
     int NT = params_tlr->NT;
+    int enable_stochastic_rounding = params_tlr->enable_stochastic_rounding;
     uint16_t decisionA = params_tlr->decisions[k*NT+(NT-1)-m];
     uint16_t decisionB = params_tlr->decisionsB[n*params_tlr->NT+k];
     uint16_t decisionC = params_tlr->decisionsB[n*params_tlr->NT+(NT-1)-m];
@@ -200,7 +210,11 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
         /* Convert A to DP */
         if(DENSE_DP == decisionA) {
             A_s = parsec_private_memory_pop( p_work_full_sp );
-            convert_d2s_binary_CPU( A_s, A, mb, mb );
+            if(enable_stochastic_rounding) {
+                double2float_round_CPU(mb, mb, A, mb, A_s, mb);
+            } else {
+                convert_d2s_binary_CPU( A_s, A, mb, mb );
+            }
             A_use = A_s;
         }
 #if HAVE_HP_CPU
@@ -214,7 +228,11 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
         /* Convert B to DP */
         if(DENSE_DP == decisionB) {
             B_s = parsec_private_memory_pop( p_work_full_sp );
-            convert_d2s_binary_CPU(B_s, B, mb, mb );
+            if(enable_stochastic_rounding) {
+                double2float_round_CPU(mb, mb, B, mb, B_s, mb);
+            } else {
+                convert_d2s_binary_CPU(B_s, B, mb, mb );
+            }
             B_use = B_s;
         }
 #if HAVE_HP_CPU

@@ -83,7 +83,7 @@ BODY
 {
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
-    convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, &this_task->data._f_A.data_out->original->nb_elts);
+    convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
 }
 END
 

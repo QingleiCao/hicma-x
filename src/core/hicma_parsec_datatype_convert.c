@@ -2135,7 +2135,7 @@ void float2half_CPU( int nrows, int ncols,
 }
 
 
-int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, size_t *size) {
+int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size) {
     /* Validate input parameters */
     if (!A || !size) {
         return -1;
@@ -2146,7 +2146,11 @@ int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16
         /* Handle different conversion types with appropriate function calls */
         if (DENSE_SP == decision) {
             /* Double to Single precision conversion */
-            convert_d2s_unary_CPU((double*)A, mb, nb);
+            if(enable_stochastic_rounding) {
+                double2float_round_CPU(mb, nb, (double*)A, mb, (float*)A, mb);
+            } else {
+                convert_d2s_unary_CPU((double*)A, mb, nb);
+            }
             *size = mb * nb * sizeof(float);
         }
 #if HAVE_HP_CPU
