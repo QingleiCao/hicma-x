@@ -10,6 +10,16 @@ extern "C" %{
 
 #include "hicma_parsec.h"
 
+int random_1_2_5(void) {
+#if 1
+    uint16_t vals[3] = {1, 2, 5};
+    return vals[rand() % 3];
+#else
+    uint16_t vals[3] = {1, 2};
+    return vals[rand() % 2];
+#endif
+}
+
 %}
 
 // Input parameters for the decision making computation task
@@ -33,7 +43,16 @@ n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLo
 
 BODY
 {
+#if 0
 //new_decisions[n*descA->lmt+m] = DENSE_SP; return PARSEC_HOOK_RETURN_DONE;
+if(uplo == dplasmaUpperLower) {
+new_decisions[n*descA->lmt+m] = random_1_2_5(); return PARSEC_HOOK_RETURN_DONE;
+//new_decisions[n*descA->lmt+m] = DENSE_SP; return PARSEC_HOOK_RETURN_DONE;
+} else {
+new_decisions[n*descA->lmt+m] = random_1_2_5(); return PARSEC_HOOK_RETURN_DONE;
+//new_decisions[n*descA->lmt+m] = DENSE_DP; return PARSEC_HOOK_RETURN_DONE;
+}
+#endif
 
 //if(uplo == dplasmaUpperLower) {
 //new_decisions[n*descA->lmt+m] = DENSE_DP; return PARSEC_HOOK_RETURN_DONE;

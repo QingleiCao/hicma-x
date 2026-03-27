@@ -31,7 +31,7 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
     int NT = params_tlr->NT;
     int enable_stochastic_rounding = params_tlr->enable_stochastic_rounding;
     uint16_t decisionA = params_tlr->decisions[((NT-1)-m)*NT+(NT-1)-m];
-    uint16_t decisionB = params_tlr->decisionsB[((NT-1)-m)*NT+n];
+    uint16_t decisionB = params_tlr->decisionsB[n*NT+(NT-1)-m];
 
     /* DP */
     if(DENSE_DP == decisionB) {
@@ -103,13 +103,12 @@ void hicma_parsec_trmm_core_trmm_lln_cpu(
             }
             A_use = A_s;
         }
-#if HAVE_HP_CPU
         else if(DENSE_HP == decisionA) {
             A_s = parsec_private_memory_pop( p_work_full_sp );
             convert_h2s_binary_CPU(A_s, (__fp16 *)A, mb, mb);
             A_use = A_s;
         }
-#endif
+
         /* Convert B to SP */
         B_s = parsec_private_memory_pop( p_work_full_sp );
         convert_h2s_binary_CPU(B_s, (__fp16 *)B, mb, mb);
@@ -333,7 +332,7 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
     void *A_d, *A_s, *B_d, *B_s;
     int NT = params_tlr->NT;
     uint16_t decisionA = params_tlr->decisions[((NT-1)-m)*NT+(NT-1)-m];
-    uint16_t decisionB = params_tlr->decisionsB[((NT-1)-m)*NT+n];
+    uint16_t decisionB = params_tlr->decisionsB[n*NT+(NT-1)-m];
 
     cublasStatus_t status;
     int enable_stochastic_rounding = params_tlr->enable_stochastic_rounding;
