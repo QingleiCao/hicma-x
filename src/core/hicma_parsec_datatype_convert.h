@@ -1328,6 +1328,20 @@ void float2half_CPU(int nrows, int ncols, const float *_source, int ld_s, void *
 int convert_datatype_adaptive_unary_CPU(void *A, int mb, int nb, int lda, uint16_t decision, int convert_direction, size_t *size);
 
 /**
+ * @brief Convert double precision to single precision on CPU
+ *
+ * @param[in] nrows Number of rows
+ * @param[in] ncols Number of columns
+ * @param[in] H Input double precision matrix
+ * @param[in] ldh Leading dimension of H
+ * @param[out] F Output single precision matrix
+ * @param[in] ldf Leading dimension of F
+ */
+void double2float_round_CPU(int nrows, int ncols,
+                const double *H, int ldh,
+                float *F, int ldf);
+
+/**
  * @brief Perform datatype conversion on a dense matrix
  *
  * @param [in] parsec: The PaRSEC context

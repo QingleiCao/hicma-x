@@ -37,6 +37,7 @@ set(SRC
     core/hicma_parsec_distribution.c
     core/hicma_parsec_decision.c
     core/hicma_parsec_flat_file.c
+    core/hicma_parsec_stochastic_rounding.c
     core/hicma_parsec_datatype_convert.c
     core/hicma_parsec_io.c
     

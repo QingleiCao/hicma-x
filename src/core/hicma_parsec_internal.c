@@ -301,7 +301,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"MB", "Row tile size (required)", 0, &params->MB},
         {"NB", "Column tile size (required)", 0, &params->NB},
         {"KB", "Column tile size (required)", 0, &params->KB},
-        {"check", "Verify the results", 3, &params->check},
+        {"check", "Verify the results (requires value: 0 or 1)", 0, &params->check},
         {"verbose", "Extra verbose output: 1=normal, >1=more verbose about decisions", 0, &params->verbose},
         {"help", "Show this help message", 3, NULL},
         
@@ -337,7 +337,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"datatype_convert", "Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive", 0, &params->datatype_convert},
         {"band_size_termination", "Band size auto-tuning termination on GPU, default 3.0", 1, &params->band_size_auto_tuning_termination},
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
-        {"enable_stochastic_rounding", "Enable stochastic rounding in supported kernels", 3, &params->enable_stochastic_rounding},
+        {"enable_stochastic_rounding", "Enable stochastic rounding in supported kernels (requires value: 0 or 1)", 0, &params->enable_stochastic_rounding},
         {"nruns", "The number of runs of Cholesky", 0, &params->nruns},
         
         // Kernel parameters
@@ -399,7 +399,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         
         printf("\nSpecial options:\n");
         printf("  --help               Show this help message\n");
-        printf("  --check              Enable correctness check\n");
+        printf("  --check=0|1          Enable correctness check (0=off, 1=on)\n");
         printf("  --verbose            Set verbosity level\n");
         exit(0);
     }

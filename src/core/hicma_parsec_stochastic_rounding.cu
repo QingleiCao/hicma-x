@@ -33,7 +33,6 @@ __device__ float stochastic_rounding_fp32(double value, curandState *state) {
 
     double p_lower = d_upper / (d_lower + d_upper); // Probability of rounding down
     float random = curand_uniform(state);
-
     float rounded = (random < p_lower) ? lower : upper;
 
     return rounded;
@@ -77,13 +76,7 @@ __device__ __half stochastic_rounding_fp16(float value, curandState *state) {
 
 
 	double p_lower=d_higher/(double)(d_lower+d_higher);
-//	double p_upper=d_lower/(double)(d_lower+d_higher);
-
-
-
 	float random = curand_uniform(state);
-
-
 	double rounded = (random < p_lower) ? lower : upper;
 
 	//printf("%.7f, %.7f\n", random, p_lower);
@@ -105,15 +98,8 @@ __global__ void double2float_round_GPU_kernel( int nrows, int ncols,
 
         if( idx >= nrows || idy >= ncols ) { return; }
         curandState state;
-
-        if (idx < nrows and idy < ncols) {
-                // Initialize CURAND state
-                //curand_init(seed, idx, 0, &state);
-                const unsigned long long element_id = (unsigned long long)idy * (unsigned long long)ldf + (unsigned long long)idx;
-                curand_init(0ULL, element_id, 0ULL, &state);
-        }
-
-
+        const unsigned long long element_id = (unsigned long long)idy * (unsigned long long)ldf + (unsigned long long)idx;
+        curand_init(0ULL, element_id, 0ULL, &state);
         F[idy*ldf+idx]= stochastic_rounding_fp32( D[idy*ldh+idx], &state); //__double2float_rn( D[idy*ldh+idx] ); 
 	//printf("D %d %d : %d %d : %lf\n", idx, idy, nrows, ncols, D[idy*ldh+idx]);
 	//printf("F %d %d : %d %d : %f\n", idx, idy, nrows, ncols, F[idy*ldh+idx]);
@@ -143,14 +129,9 @@ __global__ void float2half_round_GPU_kernel( int nrows, int ncols,
         const int idy= blockIdx.y * blockDim.y + ty;
 
         if( idx >= nrows || idy >= ncols ) { return; }
-        curandState state;  
-	if (idx < nrows and idy < ncols) {
-		// Initialize CURAND state
-		//curand_init(seed, idx, 0, &state);
-		const unsigned long long element_id = (unsigned long long)idy * (unsigned long long)ldh + (unsigned long long)idx;
-		curand_init(0ULL, element_id, 0ULL, &state);
-	}
-
+        curandState state;
+        const unsigned long long element_id = (unsigned long long)idy * (unsigned long long)ldh + (unsigned long long)idx;
+        curand_init(0ULL, element_id, 0ULL, &state);
         H[idy*ldh+idx]= stochastic_rounding_fp16( F[idy*ldf+idx], &state);
 }
 
@@ -177,14 +158,9 @@ __global__ void double2half_round_GPU_kernel( int nrows, int ncols,
         const int idy= blockIdx.y * blockDim.y + ty;
 
         if( idx >= nrows || idy >= ncols ) { return; }
-        curandState state;  
-	if (idx < nrows and idy < ncols) {
-		// Initialize CURAND state
-		//curand_init(seed, idx, 0, &state);
-		const unsigned long long element_id = (unsigned long long)idy * (unsigned long long)ldh + (unsigned long long)idx;
-		curand_init(0ULL, element_id, 0ULL, &state);
-	}
-
+        curandState state;
+        const unsigned long long element_id = (unsigned long long)idy * (unsigned long long)ldh + (unsigned long long)idx;
+        curand_init(0ULL, element_id, 0ULL, &state);
         H[idy*ldh+idx]= stochastic_rounding_fp16( (float)F[idy*ldf+idx], &state);
 }
 
