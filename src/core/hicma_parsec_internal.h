@@ -559,6 +559,7 @@ typedef struct hicma_parsec_params_s {
     int sparse;               /**< Enable sparse matrix handling */
     int adaptive_maxrank;     /**< Enable adaptive maxrank adjustment */
     int left_looking;         /**< Use left-looking algorithm */
+    int enable_stochastic_rounding; /**< Enable stochastic rounding kernels when available */
     int nruns;                /**< Number of benchmark runs */
     
     /* ========================================================================

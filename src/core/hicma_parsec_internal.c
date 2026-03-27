@@ -337,6 +337,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"datatype_convert", "Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive", 0, &params->datatype_convert},
         {"band_size_termination", "Band size auto-tuning termination on GPU, default 3.0", 1, &params->band_size_auto_tuning_termination},
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
+        {"enable_stochastic_rounding", "Enable stochastic rounding in supported kernels", 3, &params->enable_stochastic_rounding},
         {"nruns", "The number of runs of Cholesky", 0, &params->nruns},
         
         // Kernel parameters
@@ -604,6 +605,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Validation and execution settings - control testing and execution
     params->check = 0;                      // Disable correctness checking (0=disabled, 1=enabled)
     params->left_looking = 0;               // Disable left-looking Cholesky (0=right-looking, 1=left-looking)
+    params->enable_stochastic_rounding = 0; // Disable stochastic rounding by default
     params->nruns = 1;                      // Number of execution runs (for performance measurement) 
 
     /* ===========================================
@@ -1287,7 +1289,9 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
         printf("band_size_dist= %d band_size_dense_dp:%d band_size_dense_sp:%d band_size_dense_hp: %d band_size_dense: %d band_size_low_rank_dp:%d NT= %d band_p= %d\n", params->band_size_dist, params->band_size_dense_dp, params->band_size_dense_sp, params->band_size_dense_hp, params->band_size_dense, params->band_size_low_rank_dp, params->NT, params->band_p);
         printf("band_size_auto_tuning_termination= %lf band_size_dense_gpu_memory_max= %d exe_file_path= %s\n", params->band_size_auto_tuning_termination, params->band_size_dense_gpu_memory_max, params->exe_file_path);
         printf("max_rank=%d gen=%d comp=%d\n", params->maxrank, params->genmaxrank, params->compmaxrank);
-        printf("auto_band=%d sparse=%d kind_of_cholesky=%d tensor_gemm=%d datatype_convert=%d left_looking=%d\n", params->auto_band, params->sparse, params->kind_of_cholesky, params->tensor_gemm, params->datatype_convert, params->left_looking);
+        printf("auto_band=%d sparse=%d kind_of_cholesky=%d tensor_gemm=%d datatype_convert=%d left_looking=%d stochastic_rounding=%d\n",
+               params->auto_band, params->sparse, params->kind_of_cholesky, params->tensor_gemm,
+               params->datatype_convert, params->left_looking, params->enable_stochastic_rounding);
         if( 6 == params->kind_of_problem) printf("mesh_file=%s, rbf_kernel=%d, numobj=%d, order=%d, radius=%f, density=%f\n", params->mesh_file, params->rbf_kernel, params->numobj, params->order, params->radius, params->density);
         printf("time_slots=%d sigma=%lf beta=%lf nu=%lf beta_time=%lf nu_time=%lf nonsep_param=%lf noise= %lf\n", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
         printf("numobj/L= %d gpu_rows= %d gpu_cols= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols);
