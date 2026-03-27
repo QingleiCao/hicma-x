@@ -169,11 +169,15 @@ if(HICMA_PARSEC_HAVE_CUDA)
     if(ENABLE_CUTLASS)
         list(APPEND SRC 
             core/hicma_parsec.cu 
+            core/hicma_parsec_round.cu
             core/hamming_distance.cu
         )
         message(STATUS "Adding CUDA files with CUTLASS support")
     else(ENABLE_CUTLASS)
-        list(APPEND SRC core/hicma_parsec.cu)
+        list(APPEND SRC
+            core/hicma_parsec.cu
+            core/hicma_parsec_round.cu
+        )
         message(STATUS "Adding CUDA files")
     endif(ENABLE_CUTLASS)
 endif(HICMA_PARSEC_HAVE_CUDA)
