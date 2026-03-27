@@ -2,6 +2,7 @@
 #include <cuda_fp16.h>
 #include <curand_kernel.h>
 #include <math.h>
+#include <stdio.h>
 
 #define CHUNKSIZE 32
 
@@ -128,10 +129,7 @@ void double2float_round_GPU( int nrows, int ncols,
         int nBlocky= (ncols+CHUNKSIZE-1)/CHUNKSIZE;
         dim3 dimBlock(CHUNKSIZE,CHUNKSIZE);
         dim3 dimGrid(nBlockx, nBlocky);
-
-         curandState state;
         double2float_round_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, D, ldh, F, ldf);
-
 }
 
 

@@ -1352,7 +1352,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
         parsec_gpu_task_t *gpu_task,
         parsec_cuda_exec_stream_t *cuda_stream,
         void *A, int mb, int nb, int lda,
-        uint16_t decision, int convert_direction, size_t *size);
+        uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size);
 #endif
 
 

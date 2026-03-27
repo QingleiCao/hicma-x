@@ -23,6 +23,7 @@ uplo          [ type = "dplasma_enum_t" ]        // Upper/lower triangular speci
 descA         [ type = "parsec_tiled_matrix_t *" ] // Matrix descriptor for input/output matrix
 decisions     [type = "uint16_t *"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
 convert_direction [type = "int"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
+enable_stochastic_rounding [type = "int"]          // Enable stochastic rounding for down-conversion paths
 
 /* GPU-related variables */
 ws_gpu       [ type = "void *" hidden = on default = NULL ]  /* GPU workspace memory */
@@ -57,12 +58,23 @@ n = %{ return (uplo == dplasmaUpper) ? m : 0; %} .. %{ return (uplo == dplasmaLo
 RW A <- descA(m, n)    
      -> descA(m, n)
 
+
 BODY [ type = CUDA ]
 {
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
     //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
-    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, &this_task->data._f_A.data_out->original->nb_elts);
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
+    //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
+}
+END
+
+BODY [ type = HIP ]
+{
+    // Perform the datatype conversion on the tile
+    // This function handles the actual conversion logic based on decisions
+    //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
     //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
 }
 END
@@ -107,7 +119,7 @@ parsec_datatype_convert_dense_adaptive_New(hicma_parsec_data_t *data,
 #endif
     
     // Create the taskpool for datatype conversion
-    datatype_convert_dense_adaptive_taskpool = parsec_datatype_convert_dense_adaptive_new(uplo, A, decisions, convert_direction);
+    datatype_convert_dense_adaptive_taskpool = parsec_datatype_convert_dense_adaptive_new(uplo, A, decisions, convert_direction, params->enable_stochastic_rounding);
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     // Configure GPU workspace and device information
@@ -133,6 +145,20 @@ parsec_datatype_convert_dense_adaptive_New(hicma_parsec_data_t *data,
 void parsec_datatype_convert_dense_adaptive_Destruct(parsec_taskpool_t *taskpool)
 {
     parsec_datatype_convert_dense_adaptive_taskpool_t *datatype_convert_dense_adaptive_taskpool = (parsec_datatype_convert_dense_adaptive_taskpool_t *)taskpool;
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Clean up GPU resources if devices were used */
+    if( datatype_convert_dense_adaptive_taskpool->_g_nb_cuda_devices > 0 ) {
+#if !GPU_BUFFER_ONCE 
+        /* Free GPU workspace memory if not managed globally */
+        workspace_memory_free( datatype_convert_dense_adaptive_taskpool->_g_ws_gpu );
+#endif
+
+        /* Free GPU device index array */
+        if( NULL != datatype_convert_dense_adaptive_taskpool->_g_cuda_device_index )
+            free(datatype_convert_dense_adaptive_taskpool->_g_cuda_device_index);
+    }
+#endif
     
     // Remove the arena for double precision data type
     parsec_del2arena(&datatype_convert_dense_adaptive_taskpool->arenas_datatypes[PARSEC_datatype_convert_dense_adaptive_DEFAULT_ADT_IDX]);

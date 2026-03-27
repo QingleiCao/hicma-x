@@ -318,6 +318,7 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
     uint16_t decisionB = params_tlr->decisionsB[((NT-1)-m)*NT+n];
 
     cublasStatus_t status;
+    int enable_stochastic_rounding = params_tlr->enable_stochastic_rounding;
 
     /* Find workspace */
     parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
@@ -361,7 +362,11 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
     } else if(DENSE_SP == decisionB) {
         /* Convert A to SP */
         if(DENSE_DP == decisionA) {
-            double2float_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                double2float_round_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            } else {
+                double2float_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            }
             A_use = A_s;
         }
         else if(DENSE_HP == decisionA) {
@@ -385,7 +390,11 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
     else if(DENSE_HP == decisionB) {
         /* Convert A to SP */
         if(DENSE_DP == decisionA) {
-            double2float_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                double2float_round_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            } else {
+                double2float_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            }
             A_use = A_s;
         }
         else if(DENSE_HP == decisionA) {
@@ -410,7 +419,11 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
         PARSEC_CUDA_CHECK_ERROR( "cublasStrmm in HP", status, {exit(PARSEC_HOOK_RETURN_ERROR);} );
 
         /* Convert to HP, as GEMM may use in HP */
-        float2half_GPU(mb, mb, B_s, mb, B, mb, cuda_stream->cuda_stream);
+        if(enable_stochastic_rounding) {
+            float2half_round_GPU(mb, mb, B_s, mb, B, mb, cuda_stream->cuda_stream);
+        } else {
+            float2half_GPU(mb, mb, B_s, mb, B, mb, cuda_stream->cuda_stream);
+        }
     }
     else {
         fprintf(stderr, "hicma_parsec_trmm_core_gemm_lln_cpu: decisionC is wrong!\n");
@@ -441,6 +454,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
     uint16_t decisionA = params_tlr->decisions[k*NT+(NT-1)-m];
     uint16_t decisionB = params_tlr->decisionsB[n*params_tlr->NT+k];
     uint16_t decisionC = params_tlr->decisionsB[n*params_tlr->NT+(NT-1)-m];
+    int enable_stochastic_rounding = params_tlr->enable_stochastic_rounding;
     cublasStatus_t status;
 
     /* Find workspace */
@@ -493,7 +507,11 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
     } else if(DENSE_SP == decisionC) {
         /* Convert A to SP */
         if(DENSE_DP == decisionA) {
-            double2float_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                double2float_round_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            } else {
+                double2float_GPU(mb, mb, A, mb, A_s, mb, cuda_stream->cuda_stream);
+            }
             A_use = A_s;
         }
         else if(DENSE_HP == decisionA) {
@@ -503,7 +521,11 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
 
         /* Convert B to SP */
         if(DENSE_DP == decisionB) {
-            double2float_GPU(mb, mb, B, mb, B_s, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                double2float_round_GPU(mb, mb, B, mb, B_s, mb, cuda_stream->cuda_stream);
+            } else {
+                double2float_GPU(mb, mb, B, mb, B_s, mb, cuda_stream->cuda_stream);
+            }
             B_use = B_s;
         }
         else if(DENSE_HP == decisionB) {
@@ -526,21 +548,37 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
     else if(DENSE_HP == decisionC) {
         /* Convert A to HP */
         if(DENSE_DP == decisionA) {
-            double2half_GPU(mb, mb, A, mb, A_h, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                double2half_round_GPU(mb, mb, A, mb, A_h, mb, cuda_stream->cuda_stream);
+            } else {
+                double2half_GPU(mb, mb, A, mb, A_h, mb, cuda_stream->cuda_stream);
+            }
             A_use = A_h;
         }
         else if(DENSE_SP == decisionA) {
-            float2half_GPU(mb, mb, A, mb, A_h, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                float2half_round_GPU(mb, mb, A, mb, A_h, mb, cuda_stream->cuda_stream);
+            } else {
+                float2half_GPU(mb, mb, A, mb, A_h, mb, cuda_stream->cuda_stream);
+            }
             A_use = A_h;
         }
 
         /* Convert B to HP */
         if(DENSE_DP == decisionB) {
-            double2half_GPU(mb, mb, B, mb, B_h, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                double2half_round_GPU(mb, mb, B, mb, B_h, mb, cuda_stream->cuda_stream);
+            } else {
+                double2half_GPU(mb, mb, B, mb, B_h, mb, cuda_stream->cuda_stream);
+            }
             B_use = B_h;
         }
         else if(DENSE_SP == decisionB) {
-            float2half_GPU(mb, mb, B, mb, B_h, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                float2half_round_GPU(mb, mb, B, mb, B_h, mb, cuda_stream->cuda_stream);
+            } else {
+                float2half_GPU(mb, mb, B, mb, B_h, mb, cuda_stream->cuda_stream);
+            }
             B_use = B_h;
         }
 

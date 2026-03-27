@@ -2204,7 +2204,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
         parsec_gpu_task_t *gpu_task,
         parsec_cuda_exec_stream_t *cuda_stream,
         void *A, int mb, int nb, int lda,
-        uint16_t decision, int convert_direction, size_t *size) {
+        uint16_t decision, int convert_direction, int enable_stochastic_rounding, size_t *size) {
 
     /* Validate input parameters */
     if (!A || !size) {
@@ -2222,12 +2222,20 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
     if(0 == convert_direction) {
         /* Handle different conversion types with appropriate function calls */
         if (DENSE_SP == decision) {
-            double2float_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                double2float_round_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            } else {
+                double2float_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            }
             memcpy_float_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
             *size = mb * nb * sizeof(float);
         } 
         else if (DENSE_HP == decision) { 
-            double2half_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            if(enable_stochastic_rounding) {
+                double2half_round_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            } else {
+                double2half_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
+            }
             memcpy_half_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
             *size = mb * nb * sizeof(float) / 2;
         }
