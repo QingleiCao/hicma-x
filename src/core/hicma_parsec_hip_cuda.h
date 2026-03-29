@@ -75,6 +75,8 @@
 #define cublasZgemv hipblasZgemv    // Complex double precision matrix-vector multiplication
 #define cublasZdotu hipblasZdotu    // Complex double precision dot product (unconjugated)
 #define cublasDaxpy hipblasDaxpy    // Double precision axpy operation
+#define cublasDtrmm hipblasDtrmm
+#define cublasStrmm hipblasStrmm 
 
 /* ============================================================================
  * CUDA to HIP type mappings
@@ -100,6 +102,9 @@
 #define cudaGetDevice hipGetDevice                        // Get current active device
 #define cudaGetDeviceProperties hipGetDeviceProperties    // Get device properties
 #define cudaSetDevice hipSetDevice                        // Set active device
+#define cudaHostRegister hipHostRegister
+#define cudaHostUnregister hipHostUnregister
+#define cudaHostRegisterDefault hipHostRegisterDefault
 
 // Event synchronization functions
 #define cudaEventCreate hipEventCreate                    // Create event object
@@ -133,6 +138,7 @@
 // CUDA Func
 #define curand_uniform hiprand_uniform
 #define curandState hiprandState 
+#define curand_init hiprand_init
 
 /* ============================================================================
  * CUDA to HIP enum value mappings

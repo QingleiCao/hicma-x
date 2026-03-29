@@ -690,28 +690,28 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
 
     // Matrix size M defaults to N if not specified
     if( params->M <= 0 ) {
-        if( 0 == params->rank & params->verbose )
+        if( 0 == params->rank && params->verbose )
             fprintf(stderr, "Matrix size (M) is not set; Automatically set to N!\n");
         params->M = params->N;
     }
 
     // Matrix size K defaults to N if not specified
     if( params->K <= 0 ) {
-        if( 0 == params->rank & params->verbose )
+        if( 0 == params->rank && params->verbose )
             fprintf(stderr, "Matrix size (K) is not set; Automatically set to N!\n");
         params->K = params->N;
     }
 
     // Matrix size M defaults to N if not specified
     if( params->MB <= 0 ) {
-        if( 0 == params->rank & params->verbose )
+        if( 0 == params->rank && params->verbose )
             fprintf(stderr, "Tile size (MB) is not set; Automatically set to NB!\n");
         params->MB = params->NB;
     }
 
     // Matrix size M defaults to N if not specified
     if( params->KB <= 0 ) {
-        if( 0 == params->rank & params->verbose )
+        if( 0 == params->rank && params->verbose )
             fprintf(stderr, "Tile size (KB) is not set; Automatically set to NB!\n");
         params->KB = params->NB;
     }
