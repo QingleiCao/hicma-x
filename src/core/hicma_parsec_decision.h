@@ -310,7 +310,7 @@ void hicma_parsec_decisions_gemm_gpu_init(hicma_parsec_params_t *params);
  * 
  * @param[in] params HICMA PaRSEC parameters
  */
-void print_decisions(hicma_parsec_params_t *params, uint16_t *decisions, int uplo);
+void print_decisions(hicma_parsec_params_t *params, uint16_t *decisions, int uplo, int m, int n);
 
 /**
  * @brief Print convert type decisions

@@ -157,8 +157,8 @@ void hicma_parsec_trmm_core_gemm_lln_cpu(
     int NT = params_tlr->NT;
     int enable_stochastic_rounding = params_tlr->enable_stochastic_rounding;
     uint16_t decisionA = params_tlr->decisions[k*NT+(NT-1)-m];
-    uint16_t decisionB = params_tlr->decisionsB[n*params_tlr->NT+k];
-    uint16_t decisionC = params_tlr->decisionsB[n*params_tlr->NT+(NT-1)-m];
+    uint16_t decisionB = params_tlr->decisionsB[n*NT+k];
+    uint16_t decisionC = params_tlr->decisionsB[n*NT+(NT-1)-m];
 
     /* DP */
     if(DENSE_DP == decisionC) {
@@ -469,8 +469,8 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
     void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h;
     int NT = params_tlr->NT;
     uint16_t decisionA = params_tlr->decisions[k*NT+(NT-1)-m];
-    uint16_t decisionB = params_tlr->decisionsB[n*params_tlr->NT+k];
-    uint16_t decisionC = params_tlr->decisionsB[n*params_tlr->NT+(NT-1)-m];
+    uint16_t decisionB = params_tlr->decisionsB[n*NT+k];
+    uint16_t decisionC = params_tlr->decisionsB[n*NT+(NT-1)-m];
     int enable_stochastic_rounding = params_tlr->enable_stochastic_rounding;
     cublasStatus_t status;
 

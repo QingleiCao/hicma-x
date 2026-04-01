@@ -716,6 +716,9 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
         params->KB = params->NB;
     }
 
+    assert(params->MB == params->NB);
+    assert(params->MB == params->KB);
+
     /* Diagonal Regularization Setup */
     // Set diagonal regularization to matrix size if not specified (for numerical stability)
     if( params->add_diag < 0.0 )
@@ -1128,12 +1131,16 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Precision decision arrays for different matrices
     params->decisions = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));      // Main matrix decisions
-    params->decisionsB = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));      // Main matrix decisions
+    params->decisionsB = (uint16_t *)calloc(params->NT * params->KT, sizeof(uint16_t));      // Main matrix decisions
     // Set to DENSE_DP by default
-    for(int i = 0; i < params->MT; i++) {
-        for(int j = 0; j < params->NT; j++) {
-            params->decisions[i*params->NT+j] = DENSE_DP;
-            params->decisionsB[i*params->NT+j] = DENSE_DP;
+    for(int j = 0; j < params->NT; j++) {
+        for(int i = 0; i < params->NT; i++) {
+            params->decisions[j*params->NT+i] = DENSE_DP;
+        }
+    }
+    for(int j = 0; j < params->KT; j++) {
+        for(int i = 0; i < params->NT; i++) {
+            params->decisionsB[j*params->NT+i] = DENSE_DP;
         }
     }
 
@@ -1149,7 +1156,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Norm tracking for each tile
     params->norm_tile = (double *)calloc( params->MT * params->NT, sizeof(double) );        // Main matrix norms
-    params->norm_tileB = (double *)calloc( params->MT * params->NT, sizeof(double) );        // Main matrix norms
+    params->norm_tileB = (double *)calloc( params->NT * params->KT, sizeof(double) );        // Main matrix norms
 
     /* ===========================================
      * Initialize problem type strings
@@ -1281,7 +1288,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
 {
     // Only print on rank 0 to avoid duplicate output in parallel execution
     if( 0 == params->rank ) {
-        printf("\nM=%d N=%d MB=%d NB=%d HNB=%d HNB=%d\n", params->M, params->N, params->MB, params->NB, params->HNB, params->HNB);
+        printf("\nM=%d N=%d K=%d MB=%d NB=%d KB= %d HNB=%d HNB=%d\n", params->M, params->N, params->K, params->MB, params->NB, params->KB, params->HNB, params->HNB);
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
         printf("kind_of_problem=%d %s\n", params->kind_of_problem, params->str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
@@ -2325,7 +2332,7 @@ int hicma_parsec_band_size_dense_auto_tuning( parsec_context_t *parsec,
         }
 
         if( params->verbose > 9 ) {
-            print_decisions( params, params->decisions, params->uplo );
+            print_decisions( params, params->decisions, params->uplo, params->NT, params->NT );
         }
     }
 

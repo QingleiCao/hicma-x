@@ -56,7 +56,7 @@ void  hicma_parsec_decisions_update( parsec_context_t *parsec,
     params->time_decision_sender = sync_time_elapsed;
 
     if( params->verbose > 9 ) {
-        print_decisions( params, params->decisions, params->uplo );
+        print_decisions( params, params->decisions, params->uplo, params->NT, params->NT );
         print_decisions_send( params );
         print_decisions_gemm_gpu( params );
     }
@@ -120,7 +120,7 @@ int hicma_parsec_decision_init( hicma_parsec_params_t *params )
     }
 
     if( params->verbose > 9 ) {
-        print_decisions( params, params->decisions, params->uplo );
+        print_decisions( params, params->decisions, params->uplo, params->NT, params->NT );
     }
 
     return 0;
@@ -140,29 +140,30 @@ int hicma_parsec_decision_init( hicma_parsec_params_t *params )
  *
  * @param[in] params HICMA PaRSEC parameters
  */
-void print_decisions( hicma_parsec_params_t *params, uint16_t *decisions, int uplo) {
+void print_decisions( hicma_parsec_params_t *params, uint16_t *decisions, int uplo, int m, int n) {
     sleep(1);
     fflush(stdout);
+    int NT = m;
 
     /* Print decisions */
     if( 0 == params->rank ) {
         fprintf(stderr, "\ndecisions: DENSE_DP= %d DENSE_SP= %d LOW_RANK_DP= %d LOW_RANK_SP= %d DENSE_HP= %d DENSE_FP8= %d\n",
                 DENSE_DP, DENSE_SP, LOW_RANK_DP, LOW_RANK_SP, DENSE_HP, DENSE_FP8);
         if( uplo == dplasmaLower ) {
-            for(int i = 0; i < params->MT; i++) {
+            for(int i = 0; i < m; i++) {
                 for(int j = 0; j <= i; j++) {
-                    if( DENSE_DP == decisions[j*params->NT+i] )
-                        fprintf(stderr, RED "%2u " RESET, decisions[j*params->NT+i]);
-                    else if( DENSE_SP == decisions[j*params->NT+i] )
-                        fprintf(stderr, BLU "%2u " RESET, decisions[j*params->NT+i]);
-                    else if( LOW_RANK_DP == decisions[j*params->NT+i] )
-                        fprintf(stderr, PUR "%2u " RESET, decisions[j*params->NT+i]);
-                    else if( LOW_RANK_SP == decisions[j*params->NT+i] )
-                        fprintf(stderr, YEL "%2u " RESET, decisions[j*params->NT+i]);
-                    else if( DENSE_HP == decisions[j*params->NT+i] )
-                        fprintf(stderr, GRN "%2u " RESET, decisions[j*params->NT+i]);
-                    else if( DENSE_FP8 == decisions[j*params->NT+i] )
-                        fprintf(stderr, CYN"%2u " RESET, decisions[j*params->NT+i]);
+                    if( DENSE_DP == decisions[j*NT+i] )
+                        fprintf(stderr, RED "%2u " RESET, decisions[j*NT+i]);
+                    else if( DENSE_SP == decisions[j*NT+i] )
+                        fprintf(stderr, BLU "%2u " RESET, decisions[j*NT+i]);
+                    else if( LOW_RANK_DP == decisions[j*NT+i] )
+                        fprintf(stderr, PUR "%2u " RESET, decisions[j*NT+i]);
+                    else if( LOW_RANK_SP == decisions[j*NT+i] )
+                        fprintf(stderr, YEL "%2u " RESET, decisions[j*NT+i]);
+                    else if( DENSE_HP == decisions[j*NT+i] )
+                        fprintf(stderr, GRN "%2u " RESET, decisions[j*NT+i]);
+                    else if( DENSE_FP8 == decisions[j*NT+i] )
+                        fprintf(stderr, CYN"%2u " RESET, decisions[j*NT+i]);
                     else
                         fprintf(stderr, WHT"E" RESET);
                 }
@@ -170,20 +171,20 @@ void print_decisions( hicma_parsec_params_t *params, uint16_t *decisions, int up
             }
             fprintf(stderr, "\n");
         } else if(uplo == dplasmaUpperLower) {
-            for(int i = 0; i < params->MT; i++) {
-                for(int j = 0; j < params->NT; j++) {
-                    if( DENSE_DP == decisions[j*params->NT+i] )
-                        fprintf(stderr, RED "%2d " RESET, decisions[j*params->NT+i]);
-                    else if( DENSE_SP == decisions[j*params->NT+i] )
-                        fprintf(stderr, BLU "%2d " RESET, decisions[j*params->NT+i]);
-                    else if( LOW_RANK_DP == decisions[j*params->NT+i] )
-                        fprintf(stderr, PUR "%2d " RESET, decisions[j*params->NT+i]);
-                    else if( LOW_RANK_SP == decisions[j*params->NT+i] )
-                        fprintf(stderr, YEL "%2d " RESET, decisions[j*params->NT+i]);
-                    else if( DENSE_HP == decisions[j*params->NT+i] )
-                        fprintf(stderr, GRN "%2d " RESET, decisions[j*params->NT+i]);
-                    else if( DENSE_FP8 == decisions[j*params->NT+i] )
-                        fprintf(stderr, CYN"%2d " RESET, decisions[j*params->NT+i]);
+            for(int i = 0; i < m; i++) {
+                for(int j = 0; j < n; j++) {
+                    if( DENSE_DP == decisions[j*NT+i] )
+                        fprintf(stderr, RED "%2d " RESET, decisions[j*NT+i]);
+                    else if( DENSE_SP == decisions[j*NT+i] )
+                        fprintf(stderr, BLU "%2d " RESET, decisions[j*NT+i]);
+                    else if( LOW_RANK_DP == decisions[j*NT+i] )
+                        fprintf(stderr, PUR "%2d " RESET, decisions[j*NT+i]);
+                    else if( LOW_RANK_SP == decisions[j*NT+i] )
+                        fprintf(stderr, YEL "%2d " RESET, decisions[j*NT+i]);
+                    else if( DENSE_HP == decisions[j*NT+i] )
+                        fprintf(stderr, GRN "%2d " RESET, decisions[j*NT+i]);
+                    else if( DENSE_FP8 == decisions[j*NT+i] )
+                        fprintf(stderr, CYN"%2d " RESET, decisions[j*NT+i]);
                     else
                         fprintf(stderr, WHT"E" RESET);
                 }

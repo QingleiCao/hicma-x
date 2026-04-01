@@ -527,8 +527,8 @@ typedef struct hicma_parsec_params_s {
      * ======================================================================== */
     int M;                    /**< Number of rows in the matrix */
     int N;                    /**< Number of columns in the matrix */
-    int K;                    /**< K dimension for GEMM operations */
-    int MB;                   /**< Number of rows in a tile */
+    int K;                    /**< K dimension for GEMM operations, also N of B in TRMM */
+    int MB;                   /**< Number of rows in a tile, right now MB = NB = KB */
     int NB;                   /**< Number of columns in a tile */
     int KB;                   /**< Number of K rows in a tile */
     int NP;                   /**< Number of processes */
@@ -536,7 +536,7 @@ typedef struct hicma_parsec_params_s {
     int HNB;                  /**< Small NB for recursive H-DAGs */
     int MT;                   /**< Number of tiles in row dimension */
     int NT;                   /**< Number of tiles in column dimension */
-    int KT;                   /**< Number of tiles in K dimension */
+    int KT;                   /**< Number of tiles in K dimension, also the column dimension in B of TRMM */
     int RHS;                  /**< Right hand side vector size */
     
     /* ========================================================================

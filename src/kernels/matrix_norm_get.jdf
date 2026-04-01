@@ -182,7 +182,7 @@ double hicma_parsec_matrix_norm_get( parsec_context_t *parsec,
 
     /* Initialize norm storage arrays */
     *norm_global = 0.0;
-    memset( norm_tile, 0, params_tlr->MT * params_tlr->NT * sizeof(double) );
+    memset( norm_tile, 0, A->lmt * A->lnt * sizeof(double) );
 
     // Create and execute the norm computation taskpool
     parsec_matrix_norm_get = hicma_parsec_matrix_norm_get_New( parsec, uplo, A, params_tlr, norm_tile, datatype_str, norm_tmp ); 
@@ -200,7 +200,7 @@ double hicma_parsec_matrix_norm_get( parsec_context_t *parsec,
 
     /* Perform MPI reduction to get global norm across all processes */
     // Reduce per-tile norms (for analysis/debugging)
-    MPI_Allreduce(MPI_IN_PLACE, norm_tile, params_tlr->NT * params_tlr->NT, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, norm_tile, A->lmt * A->lnt, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     // Reduce global norm
     MPI_Allreduce(&norm_process, norm_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     *norm_global = sqrt(*norm_global);

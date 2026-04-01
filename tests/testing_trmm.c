@@ -44,8 +44,10 @@ int main(int argc, char ** argv)
 
     int M = params.M;
     int N = params.N;
+    int K = params.K;
     int MB = params.MB;
     int NB = params.NB;
+    int KB = params.KB;
     int nodes = params.nodes;
     int rank = params.rank;
     int P = params.P;
@@ -60,6 +62,9 @@ int main(int argc, char ** argv)
     int loud = params.verbose;
     int gpus = params.gpus;
 
+    assert(MB == NB);
+    assert(MB == KB);
+
     /* initializing matrix structure */
     int Am = max(M, N);
     int LDA = Am;
@@ -72,8 +77,8 @@ int main(int argc, char ** argv)
                                Am, Am, P, nodes/P, KP, KQ, IP, JQ));
     PASTE_CODE_ALLOCATE_MATRIX(dcC, 1,
         parsec_matrix_block_cyclic, (&dcC, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
-                               rank, MB, NB, LDC, N, 0, 0,
-                               M, N, P, nodes/P, KP, KQ, IP, JQ));
+                               rank, MB, KB, LDC, K, 0, 0,
+                               M, K, P, nodes/P, KP, KQ, IP, JQ));
 
     /* Allocate memory for GPU workspace */
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
@@ -104,21 +109,38 @@ int main(int argc, char ** argv)
         dplasma_dplrnt( parsec, 0,        (parsec_tiled_matrix_t *)&dcC, Cseed);
         if(loud > 2 && 0 == rank)  printf("Done\n");
 
-        /* Get norm and decisions */
-        hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double");
-        //printf("norm_global %lf\n", params.norm_global);
-        hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions);
-        parsec_datatype_convert_dense_adaptive(parsec, &data, &params, params.uplo, dcA, params.decisions, 0);
+        if( params.adaptive_decision ) {
+            /* Get norm and decisions */
+            SYNC_TIME_START();
+            hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double");
+            SYNC_TIME_PRINT(params.rank, ("hicma_parsec_matrix_norm_get: uplo= %d norm_global %lf\n", params.uplo, params.norm_global));
 
-        hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
-                &params, params.norm_tileB, &params.norm_globalB, "double");
-        hicma_parsec_decision_make_comp(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
-                &params, params.norm_tileB, params.norm_globalB, params.decisionsB);
-        parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
+            SYNC_TIME_START();
+            hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions);
+            SYNC_TIME_PRINT(params.rank, ("hicma_parsec_decision_make_comp: uplo= %d norm_global %lf\n", params.uplo, params.norm_global));
+
+            SYNC_TIME_START();
+            parsec_datatype_convert_dense_adaptive(parsec, &data, &params, params.uplo, dcA, params.decisions, 0);
+            SYNC_TIME_PRINT(params.rank, ("parsec_datatype_convert_dense_adaptive 0: uplo= %d norm_global %lf\n", params.uplo, params.norm_global));
+
+            SYNC_TIME_START();
+            hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                    &params, params.norm_tileB, &params.norm_globalB, "double");
+            SYNC_TIME_PRINT(params.rank, ("hicma_parsec_matrix_norm_get: uplo= %d norm_global %lf\n", dplasmaUpperLower, params.norm_globalB));
+
+            SYNC_TIME_START();
+            hicma_parsec_decision_make_comp(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                    &params, params.norm_tileB, params.norm_globalB, params.decisionsB);
+            SYNC_TIME_PRINT(params.rank, ("hicma_parsec_decision_make_comp: uplo= %d norm_global %lf\n", dplasmaUpperLower, params.norm_globalB));
+
+            SYNC_TIME_START();
+            parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
+            SYNC_TIME_PRINT(params.rank, ("parsec_datatype_convert_dense_adaptive 0: uplo= %d norm_global %lf\n", dplasmaUpperLower, params.norm_globalB));
+        }
 
         if(params.verbose > 9) {
-            print_decisions(&params, params.decisions, params.uplo);
-            print_decisions(&params, params.decisionsB, dplasmaUpperLower);
+            print_decisions(&params, params.decisions, params.uplo, params.NT, params.NT);
+            print_decisions(&params, params.decisionsB, dplasmaUpperLower, params.NT, params.KT);
         }
 
         int t, d;
@@ -164,8 +186,8 @@ int main(int argc, char ** argv)
 
         PASTE_CODE_ALLOCATE_MATRIX(dcC2, 1,
             parsec_matrix_block_cyclic, (&dcC2, PARSEC_MATRIX_DOUBLE, PARSEC_MATRIX_TILE,
-                                   rank, MB, NB, LDC, N, 0, 0,
-                                   M, N, P, nodes/P, KP, KQ, IP, JQ));
+                                   rank, MB, NB, LDC, K, 0, 0,
+                                   M, K, P, nodes/P, KP, KQ, IP, JQ));
 
         dplasma_dplrnt( parsec, 0, (parsec_tiled_matrix_t *)&dcC2, Cseed);
 
@@ -182,11 +204,21 @@ int main(int argc, char ** argv)
         dplasma_dplgsy( parsec, 0., dplasmaUpperLower, dcA, Aseed);
 
         /* Get norm and decisions */
-        hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double"); 
-        //printf("norm_global %lf\n", params.norm_global);
-        hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions); 
-        print_decisions(&params, params.decisions, params.uplo);
-        parsec_datatype_convert_dense_adaptive(parsec, &data, &params, params.uplo, dcA, params.decisions, 0);
+        if( params.adaptive_decision ) {
+            SYNC_TIME_START();
+            hicma_parsec_matrix_norm_get(parsec, params.uplo, dcA, &params, params.norm_tile, &params.norm_global, "double"); 
+            SYNC_TIME_PRINT(params.rank, ("hicma_parsec_matrix_norm_get: uplo= %d norm_global %lf\n", params.uplo, params.norm_global));
+
+            SYNC_TIME_START();
+            hicma_parsec_decision_make_comp(parsec, params.uplo, dcA, &params, params.norm_tile, params.norm_global, params.decisions); 
+            SYNC_TIME_PRINT(params.rank, ("hicma_parsec_decision_make_comp: uplo= %d norm_global %lf\n", params.uplo, params.norm_global));
+
+            SYNC_TIME_START();
+            parsec_datatype_convert_dense_adaptive(parsec, &data, &params, params.uplo, dcA, params.decisions, 0);
+            SYNC_TIME_PRINT(params.rank, ("parsec_datatype_convert_dense_adaptive 0: uplo= %d norm_global %lf\n", params.uplo, params.norm_global));
+
+            if(params.verbose > 9) print_decisions(&params, params.decisions, params.uplo, params.NT, params.NT);
+        }
 
         for (d = 0; d < 2; d++) {
             if ( rank == 0 ) {
@@ -201,13 +233,24 @@ int main(int argc, char ** argv)
                     (parsec_tiled_matrix_t *)&dcC2, (parsec_tiled_matrix_t *)&dcC );
             if(loud > 2 && 0 == rank)  printf("Done\n");
 
-            /* Get norm and decisions */
-            hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
-                    &params, params.norm_tileB, &params.norm_globalB, "double");
-            hicma_parsec_decision_make_comp(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
-                    &params, params.norm_tileB, params.norm_globalB, params.decisionsB); 
-            print_decisions(&params, params.decisionsB, dplasmaUpperLower);
-            parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
+            if( params.adaptive_decision ) {
+                /* Get norm and decisions */
+                SYNC_TIME_START();
+                hicma_parsec_matrix_norm_get(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                        &params, params.norm_tileB, &params.norm_globalB, "double");
+                SYNC_TIME_PRINT(params.rank, ("hicma_parsec_matrix_norm_get: uplo= %d norm_global %lf\n", dplasmaUpperLower, params.norm_globalB));
+
+                SYNC_TIME_START();
+                hicma_parsec_decision_make_comp(parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC,
+                        &params, params.norm_tileB, params.norm_globalB, params.decisionsB); 
+                SYNC_TIME_PRINT(params.rank, ("hicma_parsec_decision_make_comp: uplo= %d norm_global %lf\n", dplasmaUpperLower, params.norm_globalB));
+
+                SYNC_TIME_START();
+                parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 0);
+                SYNC_TIME_PRINT(params.rank, ("parsec_datatype_convert_dense_adaptive 0: uplo= %d norm_global %lf\n", dplasmaUpperLower, params.norm_globalB));
+
+                if(params.verbose > 9) print_decisions(&params, params.decisionsB, dplasmaUpperLower, params.NT, params.KT);
+            }
 
             /* Compute */
             if(loud > 2 && 0 == rank) printf("Compute ... ... ");
@@ -221,7 +264,11 @@ int main(int argc, char ** argv)
             if(loud > 2 && 0 == rank) printf("Done\n");
 
             /* Convert back to DP */
-            parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 1);
+            if( params.adaptive_decision ) {
+                SYNC_TIME_START();
+                parsec_datatype_convert_dense_adaptive(parsec, &data, &params, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcC, params.decisionsB, 1);
+                SYNC_TIME_PRINT(params.rank, ("parsec_datatype_convert_dense_adaptive 1: uplo= %d norm_global %lf\n", dplasmaUpperLower, params.norm_globalB));
+            }
 
             /* Check the solution */
             info_solution = check_solution(parsec, rank == 0 ? loud : 0,
@@ -260,6 +307,7 @@ int main(int argc, char ** argv)
     free(params.decisions_gemm_gpu);
     free(params.decisionsB);
     free(params.norm_tile);
+    free(params.norm_tileB);
 
     /* GPU workspace */
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
