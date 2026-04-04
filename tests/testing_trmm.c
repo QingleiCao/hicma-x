@@ -274,7 +274,7 @@ int main(int argc, char ** argv)
             info_solution = check_solution(parsec, rank == 0 ? loud : 0,
                     side, uplo, trans, diags[d],
                     alpha, Am, Am, Aseed,
-                    M,  N,  Cseed,
+                    M,  K,  Cseed,
                     &dcC, params.fixedacc);
             if ( rank == 0 ) {
                 if (info_solution == 0) {
