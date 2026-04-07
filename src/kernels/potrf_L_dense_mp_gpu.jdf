@@ -337,7 +337,11 @@ BODY [type=CUDA]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
-        double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        if( params_tlr->enable_stochastic_rounding) {
+            double2float_round_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        } else {
+            double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        }
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
     }
 #endif
@@ -348,7 +352,11 @@ BODY [type=HIP]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
-        double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        if( params_tlr->enable_stochastic_rounding) {
+            double2float_round_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        } else {
+            double2float_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, cuda_stream->cuda_stream );
+        }
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
     } 
 #endif
@@ -359,7 +367,11 @@ END
 BODY
 {
     if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
-        LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T0, descA->mb, T, descA->mb );
+        if( params_tlr->enable_stochastic_rounding) {
+            double2float_round_CPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb );
+        } else {
+            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T0, descA->mb, T, descA->mb );
+        }
         this_task->data._f_T.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
     }
 }
@@ -620,13 +632,25 @@ BODY [type=CUDA]
         /* Update nb_elts */
         this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
 
-        if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-            double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-        } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
-            if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-                double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-            } else {
-                float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+        if( params_tlr->enable_stochastic_rounding ) {
+            if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                double2float_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
+                if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                    double2half_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                } else {
+                    float2half_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                }
+            }
+        } else {
+            if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
+                if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                    double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                } else {
+                    float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                }
             }
         }
     }
@@ -657,13 +681,25 @@ BODY [type=HIP]
         /* Update nb_elts */
         this_task->data._f_C.data_out->original->nb_elts = this_task->locals.size.value;
 
-        if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-            double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-        } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
-            if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
-                double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-            } else {
-                float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+        if( params_tlr->enable_stochastic_rounding ) {
+            if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                double2float_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
+                if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                    double2half_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                } else {
+                    float2half_round_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                }
+            }
+        } else {
+            if( DENSE_SP == params_tlr->decisions_send[k*params_tlr->NT+m] && DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                double2float_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+            } else if( DENSE_HP == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
+                if( DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m] ) {
+                    double2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                } else {
+                    float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
+                }
             }
         }
     }

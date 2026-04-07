@@ -516,14 +516,18 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
         void *T_use = T;
         if( DENSE_DP == params_tlr->decisions_send[k*params_tlr->NT+k] ) {
             // Convert double precision T to single precision for computation
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
-            T_use = T_s;
-        }
+			if( params_tlr->enable_stochastic_rounding ) {
+				double2float_round_CPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
+			} else {
+				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, T, descA->mb, T_s, descA->mb );
+			}
+			T_use = T_s;
+		}
 
-        // Single precision triangular solve
-        CORE_strsm(PlasmaRight, PlasmaLower, PlasmaTrans, PlasmaNonUnit,
-                   tempmm, descA->mb,
-                   (float)1.0, T_use /*A(k, k)*/, ldak,
+		// Single precision triangular solve
+		CORE_strsm(PlasmaRight, PlasmaLower, PlasmaTrans, PlasmaNonUnit,
+				tempmm, descA->mb,
+				(float)1.0, T_use /*A(k, k)*/, ldak,
                                C     /*A(m, k)*/, ldam);
 
         /* Return temporary buffer to memory pool */
@@ -872,21 +876,29 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_s = parsec_private_memory_pop( p_work_full_sp );
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
-            A_use = A_s;
-        }
+			if( params_tlr->enable_stochastic_rounding ) {
+				double2float_round_CPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
+			} else {
+				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
+			}
+			A_use = A_s;
+		}
 
-        /* Convert datatype, B */
-        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
-            B_s = parsec_private_memory_pop( p_work_full_sp );
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
-            B_use = B_s;
-        }
+		/* Convert datatype, B */
+		if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
+			B_s = parsec_private_memory_pop( p_work_full_sp );
+			if( params_tlr->enable_stochastic_rounding ) {
+				double2float_round_CPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+			} else {
+				LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+			}
+			B_use = B_s;
+		}
 
-        CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
-                tempmm, descA->mb, descA->mb,
-                (float)-1.0, A_use /*A(m, k)*/, ldam,
-                             B_use /*A(n, k)*/, ldan,
+		CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
+				tempmm, descA->mb, descA->mb,
+				(float)-1.0, A_use /*A(m, k)*/, ldam,
+				B_use /*A(n, k)*/, ldan,
                 (float) 1.0, C     /*A(m, n)*/, ldam);
 
         /* Push back to mempool */
@@ -900,15 +912,19 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
     /* Convert A and B in 16-bit and call sgemm */
     //else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ){
     else{
-        /* Convert datatype, A */
-        A_use = parsec_private_memory_pop( p_work_full_sp );
-        hicma_parsec_convert_2h_bit( params_tlr, A, A_use, m, k, descA->mb, descA->nb );
+		if( params_tlr->enable_stochastic_rounding ) {
+			fprintf(stderr, "stochastic_rounding is not supported in HP on CPU\n");	
+		}
+	
+		/* Convert datatype, A */
+		A_use = parsec_private_memory_pop( p_work_full_sp );
+		hicma_parsec_convert_2h_bit( params_tlr, A, A_use, m, k, descA->mb, descA->nb );
 
-        /* Convert datatype, B */
-        B_use = parsec_private_memory_pop( p_work_full_sp );
-        hicma_parsec_convert_2h_bit( params_tlr, B, B_use, n, k, descA->mb, descA->mb );
+		/* Convert datatype, B */
+		B_use = parsec_private_memory_pop( p_work_full_sp );
+		hicma_parsec_convert_2h_bit( params_tlr, B, B_use, n, k, descA->mb, descA->mb );
 
-        CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
+		CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
                 tempmm, descA->mb, descA->mb,
                 (float)-1.0, A_use /*A(m, k)*/, ldam,
                              B_use /*A(n, k)*/, ldan,
@@ -921,6 +937,11 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
     /* If hgemm */
     //else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ){
     else{
+
+		if( params_tlr->enable_stochastic_rounding ) {
+			fprintf(stderr, "stochastic_rounding is not supported in HP on CPU\n");	
+		}
+
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
             A_s = parsec_private_memory_pop( p_work_full_sp );
@@ -2001,14 +2022,18 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
             assert(NULL != T_s);
 
             /* Convert datatype */
-            double2float_GPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, cuda_stream->cuda_stream );
-        }
+			if( params_tlr->enable_stochastic_rounding ) {
+				double2float_round_GPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, cuda_stream->cuda_stream );
+			} else {
+				double2float_GPU( descA->mb, descA->nb, T, descA->mb, T_s, descA->mb, cuda_stream->cuda_stream );
+			}
+		}
 
-        status = cublasStrsm( handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
-                CUBLAS_OP_T, CUBLAS_DIAG_NON_UNIT,
-                tempmm, descA->mb,
-                &alpha_float, (float *)T_s /*A(k, k)*/, ldak,
-                              (float *)C   /*A(m, k)*/, ldam);
+		status = cublasStrsm( handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
+				CUBLAS_OP_T, CUBLAS_DIAG_NON_UNIT,
+				tempmm, descA->mb,
+				&alpha_float, (float *)T_s /*A(k, k)*/, ldak,
+				(float *)C   /*A(m, k)*/, ldam);
     }
 
 }
@@ -2249,13 +2274,21 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-            double2float_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+            if( params_tlr->enable_stochastic_rounding ) {
+                double2float_round_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+            } else {
+                double2float_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+            }
             A_use = A_s;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-            double2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+            if( params_tlr->enable_stochastic_rounding ) {
+                double2float_round_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+            } else {
+                double2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+            }
             B_use = B_s;
         }
 
@@ -2279,26 +2312,46 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                 {
                     /* Convert datatype, A */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-                        double2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                        if( params_tlr->enable_stochastic_rounding ) {
+                            double2half_round_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                        } else {
+                            double2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                        }
                         A_use = A_h;
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-                        float2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                        if( params_tlr->enable_stochastic_rounding ) {
+                            float2half_round_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                        } else {
+                            float2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+                        }
                         A_use = A_h;
                     }
 
                     /* Convert datatype, B */
                     if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-                        double2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                        if( params_tlr->enable_stochastic_rounding ) {
+                            double2half_round_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                        } else {
+                            double2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                        }
                         B_use = B_h;
                     } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-                        float2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                        if( params_tlr->enable_stochastic_rounding ) {
+                            float2half_round_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                        } else {
+                            float2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+                        }
                         B_use = B_h;
                     }
 
                     /* First local GEMM convert C from single to half */
                     if( 0 == k && MASK_TF16_A16_B16_C16_OP16 == tensor_gemm_type ) {
                         /* Convert datatype */
-                        float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
+                        if( params_tlr->enable_stochastic_rounding ) {
+                            float2half_round_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
+                        } else {
+                            float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
+                        }
 
                         /* Copy C_h to C */
                         memcpy_half_GPU( descA->mb, descA->nb, C_h, C, cuda_stream->cuda_stream );
@@ -2401,6 +2454,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
     } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
 #if HAVE_FP8
+        if( params_tlr->enable_stochastic_rounding ) {
+            fprintf(stderr, "stochastic rounding is not support for FP8\n");
+            exit(1);
+        }
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
             double2fp8_GPU( descA->mb, descA->nb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
