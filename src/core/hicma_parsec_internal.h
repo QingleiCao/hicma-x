@@ -561,6 +561,7 @@ typedef struct hicma_parsec_params_s {
     int left_looking;         /**< Use left-looking algorithm */
     int enable_stochastic_rounding; /**< Enable stochastic rounding kernels when available */
     int nruns;                /**< Number of benchmark runs */
+    int accumulation_fp32;    /**< Accumulation type in GEMM, for FP16 and lower */
     
     /* ========================================================================
      * Band configuration

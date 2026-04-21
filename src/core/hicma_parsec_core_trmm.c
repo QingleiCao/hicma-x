@@ -466,7 +466,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
 {
 
     void *A_use = A, *B_use = B;
-    void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h;
+    void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h, *C_s;
     int NT = params_tlr->NT;
     uint16_t decisionA = params_tlr->decisions[k*NT+(NT-1)-m];
     uint16_t decisionB = params_tlr->decisionsB[n*NT+k];
@@ -489,6 +489,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
     B_d = (double *)stream_found->gpu_buffer_B;
     B_s = (float *)stream_found->gpu_buffer_B;
     B_h = (void *)stream_found->gpu_buffer_B;
+    C_s = (void *)stream_found->gpu_buffer_C;
 
     /* DP */
     if(DENSE_DP == decisionC) {
@@ -601,19 +602,41 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
 
         //printf("HGEMM %d %d %d\n", m, n, k);
 
-        char alpha[16], beta[16];
-        float2half_host((float)lalpha, &alpha[0]);
-        float2half_host((float)lbeta, &beta[0]);
-        status = cublasGemmEx(handle, dplasma_cublas_op(transA), dplasma_cublas_op(transB), //CUBLAS_OP_N,
-                mb, nb, kb,
-                &alpha[0], A_use, CUDA_R_16F, lda,
-                           B_use, CUDA_R_16F, ldb,
-                &beta[0],  C, CUDA_R_16F, ldc,
-                CUDA_R_16F, CUBLAS_GEMM_DEFAULT);
-        PARSEC_CUDA_CHECK_ERROR( "hicma_parsec_sgemm_gpu", status, {exit(PARSEC_HOOK_RETURN_ERROR);} );
+
+        /* First local GEMM convert C from single to half */
+        if( params_tlr->accumulation_fp32 ) {
+            /* Convert datatype to */
+            half2float_GPU( mb, mb, C, mb, C_s, mb, cuda_stream->cuda_stream );
+
+            /* Copy C_s to C */
+            memcpy_float_GPU( mb, mb, C_s, C, cuda_stream->cuda_stream );
+
+//printf("ACC_FP32 %d %d %d\n", m, n, k);
+
+            float alpha = (float)lalpha, beta = (float)lbeta;
+            status = cublasGemmEx(handle, dplasma_cublas_op(transA), dplasma_cublas_op(transB), //CUBLAS_OP_N,
+                    mb, nb, kb,
+                    &alpha, A_use, CUDA_R_16F, lda,
+                            B_use, CUDA_R_16F, ldb,
+                    &beta,  C, CUDA_R_32F, ldc,
+                    CUDA_R_32F, CUBLAS_GEMM_DEFAULT);
+
+            PARSEC_CUDA_CHECK_ERROR( "hicma_parsec_hgemm_gpu_acc32", status, {exit(PARSEC_HOOK_RETURN_ERROR);} );
+        } else {
+            char alpha[16], beta[16];
+            float2half_host((float)lalpha, &alpha[0]);
+            float2half_host((float)lbeta, &beta[0]);
+            status = cublasGemmEx(handle, dplasma_cublas_op(transA), dplasma_cublas_op(transB), //CUBLAS_OP_N,
+                    mb, nb, kb,
+                    &alpha[0], A_use, CUDA_R_16F, lda,
+                    B_use, CUDA_R_16F, ldb,
+                    &beta[0],  C, CUDA_R_16F, ldc,
+                    CUDA_R_16F, CUBLAS_GEMM_DEFAULT);
+            PARSEC_CUDA_CHECK_ERROR( "hicma_parsec_hgemm_gpu_acc16", status, {exit(PARSEC_HOOK_RETURN_ERROR);} );
+        }
     }
     else {
-        fprintf(stderr, "hicma_parsec_trmm_core_gemm_lln_cpu: decisionC is wrong!\n");
+        fprintf(stderr, "hicma_parsec_trmm_core_gemm_lln_gpu: decisionC is wrong!\n");
     }
 
 }

@@ -339,6 +339,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
         {"enable_stochastic_rounding", "Enable stochastic rounding in supported kernels (requires value: 0 or 1)", 0, &params->enable_stochastic_rounding},
         {"nruns", "The number of runs of Cholesky", 0, &params->nruns},
+        {"accumulation_fp32", "Accumulation type for FP16 and lower", 0, &params->accumulation_fp32},
         
         // Kernel parameters
         {"time_slots", "Time slots in kernels", 0, &params->time_slots},
@@ -607,6 +608,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->left_looking = 0;               // Disable left-looking Cholesky (0=right-looking, 1=left-looking)
     params->enable_stochastic_rounding = 0; // Disable stochastic rounding by default
     params->nruns = 1;                      // Number of execution runs (for performance measurement) 
+    params->accumulation_fp32 = 0;          // False 
 
     /* ===========================================
      * Kernel-specific parameters
@@ -1301,7 +1303,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
                params->datatype_convert, params->left_looking, params->enable_stochastic_rounding);
         if( 6 == params->kind_of_problem) printf("mesh_file=%s, rbf_kernel=%d, numobj=%d, order=%d, radius=%f, density=%f\n", params->mesh_file, params->rbf_kernel, params->numobj, params->order, params->radius, params->density);
         printf("time_slots=%d sigma=%lf beta=%lf nu=%lf beta_time=%lf nu_time=%lf nonsep_param=%lf noise= %lf\n", params->time_slots, params->sigma, params->beta, params->nu, params->beta_time, params->nu_time, params->nonsep_param, params->noise);
-        printf("numobj/L= %d gpu_rows= %d gpu_cols= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols);
+        printf("numobj/L= %d gpu_rows= %d gpu_cols= %d accumulation_fp32= %d\n\n", params->numobj, params->gpu_rows, params->gpu_cols, params->accumulation_fp32);
         fflush(stdout);
     }
 }
@@ -1356,6 +1358,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%e %d %d %e %e %e %e ", params->result_accuracy, params->left_looking, params->gpu_type, params->norm_global_diff, params->fixedacc * params->norm_global, params->log_det_dp, params->log_det_mp);
         printf("%lf %lf %lf %d  ", params->time_decision_kernel, params->time_decision_sender, params->time_syrk_app, params->numobj);
         printf("%d %d %d %g %g  ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density);
+        printf("%d ", params->accumulation_fp32);
 #ifdef GITHASH
         printf("%s ", xstr(GITHASH));
 #else
