@@ -2242,6 +2242,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
             }
             memcpy_half_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
             *size = mb * nb * sizeof(float) / 2;
+printf("1111\n");
         }
     } else { /* Low precision -> high precision */
         if (DENSE_SP == decision) {
@@ -2253,6 +2254,7 @@ int convert_datatype_adaptive_unary_GPU(parsec_potrf_workspace_t *ws_gpu,
             half2double_GPU(mb, nb, A, mb, A_tmp, mb, cuda_stream->cuda_stream);
             memcpy_double_GPU(mb, nb, A_tmp, A, cuda_stream->cuda_stream);
             *size = mb * nb * sizeof(double);
+printf("1111\n");
         }
     }
 

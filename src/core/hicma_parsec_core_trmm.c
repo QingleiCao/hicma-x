@@ -420,8 +420,10 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
         }  
 
         /* Convert B to SP */
-        half2float_GPU(mb, mb, B, mb, B_s, mb, cuda_stream->cuda_stream);
-        B_use = B_s;
+        if(!params_tlr->accumulation_fp32) {
+            half2float_GPU(mb, mb, B, mb, B_s, mb, cuda_stream->cuda_stream);
+            B_use = B_s;
+        }
 
         float alpha = (float)lalpha;
         status = cublasStrmm( handle,
@@ -436,10 +438,12 @@ void hicma_parsec_trmm_core_trmm_lln_gpu(
         PARSEC_CUDA_CHECK_ERROR( "cublasStrmm in HP", status, {exit(PARSEC_HOOK_RETURN_ERROR);} );
 
         /* Convert to HP, as GEMM may use in HP */
-        if(enable_stochastic_rounding) {
-            float2half_round_GPU(mb, mb, B_s, mb, B, mb, cuda_stream->cuda_stream);
-        } else {
-            float2half_GPU(mb, mb, B_s, mb, B, mb, cuda_stream->cuda_stream);
+        if(!params_tlr->accumulation_fp32) {
+            if(enable_stochastic_rounding) {
+                float2half_round_GPU(mb, mb, B_use, mb, B, mb, cuda_stream->cuda_stream);
+            } else {
+                float2half_GPU(mb, mb, B_use, mb, B, mb, cuda_stream->cuda_stream);
+            }
         }
     }
     else {
@@ -466,7 +470,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
 {
 
     void *A_use = A, *B_use = B;
-    void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h, *C_s;
+    void *A_d, *A_s, *A_h, *B_d, *B_s, *B_h, *C_s, *C_h;
     int NT = params_tlr->NT;
     uint16_t decisionA = params_tlr->decisions[k*NT+(NT-1)-m];
     uint16_t decisionB = params_tlr->decisionsB[n*NT+k];
@@ -490,6 +494,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
     B_s = (float *)stream_found->gpu_buffer_B;
     B_h = (void *)stream_found->gpu_buffer_B;
     C_s = (void *)stream_found->gpu_buffer_C;
+    C_h = (void *)stream_found->gpu_buffer_C;
 
     /* DP */
     if(DENSE_DP == decisionC) {
@@ -504,7 +509,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
         }
 
         /* Convert B to DP */
-        if(DENSE_SP == decisionB) {
+        if(DENSE_SP == decisionB || (params_tlr->accumulation_fp32 && DENSE_HP == decisionB)) {
             float2double_GPU(mb, mb, B, mb, B_d, mb, cuda_stream->cuda_stream);
             B_use = B_d;
         } 
@@ -546,7 +551,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
             }
             B_use = B_s;
         }
-        else if(DENSE_HP == decisionB) {
+        else if(DENSE_HP == decisionB && !params_tlr->accumulation_fp32) {
             half2float_GPU(mb, mb, B, mb, B_s, mb, cuda_stream->cuda_stream);
             B_use = B_s;
         }
@@ -591,7 +596,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
             }
             B_use = B_h;
         }
-        else if(DENSE_SP == decisionB) {
+        else if(DENSE_SP == decisionB || (params_tlr->accumulation_fp32 && DENSE_HP == decisionB)) {
             if(enable_stochastic_rounding) {
                 float2half_round_GPU(mb, mb, B, mb, B_h, mb, cuda_stream->cuda_stream);
             } else {
@@ -604,12 +609,10 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
 
 
         /* First local GEMM convert C from single to half */
-        if( params_tlr->accumulation_fp32 ) {
-            /* Convert datatype to */
-            half2float_GPU( mb, mb, C, mb, C_s, mb, cuda_stream->cuda_stream );
-
-            /* Copy C_s to C */
-            memcpy_float_GPU( mb, mb, C_s, C, cuda_stream->cuda_stream );
+        if(params_tlr->accumulation_fp32) {
+            /* Convert datatype to FP32*/
+            //half2float_GPU( mb, mb, C, mb, C_s, mb, cuda_stream->cuda_stream );
+            //memcpy_float_GPU( mb, mb, C_s, C, cuda_stream->cuda_stream );
 
 //printf("ACC_FP32 %d %d %d\n", m, n, k);
 
@@ -620,6 +623,10 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
                             B_use, CUDA_R_16F, ldb,
                     &beta,  C, CUDA_R_32F, ldc,
                     CUDA_R_32F, CUBLAS_GEMM_DEFAULT);
+
+            /* Convert datatype back to FP16*/
+            //float2half_GPU(mb, mb, C, mb, C_h, mb, cuda_stream->cuda_stream);
+            //memcpy_half_GPU( mb, mb, C_h, C, cuda_stream->cuda_stream );
 
             PARSEC_CUDA_CHECK_ERROR( "hicma_parsec_hgemm_gpu_acc32", status, {exit(PARSEC_HOOK_RETURN_ERROR);} );
         } else {

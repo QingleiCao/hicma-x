@@ -24,6 +24,7 @@ descA         [ type = "parsec_tiled_matrix_t *" ] // Matrix descriptor for inpu
 decisions     [type = "uint16_t *"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
 convert_direction [type = "int"]                   // Type of conversion to perform (e.g., "double_to_float", "float_to_double")
 enable_stochastic_rounding [type = "int"]          // Enable stochastic rounding for down-conversion paths
+params_tlr   [ type = "hicma_parsec_params_t *" ]
 
 /* GPU-related variables */
 ws_gpu       [ type = "void *" hidden = on default = NULL ]  /* GPU workspace memory */
@@ -64,7 +65,11 @@ BODY [ type = CUDA ]
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
     //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
-    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
+    uint16_t current_decision = decisions[n*descA->lmt+m];
+    if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
+        current_decision = DENSE_SP;
+    }
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
     //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
 }
 END
@@ -74,7 +79,11 @@ BODY [ type = HIP ]
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
     //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
-    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
+    uint16_t current_decision = decisions[n*descA->lmt+m];
+    if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
+        current_decision = DENSE_SP;
+    }
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
     //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
 }
 END
@@ -83,7 +92,11 @@ BODY
 {
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
-    convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, decisions[n*descA->lmt+m], convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
+    uint16_t current_decision = decisions[n*descA->lmt+m];
+    if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
+        current_decision = DENSE_SP;
+    }
+    convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
 }
 END
 
@@ -119,7 +132,7 @@ parsec_datatype_convert_dense_adaptive_New(hicma_parsec_data_t *data,
 #endif
     
     // Create the taskpool for datatype conversion
-    datatype_convert_dense_adaptive_taskpool = parsec_datatype_convert_dense_adaptive_new(uplo, A, decisions, convert_direction, params->enable_stochastic_rounding);
+    datatype_convert_dense_adaptive_taskpool = parsec_datatype_convert_dense_adaptive_new(uplo, A, decisions, convert_direction, params->enable_stochastic_rounding, params);
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     // Configure GPU workspace and device information
