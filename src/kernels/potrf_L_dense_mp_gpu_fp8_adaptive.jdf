@@ -478,16 +478,20 @@ BODY [type=CUDA]
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         if(params_tlr->adaptive_decision_runtime) {
             double C_norm_dp = 0.0;
+            double C_precision_dp = (double)DENSE_DP;
             cublasDnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_dp);
             //printf("%d %d: norm %lf\n", m, k, C_norm_dp); 
             cudaMemcpy(C_norm, &C_norm_dp, sizeof(double), cudaMemcpyHostToDevice);
+            cudaMemcpy(((double *)C_norm) + 1, &C_precision_dp, sizeof(double), cudaMemcpyHostToDevice);
         }
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
     } else { 
         if(params_tlr->adaptive_decision_runtime) {
             float C_norm_sp = 0.0f;
+            double C_precision_sp = (double)DENSE_SP;
             cublasSnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_sp);
             copy_float_to_device_double(C_norm, C_norm_sp, cuda_stream->cuda_stream);
+            cudaMemcpy(((double *)C_norm) + 1, &C_precision_sp, sizeof(double), cudaMemcpyHostToDevice);
             //printf("%d %d: norm %f\n", m, k, C_norm_sp); 
         }
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
@@ -516,16 +520,20 @@ BODY [type=HIP]
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         if(params_tlr->adaptive_decision_runtime) {
             double C_norm_dp = 0.0;
+            double C_precision_dp = (double)DENSE_DP;
             cublasDnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_dp);
             //printf("%d %d: norm %lf\n", m, k, C_norm_dp);
             cudaMemcpy(C_norm, &C_norm_dp, sizeof(double), cudaMemcpyHostToDevice);
+            cudaMemcpy(((double *)C_norm) + 1, &C_precision_dp, sizeof(double), cudaMemcpyHostToDevice);
         }
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
     } else {  
         if(params_tlr->adaptive_decision_runtime) {
             float C_norm_sp = 0.0f;
+            double C_precision_sp = (double)DENSE_SP;
             cublasSnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_sp);
             copy_float_to_device_double(C_norm, C_norm_sp, cuda_stream->cuda_stream);
+            cudaMemcpy(((double *)C_norm) + 1, &C_precision_sp, sizeof(double), cudaMemcpyHostToDevice);
             //printf("%d %d: norm %f\n", m, k, C_norm_sp);
         }
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float); 
@@ -814,7 +822,11 @@ BODY [type=CUDA]
         Arank = ((int *)this_task->data._f_Ar.data_in->original->device_copies[0]->device_private)[0];
     }
     /* GPU-accelerated symmetric rank-k update using CUDA */
-    hicma_parsec_core_syrk_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank );
+    if( params_tlr->adaptive_decision_runtime ) {
+        hicma_parsec_core_syrk_runtime_decision_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank, A_norm );
+    } else {
+        hicma_parsec_core_syrk_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank );
+    }
 #endif
 }
 END
@@ -828,7 +840,11 @@ BODY [type=HIP]
         Arank = ((int *)this_task->data._f_Ar.data_in->original->device_copies[0]->device_private)[0];
     }
     /* GPU-accelerated symmetric rank-k update using HIP (AMD ROCm) */
-    hicma_parsec_core_syrk_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank );
+    if( params_tlr->adaptive_decision_runtime ) {
+        hicma_parsec_core_syrk_runtime_decision_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank, A_norm );
+    } else {
+        hicma_parsec_core_syrk_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank );
+    }
 #endif
 }
 END
@@ -998,8 +1014,13 @@ BODY [type=CUDA]
     /* Case 1: C, A, B are all dense - standard GEMM */
     if ( IS_DENSE(m, n) && IS_DENSE(m, k) && IS_DENSE(n, k) )
     {
-        hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
-                C, A, B, m, n, k, 0, 0, 0 );
+        if( params_tlr->adaptive_decision_runtime ) {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                    C, A, B, m, n, k, 0, 0, 0, A_norm, B_norm );
+        } else {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                    C, A, B, m, n, k, 0, 0, 0 );
+        }
     }
     /* Case 2: C is dense, A is low-rank, B is dense - mixed precision GEMM */
     else if( IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 
@@ -1063,8 +1084,13 @@ BODY [type=HIP]
     /* Case 1: C, A, B are all dense - standard GEMM */
     if ( IS_DENSE(m, n) && IS_DENSE(m, k) && IS_DENSE(n, k) )
     {
-        hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
-                C, A, B, m, n, k, 0, 0, 0 );
+        if( params_tlr->adaptive_decision_runtime ) {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                    C, A, B, m, n, k, 0, 0, 0, A_norm, B_norm );
+        } else {
+            hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                    C, A, B, m, n, k, 0, 0, 0 );
+        }
     }
     /* Case 2: C is dense, A is low-rank, B is dense - mixed precision GEMM */
     else if( IS_DENSE(m, n) && !IS_DENSE(m, k) && IS_DENSE(n, k) ) 

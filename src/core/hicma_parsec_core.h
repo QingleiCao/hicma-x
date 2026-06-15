@@ -650,6 +650,14 @@ void hicma_parsec_core_syrk_gpu(parsec_tiled_matrix_t* descA,
                                 parsec_cuda_exec_stream_t *cuda_stream,
                                 void *T, void *A, int m, int k, int Arank);
 
+void hicma_parsec_core_syrk_runtime_decision_gpu(parsec_tiled_matrix_t* descA,
+                                                 hicma_parsec_params_t *params_tlr,
+                                                 parsec_potrf_workspace_t *ws_gpu,
+                                                 parsec_device_cuda_module_t *cuda_device,
+                                                 parsec_gpu_task_t *gpu_task,
+                                                 parsec_cuda_exec_stream_t *cuda_stream,
+                                                 void *T, void *A, int m, int k, int Arank, void *A_norm);
+
 /**
  * @brief GPU implementation of dense GEMM with dense C, dense A, dense B
  * 
@@ -677,6 +685,16 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu(parsec_tiled_matrix_t* desc
                                                      parsec_cuda_exec_stream_t *cuda_stream,
                                                      void *C, void *A, void *B, int m, int n, int k,
                                                      int Crank, int Arank, int Brank);
+
+void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu(parsec_tiled_matrix_t* descA,
+                                                                      hicma_parsec_params_t *params_tlr,
+                                                                      parsec_potrf_workspace_t *ws_gpu,
+                                                                      parsec_device_cuda_module_t *cuda_device,
+                                                                      parsec_gpu_task_t *gpu_task,
+                                                                      parsec_cuda_exec_stream_t *cuda_stream,
+                                                                      void *C, void *A, void *B, int m, int n, int k,
+                                                                      int Crank, int Arank, int Brank,
+                                                                      void *A_norm, void *B_norm);
 
 /**
  * @brief GPU implementation of GEMM with dense C, low-rank A, dense B
