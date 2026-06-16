@@ -2840,11 +2840,17 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
             double2float_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
             A_use = A_s;
+        } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            half2float_GPU( descA->mb, descA->nb, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
+            A_use = A_s;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
             double2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
+            B_use = B_s;
+        } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+n] ) {
+            half2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
             B_use = B_s;
         }
 
