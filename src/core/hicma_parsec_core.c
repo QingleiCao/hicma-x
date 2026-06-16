@@ -18,6 +18,40 @@ extern int parsec_device_cuda_enabled;
 extern int parsec_device_hip_enabled;
 #endif
 
+/* Runtime decision transition counters for CPU/GPU parity debugging. */
+static unsigned long long rt_cpu_pre_counts[16] = {0};
+static unsigned long long rt_cpu_post_counts[16] = {0};
+static unsigned long long rt_gpu_pre_counts[16] = {0};
+static unsigned long long rt_gpu_post_counts[16] = {0};
+static int rt_dump_registered = 0;
+
+static inline int rt_decision_class(uint16_t d)
+{
+    if( d == DENSE_DP ) return 0;
+    if( d == DENSE_SP ) return 1;
+    if( d == DENSE_HP ) return 2;
+    return 3; /* FP8 and any other non-DP/SP/HP class */
+}
+
+static inline void rt_inc_counter(unsigned long long *arr, uint16_t old_d, uint16_t new_d)
+{
+    int idx = rt_decision_class(old_d) * 4 + rt_decision_class(new_d);
+    __sync_fetch_and_add(&arr[idx], 1ULL);
+}
+
+static void rt_dump_transition_counters(void)
+{
+    fprintf(stderr, "\n[RUNTIME_DECISION_TRANSITIONS]\n");
+    fprintf(stderr, "CPU_PRE ");
+    for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_cpu_pre_counts[i], (i == 15) ? "\n" : " ");
+    fprintf(stderr, "CPU_POST ");
+    for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_cpu_post_counts[i], (i == 15) ? "\n" : " ");
+    fprintf(stderr, "GPU_PRE ");
+    for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_gpu_pre_counts[i], (i == 15) ? "\n" : " ");
+    fprintf(stderr, "GPU_POST ");
+    for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_gpu_post_counts[i], (i == 15) ? "\n" : " ");
+}
+
 /**
  * @brief Allocates memory for HICMA computations with GPU acceleration support
  * 
@@ -1222,7 +1256,13 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     int cores = params_tlr->cores;
     int tid = es->th_id;
 
+    if( !rt_dump_registered ) {
+        rt_dump_registered = 1;
+        atexit(rt_dump_transition_counters);
+    }
+
     // Get new decision during runtime
+    uint16_t old_decision_c = params_tlr->decisions[n*descA->lmt+m];
     uint16_t new_decision = params_tlr->decisions[n*descA->lmt+m];
     if(params_tlr->adaptive_decision_runtime) {
         hicma_parsec_get_precision_tile(params_tlr, &new_decision, Anorm*Bnorm, m, n);
@@ -1246,6 +1286,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             params_tlr->nb_gemms[LOW_RANK_SP*cores+tid] += 1;
         }
     }
+
+    rt_inc_counter(rt_cpu_pre_counts, old_decision_c, new_decision);
 
     if(DEBUG_INFO) printf("GEMM_CPU (%d, %d, %d) : %d %d %d : C_DENSE, A_DENSE, B_DENSE\n",
             m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
@@ -2504,6 +2546,7 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
         //printf("dev_info %d\n", dev_info[0]);
         rocsolver_dpotrf(handle, rocblas_fill_lower, tempkn, T, ldak, dev_info);                      
 #endif
+
     }
     assert(CUSOLVER_STATUS_SUCCESS == status);
 
@@ -3072,6 +3115,11 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
         int Crank, int Arank, int Brank,
         void *A_norm, void *B_norm )
 {
+    if( !rt_dump_registered ) {
+        rt_dump_registered = 1;
+        atexit(rt_dump_transition_counters);
+    }
+
     int old_decision_c = params_tlr->decisions[n*descA->lmt+m];
     int use_temp_dp_c = 0;
     void *C_kernel = C;
@@ -3125,6 +3173,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
             memcpy_float_GPU(descA->mb, descA->nb, tmp_buffer, C, cuda_stream->cuda_stream);
         }
     }
+
+    rt_inc_counter(rt_gpu_pre_counts, old_decision_c, new_decision);
 
     if( old_gpu_gemm_mask == MASK_TF16_A16_B16_C16_OP16 ) {
         params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_TF16_A16_B16_C32_OP32;
@@ -3182,6 +3232,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
         }
         params_tlr->decisions[n*descA->lmt+m] = updated_decision;
     }
+
+    rt_inc_counter(rt_gpu_post_counts, old_decision_c, params_tlr->decisions[n*descA->lmt+m]);
 
     if( NULL != C_temp_dp ) {
         cudaFree(C_temp_dp);
