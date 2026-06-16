@@ -1592,6 +1592,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     }
 #endif
 
+    rt_inc_counter(rt_cpu_post_counts, old_decision_c, params_tlr->decisions[n*descA->lmt+m]);
+
     /* Operation count */
     unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, tempmm, 0);
     params_tlr->op_band[es->th_id] += cnt;
