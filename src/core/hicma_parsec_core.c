@@ -3108,7 +3108,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
                     Anorm, Bnorm, runtime_decision_a, runtime_decision_b);
         }
 
-        effective_decision = (int)new_decision;
+        effective_decision = (new_decision == DENSE_DP) ? DENSE_DP : DENSE_SP;
         if( old_decision_c != DENSE_DP && new_decision == DENSE_DP ) {
             /* SP-backed C needs a temporary DP accumulation buffer for this update. */
             use_temp_dp_c = 1;
@@ -3124,6 +3124,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
         params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_TF16_A16_B16_C32_OP32;
     } else if( old_gpu_gemm_mask == MASK_BF16_A16_B16_C16_OP16 ) {
         params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_BF16_A16_B16_C32_OP32;
+    }
+    if( effective_decision == DENSE_SP ) {
+        /* Match CPU SP behavior: no TF32/tensor shortcuts in runtime path. */
+        params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP32;
+    } else if( effective_decision == DENSE_DP ) {
+        params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP64;
     }
 
     if( use_temp_dp_c ) {
@@ -3149,6 +3155,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
             double Cnorm = 0.0;
             cublasDnrm2(handle, descA->mb * descA->nb, (double *)C_kernel, 1, &Cnorm);
             hicma_parsec_get_precision_tile(params_tlr, &updated_decision, Cnorm, m, n);
+            if( updated_decision != DENSE_DP ) {
+                updated_decision = DENSE_SP;
+            }
             if( use_temp_dp_c || updated_decision != DENSE_DP ) {
                 void *tmp_buffer = stream_found->gpu_buffer_C;
                 double2float_GPU(descA->mb, descA->nb, C_kernel, descA->mb, (float *)tmp_buffer, descA->mb, cuda_stream->cuda_stream);
@@ -3162,10 +3171,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
             float Cnorm = 0.0f;
             cublasSnrm2(handle, descA->mb * descA->nb, (float *)C, 1, &Cnorm);
             hicma_parsec_get_precision_tile(params_tlr, &updated_decision, (double)Cnorm, m, n);
-            if( updated_decision == DENSE_DP ) {
-                /* Keep storage-safe decision when C tile is SP-backed. */
-                updated_decision = DENSE_SP;
-            }
+            /* CPU runtime SP/HP paths persist C as SP unless real DP promotion is possible. */
+            updated_decision = DENSE_SP;
         }
         params_tlr->decisions[n*descA->lmt+m] = updated_decision;
     }
@@ -3176,7 +3183,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
 
     if( params_tlr->decisions[n*descA->lmt+m] == DENSE_DP ) {
         params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP64;
-    } else {
+    } else if( params_tlr->decisions[n*descA->lmt+m] == DENSE_SP ) {
         params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP32;
     }
     params_tlr->decisions_send[k*descA->lmt+m] = old_decision_a;
