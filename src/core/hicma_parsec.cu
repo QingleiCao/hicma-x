@@ -1160,6 +1160,120 @@ void memcpy_half_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_
 /****************************************************************************************************/
 
 /**
+ * @brief CUDA kernel for copying double precision matrix data
+ *
+ * Copies double precision (double) matrix data from source to destination.
+ * Each thread processes one matrix element, performing a memory copy operation.
+ *
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param src Source matrix (double precision)
+ * @param dest Destination matrix (double precision)
+ */
+__global__ void memcpy_double_GPU_kernel( int nrows, int ncols,
+              double *src, double *dest ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        // Bounds checking
+        if( idx >= nrows || idy >= ncols ) {
+            return;
+        }
+
+        // Copy matrix element from source to destination
+        dest[idy*nrows+idx] = src[idy*nrows+idx];
+}
+
+/**
+ * @brief GPU wrapper function for double precision matrix copy
+ *
+ * Launches the copy kernel with appropriate grid and block dimensions.
+ * Handles type casting from void pointers to double precision.
+ *
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param _src Source matrix (double precision, void pointer)
+ * @param _dest Destination matrix (double precision, void pointer)
+ * @param stream CUDA stream for asynchronous execution
+ */
+extern "C"
+void memcpy_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream ) {
+        // Calculate grid dimensions based on matrix size and chunk size
+        int nBlockx = (nrows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (ncols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        // Define thread block and grid dimensions
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        // Cast void pointers to double precision
+        double *src = (double *)_src;
+        double *dest = (double *)_dest;
+
+        // Launch kernel with calculated dimensions
+        memcpy_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+/****************************************************************************************************/
+
+/**
+ * @brief CUDA kernel for dest(double) -= src(float)
+ *
+ * Performs element-wise subtraction:
+ *   ((double *)dest)[j*nrows+i] -= ((float *)src)[j*nrows+i]
+ *
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param src Source matrix (single precision)
+ * @param dest Destination matrix (double precision)
+ */
+__global__ void sub_float_from_double_GPU_kernel( int nrows, int ncols,
+               float *src, double *dest ) {
+        const int tx = threadIdx.x;
+        const int ty = threadIdx.y;
+        const int idx = blockIdx.x * blockDim.x + tx;
+        const int idy = blockIdx.y * blockDim.y + ty;
+
+        // Bounds checking
+        if( idx >= nrows || idy >= ncols ) {
+            return;
+        }
+
+        // dest(j, i) -= src(j, i)
+        dest[idy*nrows+idx] -= (double)src[idy*nrows+idx];
+}
+
+/**
+ * @brief GPU wrapper for dest(double) -= src(float)
+ *
+ * Launches sub_float_from_double_GPU_kernel with grid/block geometry
+ * derived from matrix dimensions.
+ *
+ * @param nrows Number of rows in the matrix
+ * @param ncols Number of columns in the matrix
+ * @param _src Source matrix (float, void pointer)
+ * @param _dest Destination matrix (double, void pointer)
+ * @param stream CUDA stream for asynchronous execution
+ */
+extern "C"
+void sub_float_from_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream ) {
+        int nBlockx = (nrows+CHUNKSIZE-1)/CHUNKSIZE;
+        int nBlocky = (ncols+CHUNKSIZE-1)/CHUNKSIZE;
+
+        dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+        dim3 dimGrid(nBlockx, nBlocky);
+
+        float *src = (float *)_src;
+        double *dest = (double *)_dest;
+
+        sub_float_from_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+/****************************************************************************************************/
+
+/**
  * @brief CUDA kernel for copying single precision matrix data
  * 
  * Copies single precision (float) matrix data from source to destination.
