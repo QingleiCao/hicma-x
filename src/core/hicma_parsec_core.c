@@ -3179,31 +3179,30 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
         return;
     }
 
+    int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int ldam = BLKLDD( descA, m );
+    int ldan = BLKLDD( descA, n );
+
     if( !rt_dump_registered ) {
         rt_dump_registered = 1;
         atexit(rt_dump_transition_counters);
     }
 
-    int old_decision_c = params_tlr->decisions[n*descA->lmt+m];
-    int use_temp_dp_c = 0;
-    void *C_kernel = C;
-    double *C_temp_dp = NULL;
+    uint16_t old_decision_c = params_tlr->decisions[n*descA->lmt+m];
     uint16_t old_decision_a = params_tlr->decisions_send[k*descA->lmt+m];
     uint16_t old_decision_b = params_tlr->decisions_send[k*descA->lmt+n];
     uint16_t old_gpu_gemm_mask = params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m];
+    double Anorm = 0.0;
+    double Bnorm = 0.0;
     uint16_t runtime_decision_a = old_decision_a;
     uint16_t runtime_decision_b = old_decision_b;
     uint16_t new_decision = (uint16_t)old_decision_c;
-    int effective_decision = old_decision_c;
-    
+    double *C_temp_dp = NULL;
+    float *C_temp_sp = NULL;
+
     if( params_tlr->adaptive_decision_runtime ) {
-        double Anorm = 0.0;
-        double Bnorm = 0.0;
-        double Aprecision_as_double = (double)old_decision_a;
-        double Bprecision_as_double = (double)old_decision_b;
-        parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
-        parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
-        void *tmp_buffer = stream_found->gpu_buffer_C;
+        double Aprecision_as_double = (double)runtime_decision_a;
+        double Bprecision_as_double = (double)runtime_decision_b;
 
         if( NULL != A_norm ) {
             cudaMemcpy(&Anorm, (double *)A_norm, sizeof(double), cudaMemcpyDeviceToHost);
@@ -3225,80 +3224,148 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
                     params_tlr->norm_tile[n*params_tlr->NT+m], Anorm * Bnorm,
                     Anorm, Bnorm, runtime_decision_a, runtime_decision_b);
         }
-
-        effective_decision = (new_decision == DENSE_DP) ? DENSE_DP : DENSE_SP;
-        if( old_decision_c != DENSE_DP && new_decision == DENSE_DP ) {
-            /* SP-backed C needs a temporary DP accumulation buffer for this update. */
-            use_temp_dp_c = 1;
-            effective_decision = DENSE_DP;
-        } else if( old_decision_c == DENSE_DP && new_decision != DENSE_DP ) {
-            /* Convert DP-backed C payload to SP-compatible bytes before non-DP kernels consume it. */
-            double2float_GPU(descA->mb, descA->nb, C, descA->mb, (float *)tmp_buffer, descA->mb, cuda_stream->cuda_stream);
-            memcpy_float_GPU(descA->mb, descA->nb, tmp_buffer, C, cuda_stream->cuda_stream);
-        }
     }
 
     rt_inc_counter(rt_gpu_pre_counts, old_decision_c, new_decision);
+
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+    void *tmp_buffer = stream_found->gpu_buffer_C;
+    float *A_sp = (float *)stream_found->gpu_buffer_A;
+    float *B_sp = (float *)stream_found->gpu_buffer_B;
 
     if( old_gpu_gemm_mask == MASK_TF16_A16_B16_C16_OP16 ) {
         params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_TF16_A16_B16_C32_OP32;
     } else if( old_gpu_gemm_mask == MASK_BF16_A16_B16_C16_OP16 ) {
         params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_BF16_A16_B16_C32_OP32;
     }
-    if( effective_decision == DENSE_SP ) {
-        /* Match CPU SP behavior: no TF32/tensor shortcuts in runtime path. */
-        params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP32;
-    } else if( effective_decision == DENSE_DP ) {
-        params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP64;
-    }
-
-    if( use_temp_dp_c ) {
-        cudaMalloc((void **)&C_temp_dp, (size_t)descA->mb * (size_t)descA->nb * sizeof(double));
-        float2double_GPU(descA->mb, descA->nb, C, descA->mb, C_temp_dp, descA->mb, cuda_stream->cuda_stream);
-        C_kernel = C_temp_dp;
-    }
-
-    params_tlr->decisions[n*descA->lmt+m] = effective_decision;
     params_tlr->decisions_send[k*descA->lmt+m] = runtime_decision_a;
     params_tlr->decisions_send[k*descA->lmt+n] = runtime_decision_b;
-    hicma_parsec_core_gemm_denseC_denseA_denseB_gpu(descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
-            C_kernel, A, B, m, n, k, Crank, Arank, Brank);
 
-    if( params_tlr->adaptive_decision_runtime ) {
-        parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
-        parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
-        cublasHandle_t handle = stream_found->handle_cublas;
-        uint16_t updated_decision = (uint16_t)effective_decision;
+    cublasSetStream(handle, cuda_stream->cuda_stream);
 
-        cublasSetStream(handle, cuda_stream->cuda_stream);
-        if( effective_decision == DENSE_DP ) {
+    /* If dgemm */
+    if( DENSE_DP == new_decision ) {
+        void *C_use = C;
+        params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
+        params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP64;
+
+        if( DENSE_DP != old_decision_c ) {
+            cudaMalloc((void **)&C_temp_dp, (size_t)descA->mb * (size_t)descA->nb * sizeof(double));
+            float2double_GPU(descA->mb, descA->nb, C, descA->mb, C_temp_dp, descA->mb, cuda_stream->cuda_stream);
+            C_use = C_temp_dp;
+        }
+
+        hicma_parsec_core_gemm_denseC_denseA_denseB_gpu(descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
+                C_use, A, B, m, n, k, Crank, Arank, Brank);
+
+        if( params_tlr->adaptive_decision_runtime ) {
+            uint16_t updated_decision;
             double Cnorm = 0.0;
-            cublasDnrm2(handle, descA->mb * descA->nb, (double *)C_kernel, 1, &Cnorm);
+            cublasDnrm2(handle, tempmm * descA->nb, (double *)C_use, 1, &Cnorm);
             hicma_parsec_get_precision_tile(params_tlr, &updated_decision, Cnorm, m, n);
-            if( updated_decision != DENSE_DP ) {
-                updated_decision = DENSE_SP;
-            }
-            if( use_temp_dp_c || updated_decision != DENSE_DP ) {
-                void *tmp_buffer = stream_found->gpu_buffer_C;
-                double2float_GPU(descA->mb, descA->nb, C_kernel, descA->mb, (float *)tmp_buffer, descA->mb, cuda_stream->cuda_stream);
-                memcpy_float_GPU(descA->mb, descA->nb, tmp_buffer, C, cuda_stream->cuda_stream);
-                if( use_temp_dp_c && updated_decision == DENSE_DP ) {
-                    /* C storage is SP-backed in this path, keep decision consistent with storage. */
-                    updated_decision = DENSE_SP;
+            if( DENSE_DP == updated_decision ) {
+                if( C_use != C ) {
+                    cudaMemcpyAsync(C, C_use,
+                            (size_t)descA->mb * (size_t)descA->nb * sizeof(double),
+                            cudaMemcpyDeviceToDevice, cuda_stream->cuda_stream);
                 }
+                params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
+            } else {
+                double2float_GPU(descA->mb, descA->nb, C_use, descA->mb, (float *)tmp_buffer, descA->mb, cuda_stream->cuda_stream);
+                memcpy_float_GPU(descA->mb, descA->nb, tmp_buffer, C, cuda_stream->cuda_stream);
+                params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
+            }
+        }
+    }
+    /* If sgemm or hgemm path (CPU !HAVE_HP_CPU branch logic in fp32) */
+    else {
+        void *A_use = A;
+        void *B_use = B;
+        params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
+        params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP32;
+
+        if( DENSE_DP == runtime_decision_a ) {
+            double2float_GPU(descA->mb, descA->nb, A, descA->mb, A_sp, descA->mb, cuda_stream->cuda_stream);
+            A_use = A_sp;
+        } else if( DENSE_HP == runtime_decision_a ) {
+            half2float_GPU(descA->mb, descA->nb, A, descA->mb, A_sp, descA->mb, cuda_stream->cuda_stream);
+            A_use = A_sp;
+        }
+        if( DENSE_DP == runtime_decision_b ) {
+            double2float_GPU(descA->mb, descA->nb, B, descA->mb, B_sp, descA->mb, cuda_stream->cuda_stream);
+            B_use = B_sp;
+        } else if( DENSE_HP == runtime_decision_b ) {
+            half2float_GPU(descA->mb, descA->nb, B, descA->mb, B_sp, descA->mb, cuda_stream->cuda_stream);
+            B_use = B_sp;
+        }
+
+        if( DENSE_DP == old_decision_c ) {
+            uint16_t updated_decision;
+            double Cnorm = 0.0;
+            float alpha_sp = 1.0f, beta_sp = 0.0f;
+            double alpha_dp = -1.0;
+
+            cudaMalloc((void **)&C_temp_sp, (size_t)descA->mb * (size_t)descA->nb * sizeof(float));
+            cudaMemsetAsync(C_temp_sp, 0, (size_t)descA->mb * (size_t)descA->nb * sizeof(float), cuda_stream->cuda_stream);
+
+            hicma_parsec_sgemm_gpu(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                    tempmm, descA->mb, descA->mb,
+                    &alpha_sp, A_use, ldam,
+                    B_use, ldan,
+                    &beta_sp, C_temp_sp, ldam,
+                    MASK_FP32);
+
+            if( NULL == C_temp_dp ) {
+                cudaMalloc((void **)&C_temp_dp, (size_t)descA->mb * (size_t)descA->nb * sizeof(double));
+            }
+            float2double_GPU(descA->mb, descA->nb, C_temp_sp, descA->mb, C_temp_dp, descA->mb, cuda_stream->cuda_stream);
+            cublasDaxpy(handle, tempmm * descA->nb, &alpha_dp, C_temp_dp, 1, (double *)C, 1);
+
+            cublasDnrm2(handle, tempmm * descA->nb, (double *)C, 1, &Cnorm);
+            hicma_parsec_get_precision_tile(params_tlr, &updated_decision, Cnorm, m, n);
+            if( DENSE_DP == updated_decision ) {
+                params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
+            } else {
+                double2float_GPU(descA->mb, descA->nb, C, descA->mb, (float *)tmp_buffer, descA->mb, cuda_stream->cuda_stream);
+                memcpy_float_GPU(descA->mb, descA->nb, tmp_buffer, C, cuda_stream->cuda_stream);
+                params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
             }
         } else {
+            uint16_t updated_decision;
             float Cnorm = 0.0f;
-            cublasSnrm2(handle, descA->mb * descA->nb, (float *)C, 1, &Cnorm);
+            float alpha_sp = -1.0f, beta_sp = 1.0f;
+
+            hicma_parsec_sgemm_gpu(handle, CUBLAS_OP_N, CUBLAS_OP_T,
+                    tempmm, descA->mb, descA->mb,
+                    &alpha_sp, A_use, ldam,
+                    B_use, ldan,
+                    &beta_sp, C, ldam,
+                    MASK_FP32);
+
+            cublasSnrm2(handle, tempmm * descA->nb, (float *)C, 1, &Cnorm);
             hicma_parsec_get_precision_tile(params_tlr, &updated_decision, (double)Cnorm, m, n);
-            /* CPU runtime SP/HP paths persist C as SP unless real DP promotion is possible. */
-            updated_decision = DENSE_SP;
+            if( DENSE_DP == updated_decision ) {
+                if( NULL == C_temp_dp ) {
+                    cudaMalloc((void **)&C_temp_dp, (size_t)descA->mb * (size_t)descA->nb * sizeof(double));
+                }
+                float2double_GPU(descA->mb, descA->nb, C, descA->mb, C_temp_dp, descA->mb, cuda_stream->cuda_stream);
+                cudaMemcpyAsync(C, C_temp_dp,
+                        (size_t)descA->mb * (size_t)descA->nb * sizeof(double),
+                        cudaMemcpyDeviceToDevice, cuda_stream->cuda_stream);
+                params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
+            } else {
+                params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
+            }
         }
-        params_tlr->decisions[n*descA->lmt+m] = updated_decision;
     }
 
     rt_inc_counter(rt_gpu_post_counts, old_decision_c, params_tlr->decisions[n*descA->lmt+m]);
 
+    if( NULL != C_temp_sp ) {
+        cudaFree(C_temp_sp);
+    }
     if( NULL != C_temp_dp ) {
         cudaFree(C_temp_dp);
     }
