@@ -648,7 +648,7 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
                 assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_B);
 
-                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(float) );
+                data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C = zone_malloc( cuda_device->super.memory, mb * nb * sizeof(double) );
                 assert(NULL != data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_C);
             }
 

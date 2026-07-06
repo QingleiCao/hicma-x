@@ -3216,7 +3216,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
     B_h = (void *)stream_found->gpu_buffer_B;
     B_fp8 = (void *)stream_found->gpu_buffer_B;
 
-    C_d = (float *)stream_found->gpu_buffer_C;
+    /* Keep DP temporary storage on a double-capable buffer. */
+    C_d = (double *)stream_found->gpu_buffer_C;
     C_s = (float *)stream_found->gpu_buffer_C;
     C_h = (void *)stream_found->gpu_buffer_C;
 
@@ -3362,7 +3363,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
             double2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
             B_use = B_h;
         } else if( DENSE_SP == Bprecision ) {
-            float2half_GPU( descA->mb, descA->nb, B, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+            float2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
             B_use = B_h;
         } else {
             fprintf(stderr, "Precision B is not correct: %d %d %d!\n", m, n, k);
