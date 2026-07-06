@@ -910,7 +910,13 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
         params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
 
         if(params->gpus > 0) {
-            params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->gpus, sizeof(uint64_t));
+            params->nb_gemms_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
+        } else {
+            params->nb_gemms_stride = params->cores;
+        }
+
+        if(params->gpus > 0) {
+            params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->gpus*PARSEC_GPU_MAX_STREAMS, sizeof(uint64_t));
         } else {
             params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->cores, sizeof(uint64_t));
         }
@@ -1096,9 +1102,16 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->nb_dense_fp8 = 0.0;       // Number of FP8 precision dense tiles
     params->nb_low_rank_dp = 0.0;     // Number of double precision low-rank tiles
     params->nb_low_rank_sp = 0.0;     // Number of single precision low-rank tiles
+
     if( params->cores > 0 ) {
         if(params->gpus > 0) {
-            params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->gpus, sizeof(uint64_t));
+            params->nb_gemms_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
+        } else {
+            params->nb_gemms_stride = params->cores;
+        }
+
+        if(params->gpus > 0) {
+            params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->gpus*PARSEC_GPU_MAX_STREAMS, sizeof(uint64_t));
         } else {
             params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->cores, sizeof(uint64_t));
         }
@@ -1341,7 +1354,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%e %d %d %e %e %e %e ", params->result_accuracy, params->left_looking, params->gpu_type, params->norm_global_diff, params->fixedacc * params->norm_global, params->log_det_dp, params->log_det_mp);
         printf("%lf %lf %lf %d  ", params->time_decision_kernel, params->time_decision_sender, params->time_syrk_app, params->numobj);
         printf("%d %d %d %g %g %d ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density, params->adaptive_decision_runtime);
-        printf("%lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->cores], params->nb_gemms[DENSE_SP*params->cores], params->nb_gemms[DENSE_HP*params->cores], params->nb_gemms[LOW_RANK_DP*params->cores], params->nb_gemms[LOW_RANK_DP*params->cores]);
+        printf("%lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->nb_gemms_stride], params->nb_gemms[DENSE_SP*params->nb_gemms_stride], params->nb_gemms[DENSE_HP*params->nb_gemms_stride], params->nb_gemms[LOW_RANK_DP*params->nb_gemms_stride], params->nb_gemms[LOW_RANK_DP*params->nb_gemms_stride]);
 #ifdef GITHASH
         printf("%s ", xstr(GITHASH));
 #else

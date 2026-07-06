@@ -1273,7 +1273,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
         }
     }
 
-    if(verbose > 1) {
+    if(params_tlr->verbose > 1) {
         if( DENSE_DP == new_decision ) {
             params_tlr->nb_gemms[DENSE_DP*cores+tid] += 1;
         } else if( DENSE_SP == new_decision ) {
@@ -2910,6 +2910,26 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
     if(DEBUG_INFO) printf("GPU GEMM (%d, %d, %d) : %d %d %d : C_DENSE, A_DENSE, B_DENSE\n",
             m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
 
+    if(params_tlr->verbose > 1) {
+        uint16_t new_decision = params_tlr->decisions[n*descA->lmt+m];
+        int cores = params_tlr->nb_gemms_stride;
+        int device_id = lookup_gpu_workspace_i(cuda_device);
+        int stream_id = lookup_gpu_workspace_j(cuda_device, cuda_stream);
+        //printf("device_id %d stream_id %d\n", device_id, stream_id);
+        int tid = device_id * stream_id;
+        if( DENSE_DP == new_decision ) {
+            params_tlr->nb_gemms[DENSE_DP*cores+tid] += 1;
+        } else if( DENSE_SP == new_decision ) {
+            params_tlr->nb_gemms[DENSE_SP*cores+tid] += 1;
+        } else if( DENSE_HP == new_decision ) {
+            params_tlr->nb_gemms[DENSE_HP*cores+tid] += 1;
+        } else if(LOW_RANK_DP == new_decision ) {
+            params_tlr->nb_gemms[LOW_RANK_DP*cores+tid] += 1;
+        } else if(LOW_RANK_SP == new_decision ) {
+            params_tlr->nb_gemms[LOW_RANK_SP*cores+tid] += 1;
+        }
+    }
+
     /* If dgemm */
     if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
 
@@ -3246,8 +3266,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
                 Anorm, Bnorm, Aprecision, Bprecision);
     }
 
-#if 0
-    if(verbose > 1) {
+    if(params_tlr->verbose > 1) {
+        int cores = params_tlr->nb_gemms_stride;
+        int device_id = lookup_gpu_workspace_i(cuda_device); 
+        int stream_id = lookup_gpu_workspace_j(cuda_device, cuda_stream); 
+        //printf("device_id %d stream_id %d\n", device_id, stream_id);
+        int tid = device_id * stream_id;
         if( DENSE_DP == new_decision ) {
             params_tlr->nb_gemms[DENSE_DP*cores+tid] += 1;
         } else if( DENSE_SP == new_decision ) {
@@ -3260,7 +3284,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
             params_tlr->nb_gemms[LOW_RANK_SP*cores+tid] += 1;
         }
     }
-#endif
 
     /* If dgemm */
     if( DENSE_DP == new_decision ) {

@@ -166,6 +166,9 @@ int gpu_load_mixed_precision( int m, int n, int NT, int P, int nb_cuda_devices, 
 parsec_potrf_stream_workspace_t *lookup_gpu_workspace( parsec_device_cuda_module_t *cuda_device,
         parsec_cuda_exec_stream_t *cuda_stream,
         parsec_potrf_workspace_t *ws );
+int lookup_gpu_workspace_i( parsec_device_cuda_module_t *cuda_device );
+int lookup_gpu_workspace_j( parsec_device_cuda_module_t *cuda_device,
+        parsec_cuda_exec_stream_t *cuda_stream );
 
 /**
  * @brief Allocate memory for workspace

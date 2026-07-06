@@ -623,6 +623,7 @@ typedef struct hicma_parsec_params_s {
     double nb_low_rank_dp;    /**< Number of low-rank double precision tiles */
     double nb_low_rank_sp;    /**< Number of low-rank single precision tiles */
     uint64_t *nb_gemms;
+    int nb_gemms_stride;
 
     /* ========================================================================
      * Performance metrics

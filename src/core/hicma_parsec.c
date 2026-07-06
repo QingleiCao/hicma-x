@@ -495,20 +495,16 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
 
     /* Statistics for number of GEMMs in different precision */
     if(params->verbose > 1) {
-        if(params->gpus > 0) {
-            printf("TODO\n");
-        } else {
-            int cores = params->cores;
-            for( int i = 0; i < NB_DECISIONS+1; i++ ) {
-                for( int j = 1; j < cores; j++ ) {
-                    params->nb_gemms[i*cores] += params->nb_gemms[i*cores+j]; 
-                }
+        int cores = params->nb_gemms_stride;
+        for( int i = 0; i < NB_DECISIONS+1; i++ ) {
+            for( int j = 1; j < cores; j++ ) {
+                params->nb_gemms[i*cores] += params->nb_gemms[i*cores+j]; 
             }
-            MPI_Allreduce(MPI_IN_PLACE, params->nb_gemms, (NB_DECISIONS+1)*params->cores, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
-            fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu\n"RESET,
-                    params->nb_gemms[DENSE_DP*params->cores], params->nb_gemms[DENSE_SP*params->cores], params->nb_gemms[DENSE_HP*params->cores],
-                    params->nb_gemms[LOW_RANK_DP*params->cores], params->nb_gemms[LOW_RANK_DP*params->cores]);
         }
+        MPI_Allreduce(MPI_IN_PLACE, params->nb_gemms, (NB_DECISIONS+1)*params->cores, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+        fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu\n"RESET,
+                params->nb_gemms[DENSE_DP*cores], params->nb_gemms[DENSE_SP*cores], params->nb_gemms[DENSE_HP*cores],
+                params->nb_gemms[LOW_RANK_DP*cores], params->nb_gemms[LOW_RANK_DP*cores]);
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)

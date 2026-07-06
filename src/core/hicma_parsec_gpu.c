@@ -231,6 +231,36 @@ void disable_GPU( parsec_taskpool_t * tp ) {
  * @param[in] ws POTRF workspace
  * @return Pointer to stream workspace
  */
+int lookup_gpu_workspace_i( parsec_device_cuda_module_t *cuda_device ) {
+    int i;
+
+    /* Look for device */
+    for(i = 0; i < (int)parsec_nb_devices; i++) {
+        parsec_device_module_t *device = parsec_mca_device_get(i);
+        if( NULL == device ) continue;
+        if( device->type != PARSEC_DEV_CUDA && device->type != PARSEC_DEV_HIP ) continue;
+        parsec_device_cuda_module_t *cuda_device_compare = (parsec_device_cuda_module_t*)device;
+
+        if(cuda_device->cuda_index == cuda_device_compare->cuda_index)
+            break;
+    }
+
+    return i;
+}
+
+int lookup_gpu_workspace_j( parsec_device_cuda_module_t *cuda_device,
+        parsec_cuda_exec_stream_t *cuda_stream ) {
+    int j;
+
+    /* Look for stream; 0, h2d; 1 d2h*/
+    for(j = 2; j < cuda_device->super.max_exec_streams; j++) {
+        if( cuda_stream == (parsec_cuda_exec_stream_t *)cuda_device->super.exec_stream[j] )
+            break;
+    }
+
+    return j;
+}
+
 parsec_potrf_stream_workspace_t *lookup_gpu_workspace( parsec_device_cuda_module_t *cuda_device,
         parsec_cuda_exec_stream_t *cuda_stream,
         parsec_potrf_workspace_t *ws ) {
