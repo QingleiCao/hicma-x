@@ -2762,6 +2762,62 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
         parsec_cuda_exec_stream_t *cuda_stream,
         void *T, void *A, int m, int k, int Arank, void *A_norm )
 {
+
+    if(!params_tlr->adaptive_decision_runtime) {
+        fprintf(stderr, "in SYRK, it needs to enable adaptive_decision_runtime\n");
+        return;
+    }
+
+#if 1
+    int tempmm = m == descA->mt-1 ? descA->m - m*descA->mb : descA->mb;
+    int ldam = BLKLDD( descA, m );
+    if( DEBUG_INFO ) printf("GPU_syrk:  %d %d\n", m, k);
+
+    /* Get handle_cublas */
+    parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
+    parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
+    cublasHandle_t handle = stream_found->handle_cublas;
+
+    cublasStatus_t status;
+    cublasSetStream( handle, cuda_stream->cuda_stream );
+
+    double Aprecision_as_double;
+    cudaMemcpy(&Aprecision_as_double, ((double *)A_norm) + 1, sizeof(double), cudaMemcpyDeviceToHost);
+    uint16_t Aprecision = (uint16_t)Aprecision_as_double;
+
+    if( IS_DENSE(m, k) ) {
+        if( DENSE_DP == params_tlr->decisions[m*descA->lmt+m] ) {
+            double alpha = (double)-1.0;
+            double beta = (double)1.0;
+            double *A_d = A;
+            if( DENSE_DP != Aprecision ) { 
+                /* Get the temporary buffer on GPU */
+                A_d = (double *)stream_found->gpu_buffer_A;
+                assert(NULL != A_d);
+
+                /* Convert datatype */
+                float2double_GPU( descA->mb, descA->nb, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream );
+            }
+
+            status = cublasDsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+                    tempmm, descA->mb,
+                    &alpha, A_d /*A(m, k)*/, ldam,
+                    &beta,  T /*A(m, m)*/, ldam);
+        } else {
+            fprintf(stderr, "Should not reach here: SYRK SP %d\n", m);
+            const float alpha = (float)-1.0;
+            const float beta = (float)1.0;
+
+            status = cublasSsyrk(handle, CUBLAS_FILL_MODE_LOWER, CUBLAS_OP_N,
+                    tempmm, descA->mb,
+                    &alpha, A  /*A(m, k)*/, ldam,
+                    &beta,  T  /*A(m, m)*/, ldam);
+        }
+    } else {
+            fprintf(stderr, "Should not reach here: SYRK LOW_RANK %d\n", m);
+    }
+#else
+
     uint16_t old_decision = params_tlr->decisions_send[k*descA->lmt+m];
     uint16_t runtime_precision = old_decision;
 
@@ -2774,6 +2830,7 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
     params_tlr->decisions_send[k*descA->lmt+m] = runtime_precision;
     hicma_parsec_core_syrk_gpu(descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, A, m, k, Arank);
     params_tlr->decisions_send[k*descA->lmt+m] = old_decision;
+#endif
 }
 
 
@@ -3117,6 +3174,11 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
         int Crank, int Arank, int Brank,
         void *A_norm, void *B_norm )
 {
+    if(!params_tlr->adaptive_decision_runtime) {
+        fprintf(stderr, "in GEMM, it needs to enable adaptive_decision_runtime\n");
+        return;
+    }
+
     if( !rt_dump_registered ) {
         rt_dump_registered = 1;
         atexit(rt_dump_transition_counters);
