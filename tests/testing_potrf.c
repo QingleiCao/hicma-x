@@ -69,7 +69,7 @@ int main(int argc, char **argv)
         hicma_parsec_potrf(parsec, &data, &params, &analysis);
         
         /* Print final parameters for this run */
-        hicma_parsec_params_print_final(argc, argv, &params, &analysis);
+        if(!params.check) hicma_parsec_params_print_final(argc, argv, &params, &analysis);
         
         /* Check factorization status */
         if (params.info != 0 && params.rank == 0) {
