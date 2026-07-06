@@ -720,6 +720,20 @@ void int_2double_array(int nrows, int ncols,
  * ============================================================================ */
 
 /**
+ * @brief Subtract float matrix from double matrix on GPU
+ *
+ * Performs element-wise operation:
+ *   dest(double) -= src(float)
+ *
+ * @param[in] nrows Number of rows
+ * @param[in] ncols Number of columns
+ * @param[in] _src Source data pointer (float)
+ * @param[in,out] _dest Destination data pointer (double)
+ * @param[in] stream CUDA stream
+ */
+void sub_float_from_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
+
+/**
  * @brief Copy double precision data from source to destination on GPU
  *
  * Performs memory copy operation for double precision data on GPU between

@@ -3191,15 +3191,14 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
         atexit(rt_dump_transition_counters);
     }
 
-    uint16_t old_gpu_gemm_mask = params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m];
     double Anorm = 0.0;
     double Bnorm = 0.0;
     uint16_t Aprecision;
     uint16_t Bprecision;
     uint16_t Cprecision = params_tlr->decisions[n*descA->lmt+m];
     uint16_t new_decision = (uint16_t)Cprecision;
-    uint16_t old_gpu_gemm_mask = params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m];
 
+    cublasStatus_t status;
     parsec_potrf_workspace_t *_ws_gpu = (parsec_potrf_workspace_t *)ws_gpu;
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, _ws_gpu);
     cublasHandle_t handle = stream_found->handle_cublas;
@@ -3267,7 +3266,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
 
         if( DENSE_DP != Aprecision ) {
             float2double_GPU(descA->mb, descA->nb, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream);
-            A_use = A_d 
+            A_use = A_d; 
         }
 
         /* Convert datatype, B */
