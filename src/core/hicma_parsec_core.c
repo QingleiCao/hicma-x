@@ -3293,21 +3293,19 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( parsec_ti
                 CUBLAS_COMPUTE_64F, CUBLAS_GEMM_DEFAULT);
 
         // TODO
-#if ACC_DP || 1
-        params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
-#else
-        /* Re-calculate the decision for C */
-        uint16_t updated_decision;
-        double Cnorm = 0.0;
-        cublasDnrm2(handle, tempmm * descA->nb, (double *)C_use, 1, &Cnorm);
-        hicma_parsec_get_precision_tile(params_tlr, &updated_decision, Cnorm, m, n);
-        if(DENSE_DP == updated_decision) {
-            memcpy_double_GPU( descA->mb, descA->nb, C_use, C, cuda_stream->cuda_stream );
-            params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
-        } else {
+
+#if 0
+        if( DENSE_DP != Cprecision ) {
             double2float_GPU( descA->mb, descA->nb, C_use, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
             params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
+        } else {
+            params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
         }
+#else
+        if( DENSE_DP != Cprecision ) {
+            memcpy_double_GPU( descA->mb, descA->nb, C_use, C, cuda_stream->cuda_stream );
+        }
+        params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
 #endif
 
         /* If sgemm */

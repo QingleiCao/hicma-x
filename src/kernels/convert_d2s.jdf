@@ -95,7 +95,13 @@ BODY
             this_task->data._f_A.data_out->device_private = new_memory;
         }
         // Update element count for single precision
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+        //this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+        // Update element count; for adaptive_decision_runtime, it needs to be in DP for date_copy on GPU 
+        if(params_tlr->adaptive_decision_runtime) {
+            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(double);
+        } else {
+            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+        }
     }
 
     // Handle low-rank matrix tiles that need conversion to single precision
