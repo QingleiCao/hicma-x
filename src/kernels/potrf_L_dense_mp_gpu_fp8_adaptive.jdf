@@ -1017,6 +1017,14 @@ BODY [type=CUDA]
         if( params_tlr->adaptive_decision_runtime ) {
             hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
                     C, A, B, m, n, k, 0, 0, 0, A_norm, B_norm );
+            /* The last local GEMM */
+            if(k+1 == n) {
+                if(params_tlr->decisions[n*descA->lmt+m] == DENSE_DP) {
+                    this_task->data._f_C.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(double);
+                } else {
+                    this_task->data._f_C.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+                }
+            }
         } else {
             hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
                     C, A, B, m, n, k, 0, 0, 0 );
@@ -1087,6 +1095,14 @@ BODY [type=HIP]
         if( params_tlr->adaptive_decision_runtime ) {
             hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
                     C, A, B, m, n, k, 0, 0, 0, A_norm, B_norm );
+            /* The last local GEMM */
+            if(k+1 == n) {
+                if(params_tlr->decisions[n*descA->lmt+m] == DENSE_DP) {
+                    this_task->data._f_C.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(double);
+                } else { 
+                    this_task->data._f_C.data_out->original->nb_elts = descA->mb * descA->nb * sizeof(float);
+                }
+            }
         } else {
             hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
                     C, A, B, m, n, k, 0, 0, 0 );

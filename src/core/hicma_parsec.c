@@ -279,9 +279,13 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
 
     /* Step 13: GPU warmup to ensure optimal performance if GPUs are available */
     if(params->gpus > 0) {
+        parsec_tiled_matrix_t *A = (parsec_tiled_matrix_t *)&data->dcA;
+        if( params->band_size_dense >= params->NT && params->auto_band == 0 && !params->adaptive_memory ) {
+            A = (parsec_tiled_matrix_t *)&data->dcAd;
+        }
         SYNC_TIME_START();
         //hicma_parsec_warmup_potrf(params->rank, params->uplo, 3872, parsec);
-        hicma_parsec_potrf_L_warmup( parsec, (parsec_tiled_matrix_t *)&data->dcA, params, 1);
+        hicma_parsec_potrf_L_warmup( parsec, A, params, 1);
         SYNC_TIME_PRINT(params->rank, ("Warmup\n"));
     }
 
