@@ -472,30 +472,27 @@ BODY [type=CUDA]
     /* GPU-accelerated triangular solve using CUDA */
     hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
-    /* Update communication size based on data type */
-    /* Calculate F norm */
-    //cublasSetPointerMode(stream_found->handle_cublas, CUBLAS_POINTER_MODE_DEVICE);
-    if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-        if(params_tlr->adaptive_decision_runtime) {
-            double C_norm_dp = 0.0;
+    /* Update communication size and optionally compute F norm for runtime adaptation. */
+    const int decision = params_tlr->decisions[k*descA->lmt+m];
+    const int tile_elems = descA->mb * descA->mb;
+    if(params_tlr->adaptive_decision_runtime) {
+        cublasPointerMode_t old_pointer_mode = CUBLAS_POINTER_MODE_HOST;
+        cublasGetPointerMode(stream_found->handle_cublas, &old_pointer_mode);
+        cublasSetPointerMode(stream_found->handle_cublas, CUBLAS_POINTER_MODE_DEVICE);
+        if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_dp);
-            //printf("%d %d: norm %lf\n", m, k, C_norm_dp); 
-            cudaMemcpy(C_norm, &C_norm_dp, sizeof(double), cudaMemcpyHostToDevice);
-            cudaMemcpy(((double *)C_norm) + 1, &C_precision_dp, sizeof(double), cudaMemcpyHostToDevice);
-        }
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
-    } else { 
-        if(params_tlr->adaptive_decision_runtime) {
-            float C_norm_sp = 0.0f;
+            cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, (double *)C_norm);
+            set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
+        } else {
             double C_precision_sp = (double)DENSE_SP;
-            cublasSnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_sp);
-            copy_float_to_device_double(C_norm, C_norm_sp, cuda_stream->cuda_stream);
-            cudaMemcpy(((double *)C_norm) + 1, &C_precision_sp, sizeof(double), cudaMemcpyHostToDevice);
-            //printf("%d %d: norm %f\n", m, k, C_norm_sp); 
+            float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
+            cublasSnrm2(stream_found->handle_cublas, tile_elems, C, 1, norm_sp_device);
+            copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
+            set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
         }
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        cublasSetPointerMode(stream_found->handle_cublas, old_pointer_mode);
     }
+    this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
 #endif
 }
 END
@@ -514,30 +511,27 @@ BODY [type=HIP]
     /* GPU-accelerated triangular solve using HIP (AMD ROCm) */
     hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
-    /* Update communication size based on data type */
-    /* Calculate F norm */
-    //cublasSetPointerMode(stream_found->handle_cublas, CUBLAS_POINTER_MODE_DEVICE);
-    if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-        if(params_tlr->adaptive_decision_runtime) {
-            double C_norm_dp = 0.0;
+    /* Update communication size and optionally compute F norm for runtime adaptation. */
+    const int decision = params_tlr->decisions[k*descA->lmt+m];
+    const int tile_elems = descA->mb * descA->mb;
+    if(params_tlr->adaptive_decision_runtime) {
+        cublasPointerMode_t old_pointer_mode = CUBLAS_POINTER_MODE_HOST;
+        cublasGetPointerMode(stream_found->handle_cublas, &old_pointer_mode);
+        cublasSetPointerMode(stream_found->handle_cublas, CUBLAS_POINTER_MODE_DEVICE);
+        if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_dp);
-            //printf("%d %d: norm %lf\n", m, k, C_norm_dp);
-            cudaMemcpy(C_norm, &C_norm_dp, sizeof(double), cudaMemcpyHostToDevice);
-            cudaMemcpy(((double *)C_norm) + 1, &C_precision_dp, sizeof(double), cudaMemcpyHostToDevice);
-        }
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
-    } else {  
-        if(params_tlr->adaptive_decision_runtime) {
-            float C_norm_sp = 0.0f;
+            cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, (double *)C_norm);
+            set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
+        } else {
             double C_precision_sp = (double)DENSE_SP;
-            cublasSnrm2(stream_found->handle_cublas, descA->mb * descA->mb, C, 1, &C_norm_sp);
-            copy_float_to_device_double(C_norm, C_norm_sp, cuda_stream->cuda_stream);
-            cudaMemcpy(((double *)C_norm) + 1, &C_precision_sp, sizeof(double), cudaMemcpyHostToDevice);
-            //printf("%d %d: norm %f\n", m, k, C_norm_sp);
+            float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
+            cublasSnrm2(stream_found->handle_cublas, tile_elems, C, 1, norm_sp_device);
+            copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
+            set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
         }
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float); 
+        cublasSetPointerMode(stream_found->handle_cublas, old_pointer_mode);
     }
+    this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
 #endif
 }
 END
