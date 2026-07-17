@@ -686,7 +686,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu(parsec_tiled_matrix_t* desc
                                                      void *C, void *A, void *B, int m, int n, int k,
                                                      int Crank, int Arank, int Brank);
 
-void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu(parsec_tiled_matrix_t* descA,
+void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu(void *this_task_,
+                                                                      parsec_tiled_matrix_t* descA,
                                                                       hicma_parsec_params_t *params_tlr,
                                                                       parsec_potrf_workspace_t *ws_gpu,
                                                                       parsec_device_cuda_module_t *cuda_device,
