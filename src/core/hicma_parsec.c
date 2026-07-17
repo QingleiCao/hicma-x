@@ -281,7 +281,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
     if(params->gpus > 0) {
         SYNC_TIME_START();
         //hicma_parsec_warmup_potrf(params->rank, params->uplo, 3872, parsec);
-        //hicma_parsec_potrf_L_warmup( parsec, (parsec_tiled_matrix_t *)&data->dcA, params, 1);
+        hicma_parsec_potrf_L_warmup( parsec, (parsec_tiled_matrix_t *)&data->dcA, params, 1);
         SYNC_TIME_PRINT(params->rank, ("Warmup\n"));
     }
 
@@ -522,6 +522,7 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
 #endif
 
     params->info = ginfo;
+
     return ginfo;
 }
 

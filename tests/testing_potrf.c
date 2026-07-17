@@ -64,13 +64,18 @@ int main(int argc, char **argv)
         if (params.rank == 0 && params.nruns > 1) {
             printf("Run %d/%d...\n", i + 1, params.nruns);
         }
+
+        /* Reset nb_gemms */
+        if(params.nruns > 1) memset(params.nb_gemms, 0, (NB_DECISIONS+1)*params.nb_gemms_stride*sizeof(uint64_t));
+        //if(0 == i) params.adaptive_decision_runtime = 0;
         
         /* Perform Cholesky decomposition */
         hicma_parsec_potrf(parsec, &data, &params, &analysis);
         
         /* Print final parameters for this run */
         if(!params.check) hicma_parsec_params_print_final(argc, argv, &params, &analysis);
-        
+        //params.adaptive_decision_runtime = 1;
+
         /* Check factorization status */
         if (params.info != 0 && params.rank == 0) {
             fprintf(stderr, "Warning: Factorization may be suspicious (info = %d)\n", params.info);
