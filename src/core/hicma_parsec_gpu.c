@@ -296,10 +296,10 @@ parsec_potrf_stream_workspace_t *lookup_gpu_workspace( parsec_device_cuda_module
  */
 void workspace_memory_allocate( parsec_potrf_workspace_t **ws ) {
     *ws = (parsec_potrf_workspace_t *)malloc( sizeof(parsec_potrf_workspace_t) );
-    (*ws)->gpu_workspace = (parsec_potrf_gpu_workspace_t *)malloc( parsec_nb_devices * sizeof(parsec_potrf_gpu_workspace_t) );
+    (*ws)->gpu_workspace = (parsec_potrf_gpu_workspace_t *)calloc( parsec_nb_devices, sizeof(parsec_potrf_gpu_workspace_t) );
 
     for( int i = 0; i < parsec_nb_devices; i++ ) {
-        (*ws)->gpu_workspace[i].stream_workspace = (parsec_potrf_stream_workspace_t *)malloc( PARSEC_GPU_MAX_STREAMS * sizeof(parsec_potrf_stream_workspace_t) );
+        (*ws)->gpu_workspace[i].stream_workspace = (parsec_potrf_stream_workspace_t *)calloc( PARSEC_GPU_MAX_STREAMS, sizeof(parsec_potrf_stream_workspace_t) );
         (*ws)->gpu_workspace[i].cuda_device = (parsec_device_cuda_module_t *)malloc( sizeof(parsec_device_cuda_module_t) );
     }
 }
@@ -348,6 +348,13 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws)
             if( NULL != ws->gpu_workspace[i].stream_workspace[j].handle_cublas ) {
                 cublasHandle_t handle_cublas = ws->gpu_workspace[i].stream_workspace[j].handle_cublas;
                 cublasStatus_t status = cublasDestroy(handle_cublas);
+                assert(status == CUBLAS_STATUS_SUCCESS);
+            }
+
+            /* Free GPU handle_cublas_deviceptr */
+            if( NULL != ws->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr ) {
+                cublasHandle_t handle_cublas_deviceptr = ws->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr;
+                cublasStatus_t status = cublasDestroy(handle_cublas_deviceptr);
                 assert(status == CUBLAS_STATUS_SUCCESS);
             }
 
@@ -448,15 +455,24 @@ void gpu_handle_init( hicma_parsec_data_t *data ) {
 
             cublasStatus_t status;
             cublasHandle_t handle_cublas_gpu;
+            cublasHandle_t handle_cublas_gpu_deviceptr;
 
             /* Init to NULL */
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = NULL;
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = NULL;
 
             /* Create handle_cublas_gpu */
             status = cublasCreate(&handle_cublas_gpu);
             cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
             assert(CUBLAS_STATUS_SUCCESS == status);
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = handle_cublas_gpu;
+
+            /* Create handle_cublas_gpu_deviceptr */
+            status = cublasCreate(&handle_cublas_gpu_deviceptr);
+            cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            status = cublasSetPointerMode(handle_cublas_gpu_deviceptr, CUBLAS_POINTER_MODE_DEVICE);
+            assert(CUBLAS_STATUS_SUCCESS == status);
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = handle_cublas_gpu_deviceptr;
         }
     }
 }
@@ -484,6 +500,13 @@ void gpu_handle_fini( hicma_parsec_data_t *data ) {
             if( NULL != ws->gpu_workspace[i].stream_workspace[j].handle_cublas ) {
                 cublasHandle_t handle_cublas = ws->gpu_workspace[i].stream_workspace[j].handle_cublas;
                 cublasStatus_t status = cublasDestroy(handle_cublas);
+                assert(status == CUBLAS_STATUS_SUCCESS);
+            }
+
+            /* Free GPU handle_cublas_deviceptr */
+            if( NULL != ws->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr ) {
+                cublasHandle_t handle_cublas_deviceptr = ws->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr;
+                cublasStatus_t status = cublasDestroy(handle_cublas_deviceptr);
                 assert(status == CUBLAS_STATUS_SUCCESS);
             }
         }
@@ -547,10 +570,12 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
             cusolverDnHandle_t handle_cusolver;
             cublasHandle_t handle_cublas_tensor;
             cublasHandle_t handle_cublas_gpu;
+            cublasHandle_t handle_cublas_gpu_deviceptr;
 
             /* Init to NULL */
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cusolver = NULL;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = NULL;
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = NULL;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_tensor = NULL;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer = NULL;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].gpu_buffer_size = 0;
@@ -653,6 +678,13 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
             cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
             assert(CUBLAS_STATUS_SUCCESS == status);
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = handle_cublas_gpu;
+
+            /* Create handle_cublas_gpu_deviceptr */
+            status = cublasCreate(&handle_cublas_gpu_deviceptr);
+            cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            status = cublasSetPointerMode(handle_cublas_gpu_deviceptr, CUBLAS_POINTER_MODE_DEVICE);
+            assert(CUBLAS_STATUS_SUCCESS == status);
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = handle_cublas_gpu_deviceptr;
 
             /* Create handle_cublas_tensor */
             status = cublasCreate(&handle_cublas_tensor);

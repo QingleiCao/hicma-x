@@ -476,21 +476,17 @@ BODY [type=CUDA]
     const int decision = params_tlr->decisions[k*descA->lmt+m];
     const int tile_elems = descA->mb * descA->mb;
     if(params_tlr->adaptive_decision_runtime) {
-        cublasPointerMode_t old_pointer_mode = CUBLAS_POINTER_MODE_HOST;
-        cublasGetPointerMode(stream_found->handle_cublas, &old_pointer_mode);
-        cublasSetPointerMode(stream_found->handle_cublas, CUBLAS_POINTER_MODE_DEVICE);
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, (double *)C_norm);
+            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
             set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
         } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
-            cublasSnrm2(stream_found->handle_cublas, tile_elems, C, 1, norm_sp_device);
+            cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
             copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
             set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
         }
-        cublasSetPointerMode(stream_found->handle_cublas, old_pointer_mode);
     }
     this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
 #endif
@@ -515,21 +511,17 @@ BODY [type=HIP]
     const int decision = params_tlr->decisions[k*descA->lmt+m];
     const int tile_elems = descA->mb * descA->mb;
     if(params_tlr->adaptive_decision_runtime) {
-        cublasPointerMode_t old_pointer_mode = CUBLAS_POINTER_MODE_HOST;
-        cublasGetPointerMode(stream_found->handle_cublas, &old_pointer_mode);
-        cublasSetPointerMode(stream_found->handle_cublas, CUBLAS_POINTER_MODE_DEVICE);
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
-            cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, (double *)C_norm);
+            cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
             set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
         } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
-            cublasSnrm2(stream_found->handle_cublas, tile_elems, C, 1, norm_sp_device);
+            cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
             copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
             set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
         }
-        cublasSetPointerMode(stream_found->handle_cublas, old_pointer_mode);
     }
     this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
 #endif

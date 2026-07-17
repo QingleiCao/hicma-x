@@ -1603,6 +1603,7 @@ extern "C" void copy_device_float_to_device_double(double* d_dst, const float* d
   if (!d_dst || !d_src) return;
   store_device_float_as_double_kernel<<<1, 1, 0, stream>>>(d_dst, d_src);
 }
+
 /****************************************************************************************************/
 
 #if 0

@@ -816,6 +816,7 @@ typedef struct parsec_potrf_stream_workspace_s {
     /* CUDA handles */
     cusolverDnHandle_t handle_cusolver;     /**< cuSolver handle */
     cublasHandle_t handle_cublas;           /**< cuBLAS handle */
+    cublasHandle_t handle_cublas_deviceptr; /**< cuBLAS handle deviceptr */
     cublasHandle_t handle_cublas_tensor;    /**< cuBLAS tensor core handle */
     
     /* GPU memory buffers */
