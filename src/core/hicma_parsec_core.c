@@ -53,6 +53,100 @@ static void rt_dump_transition_counters(void)
     for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_gpu_post_counts[i], (i == 15) ? "\n" : " ");
 }
 
+static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device,
+                                        parsec_data_copy_t *active_copy,
+                                        void *expected_ptr,
+                                        size_t target_bytes,
+                                        int m, int n, int k,
+                                        void **new_ptr_out)
+{
+    void *new_ptr = NULL;
+
+    if( NULL == active_copy ) {
+        fprintf(stderr, "Missing device copy before FP64 promotion in GEMM runtime decision (%d, %d, %d)\n",
+                m, n, k);
+        return -1;
+    }
+
+    if( NULL != expected_ptr && expected_ptr != active_copy->device_private ) {
+        fprintf(stderr, "Pointer mismatch before FP64 promotion in GEMM runtime decision (%d, %d, %d)\n",
+                m, n, k);
+        return -1;
+    }
+
+    new_ptr = zone_malloc(cuda_device->super.memory, target_bytes);
+    if( NULL == new_ptr ) {
+        fprintf(stderr, "Failed to allocate FP64 dense C tile in GEMM runtime decision (%d, %d, %d)\n",
+                m, n, k);
+        return -1;
+    }
+
+    if( NULL != active_copy->device_private ) {
+        zone_free(cuda_device->super.memory, active_copy->device_private);
+    }
+
+    active_copy->device_private = new_ptr;
+    *new_ptr_out = new_ptr;
+    return 0;
+}
+
+static int hicma_reallocate_tile_on_cpu(parsec_data_copy_t *cpu_copy,
+                                        size_t target_bytes,
+                                        int m, int n, int k)
+{
+    void *new_cpu_ptr = NULL;
+
+    if( NULL == cpu_copy ) {
+        return 0;
+    }
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if( parsec_device_cuda_enabled > 0 ) {
+        if( cudaSuccess != cudaMallocHost(&new_cpu_ptr, target_bytes) ) {
+            fprintf(stderr, "Failed to reallocate host C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
+                    m, n, k);
+            return -1;
+        }
+    } else
+#endif
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( parsec_device_hip_enabled > 0 ) {
+        if( hipSuccess != hipHostMalloc(&new_cpu_ptr, target_bytes, hipHostMallocDefault) ) {
+            fprintf(stderr, "Failed to reallocate host C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
+                    m, n, k);
+            return -1;
+        }
+    } else
+#endif
+    {
+        new_cpu_ptr = malloc(target_bytes);
+        if( NULL == new_cpu_ptr ) {
+            fprintf(stderr, "Failed to reallocate host C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
+                    m, n, k);
+            return -1;
+        }
+    }
+
+    if( NULL != cpu_copy->device_private ) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+        if( parsec_device_cuda_enabled > 0 ) {
+            cudaFreeHost(cpu_copy->device_private);
+        } else
+#endif
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        if( parsec_device_hip_enabled > 0 ) {
+            hipHostFree(cpu_copy->device_private);
+        } else
+#endif
+        {
+            free(cpu_copy->device_private);
+        }
+    }
+
+    cpu_copy->device_private = new_cpu_ptr;
+    return 0;
+}
+
 /**
  * @brief Allocates memory for HICMA computations with GPU acceleration support
  * 
@@ -3331,46 +3425,30 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             parsec_data_copy_t *c_copy = this_task->data._f_C.data_out;
             parsec_data_copy_t *c_dev_copy = NULL;
             parsec_data_copy_t *active_copy = NULL;
-            void *tracked_ptr = NULL;
+            parsec_data_copy_t *cpu_copy = NULL;
             void *new_C = NULL;
 
             if( NULL != c_copy && NULL != c_copy->original ) {
                 c_dev_copy = PARSEC_DATA_GET_COPY(c_copy->original, c_copy->device_index);
+                cpu_copy = PARSEC_DATA_GET_COPY(c_copy->original, 0);
             }
             active_copy = (NULL != c_dev_copy) ? c_dev_copy : c_copy;
-            tracked_ptr = (NULL != active_copy) ? active_copy->device_private : NULL;
-
-            if( NULL != tracked_ptr && tracked_ptr != C ) {
-                fprintf(stderr, "Pointer mismatch before FP64 promotion in GEMM runtime decision (%d, %d, %d)\n",
-                        m, n, k);
+            if( 0 != hicma_reallocate_tile_on_gpu(cuda_device, active_copy, C, target_bytes, m, n, k, &new_C) ) {
                 return;
             }
-
-            if( NULL == active_copy ) {
-                fprintf(stderr, "Missing device copy before FP64 promotion in GEMM runtime decision (%d, %d, %d)\n",
-                        m, n, k);
-                return;
-            }
-
-            new_C = zone_malloc(cuda_device->super.memory, target_bytes);
-            if( NULL == new_C ) {
-                fprintf(stderr, "Failed to allocate FP64 dense C tile in GEMM runtime decision (%d, %d, %d)\n",
-                        m, n, k);
-                return;
-            }
-
-            if( NULL != tracked_ptr ) {
-                zone_free(cuda_device->super.memory, tracked_ptr);
-            }
-
-            active_copy->device_private = new_C;
             if( NULL != c_copy && c_copy != active_copy ) {
                 c_copy->device_private = new_C;
             }
             C = new_C;
             this_task->data._f_C.data_out->original->nb_elts = target_bytes;
 
-
+            if( params_tlr->adaptive_memory ) {
+                if( NULL != cpu_copy && cpu_copy != active_copy ) {
+                    if( 0 != hicma_reallocate_tile_on_cpu(cpu_copy, target_bytes, m, n, k) ) {
+                        return;
+                    }
+                }
+            }
 
             memcpy_double_GPU( tempmm, tempnn, C_use, C, cuda_stream->cuda_stream );
         }
