@@ -3323,16 +3323,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                 &beta,  C_use, CUDA_R_64F, ldam,
                 CUBLAS_COMPUTE_64F, CUBLAS_GEMM_DEFAULT);
 
-        // TODO
-
-#if 0
-        if( DENSE_DP != Cprecision ) {
-            double2float_GPU( descA->mb, descA->nb, C_use, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
-            params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
-        } else {
-            params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
-        }
-#else
+        // Reallocate memory on GPU if memory grows
+        // Reallocate memory on CPU if adaptive_memory is enabled
+        // Copy back data from C_use to C
         if( DENSE_DP != Cprecision ) {
             size_t target_bytes = (size_t)tempmm * (size_t)tempnn * sizeof(double);
             parsec_data_copy_t *c_copy = this_task->data._f_C.data_out;
@@ -3376,10 +3369,12 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             }
             C = new_C;
             this_task->data._f_C.data_out->original->nb_elts = target_bytes;
+
+
+
             memcpy_double_GPU( tempmm, tempnn, C_use, C, cuda_stream->cuda_stream );
         }
         params_tlr->decisions[idx_C] = DENSE_DP;
-#endif
 
         /* If sgemm */
     } else if( DENSE_SP == new_decision ) {
