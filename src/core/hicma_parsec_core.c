@@ -3335,6 +3335,46 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 #else
         if( DENSE_DP != Cprecision ) {
             size_t target_bytes = (size_t)tempmm * (size_t)tempnn * sizeof(double);
+            //if( this_task->data._f_C.data_out->original->nb_elts_alloc < target_bytes ) {
+            {
+                parsec_data_copy_t *c_copy = this_task->data._f_C.data_out;
+                parsec_data_copy_t *c_dev_copy = NULL;
+                void *tracked_ptr = NULL;
+                void *new_C = NULL;
+
+                if( NULL != c_copy && NULL != c_copy->original ) {
+                    c_dev_copy = PARSEC_DATA_GET_COPY(c_copy->original, c_copy->device_index);
+                    if( NULL != c_dev_copy ) {
+                        tracked_ptr = c_dev_copy->device_private;
+                    }
+                }
+
+                if( NULL != tracked_ptr && tracked_ptr != C ) {
+                    fprintf(stderr, "Pointer mismatch before FP64 promotion in GEMM runtime decision (%d, %d, %d)\n",
+                            m, n, k);
+                    return;
+                }
+
+                new_C = zone_malloc(cuda_device->super.memory, target_bytes);
+                if( NULL == new_C ) {
+                    fprintf(stderr, "Failed to zone_malloc dense C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
+                            m, n, k);
+                    return;
+                }
+
+                if( NULL != tracked_ptr ) {
+                    zone_free(cuda_device->super.memory, tracked_ptr);
+                }
+
+                if( NULL != c_dev_copy ) {
+                    c_dev_copy->device_private = new_C;
+                }
+                if( NULL != c_copy ) {
+                    c_copy->device_private = new_C;
+                }
+                C = new_C;
+                //this_task->data._f_C.data_out->original->nb_elts_alloc = target_bytes;
+            }
             this_task->data._f_C.data_out->original->nb_elts = target_bytes;
             memcpy_double_GPU( tempmm, tempnn, C_use, C, cuda_stream->cuda_stream );
         }

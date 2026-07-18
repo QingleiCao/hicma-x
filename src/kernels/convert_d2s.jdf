@@ -69,7 +69,7 @@ BODY
         } else {
             // Already in single precision, just update element count
             this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
-            //this_task->data._f_A.data_out->original->nb_elts_alloc = descA->mb * size * sizeof(float);
+            this_task->data._f_A.data_out->original->nb_elts_alloc = descA->mb * size * sizeof(float);
             return PARSEC_HOOK_RETURN_DONE; 
         }
 
@@ -111,9 +111,9 @@ BODY
         this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
         this_task->data._f_A.data_out->original->nb_elts_alloc = descA->mb * size * sizeof(float);
         // Update element count; for adaptive_decision_runtime, it needs to be in DP for date_copy on GPU 
-        if(params_tlr->adaptive_decision_runtime) {
-            this_task->data._f_A.data_out->original->nb_elts_alloc = descA->mb * size * sizeof(double);
-        }
+        //if(params_tlr->adaptive_decision_runtime) {
+        //    this_task->data._f_A.data_out->original->nb_elts_alloc = descA->mb * size * sizeof(double);
+        //}
     }
 
     // Handle low-rank matrix tiles that need conversion to single precision
