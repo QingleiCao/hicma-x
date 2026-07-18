@@ -438,11 +438,11 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
                 "lookahead= %d kind_of_problem= %d HNB= %d PxQ= %3d %-3d "
                 "nb_gpus= %d NB= %4d N= %7d kind_of_cholesky= %d sparse= %d left_looking= %d "
                 "nb_dense_dp= %.0lf nb_dense_sp= %.0lf nb_dense_hp= %.0lf nb_dense_fp8= %.0lf nb_low_rank_dp= %.0lf nb_low_rank_sp= %.0lf "
-                "adaptive_memory %d: %14f gflops\n",
+                "adaptive_memory %d: %14f Tflops\n",
                 params->band_size_dense, params->band_size_dist, params->lookahead, params->kind_of_problem,
                 params->HNB, params->P, params->Q, params->gpus, params->NB, params->N, params->kind_of_cholesky, params->sparse, params->left_looking,
                 params->nb_dense_dp, params->nb_dense_sp, params->nb_dense_hp, params->nb_dense_fp8, params->nb_low_rank_dp, params->nb_low_rank_sp,
-                params->adaptive_memory, params->gflops=(params->flops/1e9)/params->time_hicma));
+                params->adaptive_memory, params->gflops=(params->flops/1e12)/params->time_hicma));
 
 #if PRINT_PROCESS_EXE_TIME
     /* Calculate per-process execution time statistics */
