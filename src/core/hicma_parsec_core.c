@@ -53,6 +53,51 @@ static void rt_dump_transition_counters(void)
     for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_gpu_post_counts[i], (i == 15) ? "\n" : " ");
 }
 
+static void hicma_runtime_copy_alloc_cb(parsec_data_copy_t *copy, int device)
+{
+    parsec_device_module_t *base = NULL;
+    parsec_device_cuda_module_t *gpu = NULL;
+    size_t bytes = 0;
+
+    if( NULL == copy || NULL == copy->original || NULL != copy->device_private ) {
+        return;
+    }
+
+    base = parsec_mca_device_get((uint32_t)device);
+    if( NULL == base || !PARSEC_DEV_IS_GPU(base->type) ) {
+        return;
+    }
+
+    gpu = (parsec_device_cuda_module_t *)base;
+    bytes = copy->original->nb_elts_alloc;
+    if( 0 == bytes ) {
+        bytes = copy->original->nb_elts;
+    }
+
+    if( 0 != bytes ) {
+        copy->device_private = zone_malloc(gpu->super.memory, bytes);
+    }
+}
+
+static void hicma_runtime_copy_release_cb(parsec_data_copy_t *copy, int device)
+{
+    parsec_device_module_t *base = NULL;
+    parsec_device_cuda_module_t *gpu = NULL;
+
+    if( NULL == copy || NULL == copy->device_private ) {
+        return;
+    }
+
+    base = parsec_mca_device_get((uint32_t)device);
+    if( NULL == base || !PARSEC_DEV_IS_GPU(base->type) ) {
+        return;
+    }
+
+    gpu = (parsec_device_cuda_module_t *)base;
+    zone_free(gpu->super.memory, copy->device_private);
+    copy->device_private = NULL;
+}
+
 /**
  * @brief Allocates memory for HICMA computations with GPU acceleration support
  * 
@@ -3335,19 +3380,17 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 #else
         if( DENSE_DP != Cprecision ) {
             size_t target_bytes = (size_t)tempmm * (size_t)tempnn * sizeof(double);
-            //if( this_task->data._f_C.data_out->original->nb_elts_alloc < target_bytes ) {
-            {
+            if( this_task->data._f_C.data_out->original->nb_elts_alloc < target_bytes ) {
                 parsec_data_copy_t *c_copy = this_task->data._f_C.data_out;
                 parsec_data_copy_t *c_dev_copy = NULL;
+                parsec_data_copy_t *active_copy = NULL;
                 void *tracked_ptr = NULL;
-                void *new_C = NULL;
 
                 if( NULL != c_copy && NULL != c_copy->original ) {
                     c_dev_copy = PARSEC_DATA_GET_COPY(c_copy->original, c_copy->device_index);
-                    if( NULL != c_dev_copy ) {
-                        tracked_ptr = c_dev_copy->device_private;
-                    }
                 }
+                active_copy = (NULL != c_dev_copy) ? c_dev_copy : c_copy;
+                tracked_ptr = (NULL != active_copy) ? active_copy->device_private : NULL;
 
                 if( NULL != tracked_ptr && tracked_ptr != C ) {
                     fprintf(stderr, "Pointer mismatch before FP64 promotion in GEMM runtime decision (%d, %d, %d)\n",
@@ -3355,25 +3398,36 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                     return;
                 }
 
-                new_C = zone_malloc(cuda_device->super.memory, target_bytes);
-                if( NULL == new_C ) {
-                    fprintf(stderr, "Failed to zone_malloc dense C tile to FP64 in GEMM runtime decision (%d, %d, %d)\n",
+                if( NULL == active_copy ) {
+                    fprintf(stderr, "Missing device copy before FP64 promotion in GEMM runtime decision (%d, %d, %d)\n",
                             m, n, k);
                     return;
                 }
 
-                if( NULL != tracked_ptr ) {
-                    zone_free(cuda_device->super.memory, tracked_ptr);
+                this_task->data._f_C.data_out->original->nb_elts_alloc = target_bytes;
+
+                if( NULL == active_copy->alloc_cb ) {
+                    active_copy->alloc_cb = hicma_runtime_copy_alloc_cb;
+                }
+                if( NULL == active_copy->release_cb ) {
+                    active_copy->release_cb = hicma_runtime_copy_release_cb;
                 }
 
-                if( NULL != c_dev_copy ) {
-                    c_dev_copy->device_private = new_C;
+                if( NULL != active_copy->device_private ) {
+                    active_copy->release_cb(active_copy, active_copy->device_index);
                 }
-                if( NULL != c_copy ) {
-                    c_copy->device_private = new_C;
+                active_copy->alloc_cb(active_copy, active_copy->device_index);
+
+                if( NULL == active_copy->device_private ) {
+                    fprintf(stderr, "Failed to allocate FP64 dense C tile in GEMM runtime decision (%d, %d, %d)\n",
+                            m, n, k);
+                    return;
                 }
-                C = new_C;
-                //this_task->data._f_C.data_out->original->nb_elts_alloc = target_bytes;
+
+                C = active_copy->device_private;
+                if( NULL != c_copy && c_copy != active_copy ) {
+                    c_copy->device_private = C;
+                }
             }
             this_task->data._f_C.data_out->original->nb_elts = target_bytes;
             memcpy_double_GPU( tempmm, tempnn, C_use, C, cuda_stream->cuda_stream );
