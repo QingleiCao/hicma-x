@@ -65,7 +65,7 @@ BODY
             this_task->data._f_D.data_out = parsec_data_copy_new(data_of_descA(m, n), 0, PARSEC_matrix_compress_FULL_ADT->opaque_dtt, PARSEC_DATA_FLAG_PARSEC_MANAGED);
         }
         if( params_tlr->gpus > 0 ) {
-            
+
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
             // Allocate pinned host memory for GPU operations
             if( IS_ALLOCATE_DP(m, n) ) { 

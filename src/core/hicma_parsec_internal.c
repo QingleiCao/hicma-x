@@ -761,18 +761,6 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
         exit(1);
     }
 
-    // If adaptive decision during runtime
-    if( params->adaptive_decision_runtime != 0 ) {
-        params->kind_of_cholesky = DENSE_MP_GPU_FP8_ADAPTIVE;
-        //params->adaptive_decision = 1; 
-        params->datatype_convert = 0; 
-        params->adaptive_memory = 0;
-        params->band_size_dense = params->NT;
-        if( 0 == params->rank ) {
-            fprintf( stderr, RED "kind_of_cholesky=DENSE_MP_GPU_FP8_ADAPTIVE, adaptive_decision=1, datatype_convert=0, adaptive_memory =0, band_size_dense=NT\n" RESET );
-        }
-    }
-
     /* Kernel Parameter Default Adjustment */
     // Adjust default kernel parameters for certain problem types (0-7)
     if( params->kind_of_problem <= 7
@@ -1668,7 +1656,20 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
      * Basic parameter validation
      * =========================================== */
 
-    if(GENOMICS || DEBUG_INFO || params->check) {
+    // If adaptive decision during runtime
+    if( params->adaptive_decision_runtime != 0 ) {
+        params->kind_of_cholesky = DENSE_MP_GPU_FP8_ADAPTIVE;
+        //params->adaptive_decision = 1; 
+        params->datatype_convert = 0;
+        //params->adaptive_memory = 0;
+        params->band_size_dense = params->NT;
+        if( 0 == params->rank ) {
+            fprintf( stderr, RED "kind_of_cholesky=DENSE_MP_GPU_FP8_ADAPTIVE, adaptive_decision=%d, datatype_convert=%d, adaptive_memory=%d, band_size_dense=%d\n" RESET, params->adaptive_decision, params->datatype_convert, params->adaptive_memory, params->band_size_dense);
+        }
+    }
+
+    //if(GENOMICS || DEBUG_INFO || params->check) {
+    if(GENOMICS || DEBUG_INFO) {
         params->adaptive_memory = 0;
     }
 
