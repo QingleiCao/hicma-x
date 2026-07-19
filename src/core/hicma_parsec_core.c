@@ -19,40 +19,6 @@ extern int parsec_device_cuda_enabled;
 extern int parsec_device_hip_enabled;
 #endif
 
-/* Runtime decision transition counters for CPU/GPU parity debugging. */
-static unsigned long long rt_cpu_pre_counts[16] = {0};
-static unsigned long long rt_cpu_post_counts[16] = {0};
-static unsigned long long rt_gpu_pre_counts[16] = {0};
-static unsigned long long rt_gpu_post_counts[16] = {0};
-static int rt_dump_registered = 0;
-
-static inline int rt_decision_class(uint16_t d)
-{
-    if( d == DENSE_DP ) return 0;
-    if( d == DENSE_SP ) return 1;
-    if( d == DENSE_HP ) return 2;
-    return 3; /* FP8 and any other non-DP/SP/HP class */
-}
-
-static inline void rt_inc_counter(unsigned long long *arr, uint16_t old_d, uint16_t new_d)
-{
-    int idx = rt_decision_class(old_d) * 4 + rt_decision_class(new_d);
-    __sync_fetch_and_add(&arr[idx], 1ULL);
-}
-
-static void rt_dump_transition_counters(void)
-{
-    fprintf(stderr, "\n[RUNTIME_DECISION_TRANSITIONS]\n");
-    fprintf(stderr, "CPU_PRE ");
-    for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_cpu_pre_counts[i], (i == 15) ? "\n" : " ");
-    fprintf(stderr, "CPU_POST ");
-    for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_cpu_post_counts[i], (i == 15) ? "\n" : " ");
-    fprintf(stderr, "GPU_PRE ");
-    for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_gpu_pre_counts[i], (i == 15) ? "\n" : " ");
-    fprintf(stderr, "GPU_POST ");
-    for( int i = 0; i < 16; i++ ) fprintf(stderr, "%llu%s", rt_gpu_post_counts[i], (i == 15) ? "\n" : " ");
-}
-
 static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device,
                                         parsec_data_copy_t *active_copy,
                                         void *expected_ptr,
@@ -1356,11 +1322,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     int cores = params_tlr->cores;
     int tid = es->th_id;
 
-    if( !rt_dump_registered ) {
-        rt_dump_registered = 1;
-        atexit(rt_dump_transition_counters);
-    }
-
     // Get new decision during runtime
     uint16_t Cprecision = params_tlr->decisions[n*descA->lmt+m];
     uint16_t new_decision = params_tlr->decisions[n*descA->lmt+m];
@@ -1386,8 +1347,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             params_tlr->nb_gemms[LOW_RANK_SP*cores+tid] += 1;
         }
     }
-
-    rt_inc_counter(rt_cpu_pre_counts, Cprecision, new_decision);
 
     if(DEBUG_INFO) printf("GEMM_CPU (%d, %d, %d) : %d %d %d : C_DENSE, A_DENSE, B_DENSE\n",
             m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
@@ -1691,8 +1650,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 
     }
 #endif
-
-    rt_inc_counter(rt_cpu_post_counts, Cprecision, params_tlr->decisions[n*descA->lmt+m]);
 
     /* Operation count */
     unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, tempmm, 0);
@@ -3309,11 +3266,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     void *A_use = A;
     void *B_use = B;
     void *C_use = C;
-
-    if( !rt_dump_registered ) {
-        rt_dump_registered = 1;
-        atexit(rt_dump_transition_counters);
-    }
 
     const int idx_send_A = k * descA->lmt + m;
     const int idx_send_B = k * descA->lmt + n;
