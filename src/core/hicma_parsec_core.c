@@ -60,6 +60,7 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
                                         int m, int n, int k,
                                         void **new_ptr_out)
 {
+    void *old_ptr = NULL;
     void *new_ptr = NULL;
 
     if( NULL == active_copy ) {
@@ -74,15 +75,17 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
         return -1;
     }
 
+    old_ptr = active_copy->device_private;
+    if( NULL != old_ptr ) {
+        zone_free(cuda_device->super.memory, old_ptr);
+        active_copy->device_private = NULL;
+    }
+
     new_ptr = zone_malloc(cuda_device->super.memory, target_bytes);
     if( NULL == new_ptr ) {
         fprintf(stderr, "Failed to allocate FP64 dense C tile in GEMM runtime decision (%d, %d, %d)\n",
                 m, n, k);
         return -1;
-    }
-
-    if( NULL != active_copy->device_private ) {
-        zone_free(cuda_device->super.memory, active_copy->device_private);
     }
 
     active_copy->device_private = new_ptr;
