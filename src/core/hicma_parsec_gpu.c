@@ -331,6 +331,7 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws)
             cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Adesc);
             cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Bdesc);
             cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Cdesc);
+            cublasLtMatrixLayoutDestroy(ws->gpu_workspace[i].stream_workspace[j].Cdesc_fp32);
             cudaFree(ws->gpu_workspace[i].stream_workspace[j].workspace);
             //cudaFree(ws->gpu_workspace[i].stream_workspace[j].heuristicResultsArray);
             cublasLtMatmulPreferenceDestroy(ws->gpu_workspace[i].stream_workspace[j].pref);
@@ -532,7 +533,8 @@ void gpu_handle_fini( hicma_parsec_data_t *data ) {
  * @param[in] maxrank Maximum rank
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
-void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int maxrank, int kind_of_cholesky ) {
+void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t *params,
+        int mb, int nb, int maxrank, int kind_of_cholesky ) {
 
     /* Only allocated memory for cases including GPU */
     /*   if( !(DENSE_TLR_DP == kind_of_cholesky
@@ -609,13 +611,15 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
             cublasLtMatrixLayout_t Adesc;
             cublasLtMatrixLayout_t Bdesc;
             cublasLtMatrixLayout_t Cdesc;
-            cublasLtMatrixLayout_t Ddesc;
+            cublasLtMatrixLayout_t Cdesc_fp32;
             cublasLtMatrixLayoutCreate(&Adesc, CUDA_R_8F_E4M3, mb, mb, mb);
             cublasLtMatrixLayoutCreate(&Bdesc, CUDA_R_8F_E4M3, mb, mb, mb);
             cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_16F, mb, mb, mb);
+            cublasLtMatrixLayoutCreate(&Cdesc_fp32, CUDA_R_32F, mb, mb, mb);
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].Adesc = Adesc;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].Bdesc = Bdesc;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].Cdesc = Cdesc;
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].Cdesc_fp32 = Cdesc_fp32;
 
             // workspace
             size_t workspaceSize = 32 * 1024 * 1024;
@@ -636,10 +640,17 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
             //cudaMalloc(&returnAlgoCount, sizeof(int));
             cublasLtMatmulHeuristicResult_t heuristicResultsArray;
 
-            cublasLtMatmulAlgoGetHeuristic(
-                    lightHandle, matmulDesc, Adesc, Bdesc,
-                    Cdesc, Cdesc, pref, requestedAlgoCount,
-                    &heuristicResultsArray, &returnAlgoCount);
+            if(params->adaptive_decision_runtime) {
+                cublasLtMatmulAlgoGetHeuristic(
+                        lightHandle, matmulDesc, Adesc, Bdesc,
+                        Cdesc_fp32, Cdesc_fp32, pref, requestedAlgoCount,
+                        &heuristicResultsArray, &returnAlgoCount);
+            } else {
+                cublasLtMatmulAlgoGetHeuristic(
+                        lightHandle, matmulDesc, Adesc, Bdesc,
+                        Cdesc, Cdesc, pref, requestedAlgoCount,
+                        &heuristicResultsArray, &returnAlgoCount);
+            }
 
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].heuristicResultsArray = heuristicResultsArray;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].pref = pref;

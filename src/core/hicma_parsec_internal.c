@@ -2147,7 +2147,7 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
 
     /* Allocate memory for GPU workspace */
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
-    gpu_temporay_buffer_init( data, NB, NB, params->compmaxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params, NB, NB, params->compmaxrank, params->kind_of_cholesky );
 #endif
 
     /* dcFake to control process rank working on*/

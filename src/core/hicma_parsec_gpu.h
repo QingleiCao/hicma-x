@@ -236,7 +236,8 @@ void gpu_handle_fini( hicma_parsec_data_t *data );
  * @param[in] maxrank Maximum rank
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
-void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int maxrank, int kind_of_cholesky );
+void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t *params,
+        int mb, int nb, int maxrank, int kind_of_cholesky );
 
 /**
  * @brief Finalize GPU temporary buffer

@@ -2980,6 +2980,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             params_tlr->nb_gemms[DENSE_SP*cores+tid] += 1;
         } else if( DENSE_HP == new_decision ) {
             params_tlr->nb_gemms[DENSE_HP*cores+tid] += 1;
+            params_tlr->nb_gemms[DENSE_HP*cores+tid] += 1;
+        } else if( DENSE_FP8 == new_decision ) {
+            params_tlr->nb_gemms[DENSE_FP8*cores+tid] += 1;
         } else if(LOW_RANK_DP == new_decision ) {
             params_tlr->nb_gemms[LOW_RANK_DP*cores+tid] += 1;
         } else if(LOW_RANK_SP == new_decision ) {
@@ -3335,6 +3338,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             params_tlr->nb_gemms[DENSE_SP*cores+tid] += 1;
         } else if( DENSE_HP == new_decision ) {
             params_tlr->nb_gemms[DENSE_HP*cores+tid] += 1;
+        } else if( DENSE_FP8 == new_decision ) {
+            params_tlr->nb_gemms[DENSE_FP8*cores+tid] += 1;
         } else if(LOW_RANK_DP == new_decision ) {
             params_tlr->nb_gemms[LOW_RANK_DP*cores+tid] += 1;
         } else if(LOW_RANK_SP == new_decision ) {
@@ -3490,7 +3495,59 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
 
-    //} else if( DENSE_FP8 == new_decision ){
+#if HAVE_FP8
+    } else if( DENSE_FP8 == new_decision ){
+
+        /* Convert datatype, A */
+        if( DENSE_DP == Aprecision ) {
+            double2fp8_GPU( tempmm, tempnn, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            A_use = A_fp8;
+        } else if( DENSE_SP == Aprecision ) {
+            float2fp8_GPU( tempmm, tempnn, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            A_use = A_fp8;
+        } else {
+            fprintf(stderr, "Precision A is not correct PF8: %d %d %d!\n", m, n, k);
+        }
+
+        /* Convert datatype, B */
+        if( DENSE_DP == Bprecision ) {
+            double2fp8_GPU( tempmm, tempnn, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            B_use = B_fp8;
+        } else if( DENSE_SP == Bprecision ) {
+            float2fp8_GPU( tempmm, tempnn, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            B_use = B_fp8;
+        } else {
+            fprintf(stderr, "Precision B is not correct FP8: %d %d %d!\n", m, n, k);
+        }
+
+        /* FP8 */
+        cublasLtHandle_t lightHandle = stream_found->lightHandle;
+        cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
+        cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
+        cublasLtMatrixLayout_t Bdesc = stream_found->Bdesc;
+        cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc_fp32;
+        size_t workspaceSize = stream_found->workspaceSize;
+        void *workspace = stream_found->workspace;
+        cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;
+
+        if( DENSE_DP == params_tlr->decisions[idx_C] ) {
+            float alpha = 1.0f, beta = 0.0f;
+            cublasLtMatmul(lightHandle, matmulDesc,
+                    &alpha, A_use, Adesc, B_use, Bdesc,
+                    &beta, C_s, Cdesc, C_s, Cdesc,
+                    &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+            sub_float_from_double_GPU(tempmm, tempnn, C_s, C, cuda_stream->cuda_stream);
+        } else {
+            float alpha = -1.0f, beta = 1.0f;
+            cublasLtMatmul(lightHandle, matmulDesc,
+                    &alpha, A_use, Adesc, B_use, Bdesc,
+                    &beta, C, Cdesc, C, Cdesc,
+                    &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+            params_tlr->decisions[idx_C] = DENSE_SP;
+        }
+#endif
+
+    //} else if( DENSE_FP4 == new_decision ){
     } else {
             fprintf(stderr, "New decision is not supported: %d %d %d!\n", m, n, k);
     }
