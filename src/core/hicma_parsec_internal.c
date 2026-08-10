@@ -1342,7 +1342,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%e %d %d %e %e %e %e ", params->result_accuracy, params->left_looking, params->gpu_type, params->norm_global_diff, params->fixedacc * params->norm_global, params->log_det_dp, params->log_det_mp);
         printf("%lf %lf %lf %d  ", params->time_decision_kernel, params->time_decision_sender, params->time_syrk_app, params->numobj);
         printf("%d %d %d %g %g %d ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density, params->adaptive_decision_runtime);
-        printf("%lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->nb_gemms_stride], params->nb_gemms[DENSE_SP*params->nb_gemms_stride], params->nb_gemms[DENSE_HP*params->nb_gemms_stride], params->nb_gemms[LOW_RANK_DP*params->nb_gemms_stride], params->nb_gemms[LOW_RANK_DP*params->nb_gemms_stride]);
+        printf("%lu %lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->nb_gemms_stride], params->nb_gemms[DENSE_SP*params->nb_gemms_stride], params->nb_gemms[DENSE_HP*params->nb_gemms_stride], params->nb_gemms[LOW_RANK_DP*params->nb_gemms_stride], params->nb_gemms[LOW_RANK_DP*params->nb_gemms_stride], params->nb_gemms[DENSE_FP8*params->nb_gemms_stride]);
 #ifdef GITHASH
         printf("%s ", xstr(GITHASH));
 #else

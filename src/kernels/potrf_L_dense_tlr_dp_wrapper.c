@@ -536,7 +536,7 @@ potrf_L_dense_tlr_dp_New( parsec_context_t *parsec,
 #if !GPU_BUFFER_ONCE
     /* Allocate GPU workspace if not already allocated */
     /* This sets up temporary buffers for GPU operations */
-    gpu_temporay_buffer_init( data, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
 #endif
 #endif
 
