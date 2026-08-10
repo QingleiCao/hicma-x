@@ -532,7 +532,8 @@ void gpu_handle_fini( hicma_parsec_data_t *data ) {
  * @param[in] maxrank Maximum rank
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
-void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int maxrank, int kind_of_cholesky ) {
+void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t *params,
+        int mb, int nb, int maxrank, int kind_of_cholesky ) {
 
     /* Only allocated memory for cases including GPU */
     /*   if( !(DENSE_TLR_DP == kind_of_cholesky
@@ -609,13 +610,15 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int ma
             cublasLtMatrixLayout_t Adesc;
             cublasLtMatrixLayout_t Bdesc;
             cublasLtMatrixLayout_t Cdesc;
-            cublasLtMatrixLayout_t Ddesc;
-            cublasLtMatrixLayoutCreate(&Adesc, CUDA_R_8F_E4M3, mb, mb, mb);
-            cublasLtMatrixLayoutCreate(&Bdesc, CUDA_R_8F_E4M3, mb, mb, mb);
-            cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_16F, mb, mb, mb);
+            int fp8_ld = ((mb + 15) / 16) * 16;
+            cublasLtMatrixLayoutCreate(&Adesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
+            cublasLtMatrixLayoutCreate(&Bdesc, CUDA_R_8F_E4M3, fp8_ld, fp8_ld, fp8_ld);
+            //cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_16F, mb, mb, mb);
+            cublasLtMatrixLayoutCreate(&Cdesc, CUDA_R_32F, fp8_ld, fp8_ld, fp8_ld);
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].Adesc = Adesc;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].Bdesc = Bdesc;
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].Cdesc = Cdesc;
+            data->ws_gpu->gpu_workspace[i].stream_workspace[j].fp8_ld = fp8_ld;
 
             // workspace
             size_t workspaceSize = 32 * 1024 * 1024;

@@ -236,7 +236,8 @@ void gpu_handle_fini( hicma_parsec_data_t *data );
  * @param[in] maxrank Maximum rank
  * @param[in] kind_of_cholesky Type of Cholesky factorization
  */
-void gpu_temporay_buffer_init( hicma_parsec_data_t *data, int mb, int nb, int maxrank, int kind_of_cholesky );
+void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t *params,
+        int mb, int nb, int maxrank, int kind_of_cholesky );
 
 /**
  * @brief Finalize GPU temporary buffer
@@ -470,6 +471,12 @@ void half2fp8_GPU( int nrows, int ncols,
                 void *T, int ldt,
                 cudaStream_t stream );
 
+void half2fp8_padded_GPU( int nrows, int ncols,
+                const void *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
+                cudaStream_t stream );
+
 /**
  * @brief Convert single precision to FP8 on GPU
  * 
@@ -486,6 +493,12 @@ void half2fp8_GPU( int nrows, int ncols,
 void float2fp8_GPU( int nrows, int ncols,
                 const float *S, int lds,
                 void *T, int ldt,
+                cudaStream_t stream );
+
+void float2fp8_padded_GPU( int nrows, int ncols,
+                const float *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
                 cudaStream_t stream );
 
 /**
@@ -514,6 +527,12 @@ void float2fp8_host(const float F, void* H);
 void double2fp8_GPU( int nrows, int ncols,
                 const double *S, int lds,
                 void *T, int ldt,
+                cudaStream_t stream );
+
+void double2fp8_padded_GPU( int nrows, int ncols,
+                const double *S, int lds,
+                void *T, int ldt,
+                int padded_rows, int padded_cols,
                 cudaStream_t stream );
 
 /* ============================================================================
@@ -735,6 +754,16 @@ void int_2double_array(int nrows, int ncols,
  * @param[in] stream CUDA stream
  */
 void sub_float_from_double_GPU( int nrows, int ncols, void *_src, void *_dest, cudaStream_t stream );
+
+void sub_float_from_double_ld_GPU( int nrows, int ncols,
+               void *_src, int ldsrc,
+               void *_dest, int lddest,
+               cudaStream_t stream );
+
+void sub_float_from_float_ld_GPU( int nrows, int ncols,
+               void *_src, int ldsrc,
+               void *_dest, int lddest,
+               cudaStream_t stream );
 
 /**
  * @brief Copy double precision data from source to destination on GPU

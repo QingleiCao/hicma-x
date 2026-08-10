@@ -506,9 +506,9 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             }
         }
         MPI_Allreduce(MPI_IN_PLACE, params->nb_gemms, (NB_DECISIONS+1)*params->cores, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
-        fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu\n"RESET,
+        fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu DENSE_FP8= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu\n"RESET,
                 params->nb_gemms[DENSE_DP*cores], params->nb_gemms[DENSE_SP*cores], params->nb_gemms[DENSE_HP*cores],
-                params->nb_gemms[LOW_RANK_DP*cores], params->nb_gemms[LOW_RANK_DP*cores]);
+                params->nb_gemms[DENSE_FP8*cores], params->nb_gemms[LOW_RANK_DP*cores], params->nb_gemms[LOW_RANK_DP*cores]);
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)

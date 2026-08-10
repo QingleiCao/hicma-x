@@ -465,7 +465,7 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
 
 #if !GPU_BUFFER_ONCE
     /* Allocate GPU workspace if not already allocated */
-    gpu_temporay_buffer_init( data, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
+    gpu_temporay_buffer_init( data, params, A->mb, A->nb, storagemaxrank, params->kind_of_cholesky );
 #endif
 #endif
 

@@ -19,6 +19,21 @@ extern int parsec_device_cuda_enabled;
 extern int parsec_device_hip_enabled;
 #endif
 
+#if HAVE_FP8
+static int hicma_parsec_check_cublaslt_status(cublasStatus_t status,
+                                              const char *op,
+                                              int m, int n, int k)
+{
+    if( CUBLAS_STATUS_SUCCESS == status ) {
+        return 0;
+    }
+
+    fprintf(stderr, "%s failed in FP8 GEMM (%d, %d, %d): cublas status %d\n",
+            op, m, n, k, (int)status);
+    return -1;
+}
+#endif
+
 static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device,
                                         parsec_data_copy_t *active_copy,
                                         void *expected_ptr,
@@ -2980,6 +2995,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             params_tlr->nb_gemms[DENSE_SP*cores+tid] += 1;
         } else if( DENSE_HP == new_decision ) {
             params_tlr->nb_gemms[DENSE_HP*cores+tid] += 1;
+            params_tlr->nb_gemms[DENSE_HP*cores+tid] += 1;
+        } else if( DENSE_FP8 == new_decision ) {
+            params_tlr->nb_gemms[DENSE_FP8*cores+tid] += 1;
         } else if(LOW_RANK_DP == new_decision ) {
             params_tlr->nb_gemms[LOW_RANK_DP*cores+tid] += 1;
         } else if(LOW_RANK_SP == new_decision ) {
@@ -3175,30 +3193,58 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
     } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
 #if HAVE_FP8
+        int fp8_ld = stream_found->fp8_ld;
+        int use_padded_fp8 = (fp8_ld != descA->mb) || (tempmm != descA->mb);
+
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-            double2fp8_GPU( descA->mb, descA->nb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            if( use_padded_fp8 ) {
+                double2fp8_padded_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                double2fp8_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
             A_use = A_fp8;
         } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-            float2fp8_GPU( descA->mb, descA->nb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            if( use_padded_fp8 ) {
+                float2fp8_padded_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                float2fp8_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
             A_use = A_fp8;
         } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-            half2fp8_GPU( descA->mb, descA->nb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            if( use_padded_fp8 ) {
+                half2fp8_padded_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                half2fp8_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
             A_use = A_fp8;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-            double2fp8_GPU( descA->mb, descA->nb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            if( use_padded_fp8 ) {
+                double2fp8_padded_GPU( descA->mb, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                double2fp8_GPU( descA->mb, descA->mb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
             B_use = B_fp8;
         } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-            float2fp8_GPU( descA->mb, descA->nb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            if( use_padded_fp8 ) {
+                float2fp8_padded_GPU( descA->mb, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                float2fp8_GPU( descA->mb, descA->mb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
             B_use = B_fp8;
         } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+n] ) {
-            half2fp8_GPU( descA->mb, descA->nb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            if( use_padded_fp8 ) {
+                half2fp8_padded_GPU( descA->mb, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                half2fp8_GPU( descA->mb, descA->mb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
             B_use = B_fp8;
         }
 
+#if 0
         /* First local GEMM convert C from single to half */
         if( 0 == k ) {
             /* Convert datatype */
@@ -3207,13 +3253,15 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             /* Copy C_h to C */
             memcpy_half_GPU( descA->mb, descA->nb, C_h, C, cuda_stream->cuda_stream );
         }
+#endif
 
         cublasLtHandle_t lightHandle = stream_found->lightHandle; 
         cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
         cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
         cublasLtMatrixLayout_t Bdesc = stream_found->Bdesc;
         cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc;
-        float alpha = -1.0f, beta = 1.0f;
+        float alpha = use_padded_fp8 ? 1.0f : -1.0f;
+        float beta = use_padded_fp8 ? 0.0f : 1.0f;
         size_t workspaceSize = stream_found->workspaceSize; 
         void *workspace = stream_found->workspace;
         cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;
@@ -3221,13 +3269,22 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         //cublasSetStream(handle, cuda_stream->cuda_stream);
 
         // FP8
-        cublasLtMatmul(lightHandle, matmulDesc,
+        status = cublasLtMatmul(lightHandle, matmulDesc,
                 &alpha, A_use, Adesc, B_use, Bdesc,
-                &beta, C, Cdesc, C, Cdesc,
+                &beta,
+                use_padded_fp8 ? C_s : C, Cdesc,
+                use_padded_fp8 ? C_s : C, Cdesc,
                 &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+        if( 0 != hicma_parsec_check_cublaslt_status(status, "cublasLtMatmul", m, n, k) ) {
+            return;
+        }
+        if( use_padded_fp8 ) {
+            sub_float_from_float_ld_GPU(tempmm, descA->mb, C_s, fp8_ld, C, ldam, cuda_stream->cuda_stream);
+        }
 
         //printf("FP8_GEMM %d %d %d\n", m, n, k);
 
+#if 0
         /* After last local GEMM convert C from half to single */
         if( n-1 == k ) {
             /* Convert datatype */
@@ -3236,6 +3293,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             /* Copy C_s to C */
             memcpy_float_GPU( descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream );
         }
+#endif
+
 #endif // HAVE_FP8
     }
 }
@@ -3299,7 +3358,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     C_s = (float *)stream_found->gpu_buffer_C;
     C_h = (void *)stream_found->gpu_buffer_C;
 
-    /* Fetch {norm, precision} in one transfer per input tile. */
+    /* Fetch runtime {norm, precision} metadata from TRSM outputs. */
     if( NULL != A_norm ) {
         double A_meta[2];
         cudaMemcpy(A_meta, (double *)A_norm, 2 * sizeof(double), cudaMemcpyDeviceToHost);
@@ -3335,6 +3394,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             params_tlr->nb_gemms[DENSE_SP*cores+tid] += 1;
         } else if( DENSE_HP == new_decision ) {
             params_tlr->nb_gemms[DENSE_HP*cores+tid] += 1;
+        } else if( DENSE_FP8 == new_decision ) {
+            params_tlr->nb_gemms[DENSE_FP8*cores+tid] += 1;
         } else if(LOW_RANK_DP == new_decision ) {
             params_tlr->nb_gemms[LOW_RANK_DP*cores+tid] += 1;
         } else if(LOW_RANK_SP == new_decision ) {
@@ -3345,16 +3406,22 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     /* If dgemm */
     if( DENSE_DP == new_decision ) {
 
-        if( DENSE_DP != Aprecision ) {
+        if( DENSE_SP == Aprecision ) {
             float2double_GPU(tempmm, tempnn, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream);
-            A_use = A_d; 
+            A_use = A_d;
+        } else if( DENSE_DP != Aprecision ) {
+            fprintf(stderr, "Unsupported A precision in DP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
+            return;
         }
 
         /* Convert datatype, B */
         //if( DENSE_DP != params_tlr->decisions[k*descA->lmt+n] ) {
-        if( DENSE_DP != Bprecision ) {
+        if( DENSE_SP == Bprecision ) {
             float2double_GPU(tempmm, tempnn, B, descA->mb, B_d, descA->mb, cuda_stream->cuda_stream);
             B_use = B_d;
+        } else if( DENSE_DP != Bprecision ) {
+            fprintf(stderr, "Unsupported B precision in DP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
+            return;
         }
 
         /* Convert datatype, C */
@@ -3415,12 +3482,18 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         if( DENSE_DP == Aprecision ) {
             double2float_GPU( tempmm, tempnn, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
             A_use = A_s;
+        } else if( DENSE_SP != Aprecision ) {
+            fprintf(stderr, "Unsupported A precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
+            return;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == Bprecision ) {
             double2float_GPU( tempmm, tempnn, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
             B_use = B_s;
+        } else if( DENSE_SP != Bprecision ) {
+            fprintf(stderr, "Unsupported B precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
+            return;
         }
 
         /* SGEMM */
@@ -3454,7 +3527,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             float2half_GPU( tempmm, tempnn, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
             A_use = A_h;
         } else {
-            fprintf(stderr, "Precision A is not correct: %d %d %d!\n", m, n, k);
+            fprintf(stderr, "Precision A is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Aprecision);
+            return;
         }
 
         /* Convert datatype, B */
@@ -3465,7 +3539,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             float2half_GPU( tempmm, tempnn, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
             B_use = B_h;
         } else {
-            fprintf(stderr, "Precision B is not correct: %d %d %d!\n", m, n, k);
+            fprintf(stderr, "Precision B is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Bprecision);
+            return;
         }
 
         /* HGEMM */
@@ -3490,7 +3565,90 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
 
-    //} else if( DENSE_FP8 == new_decision ){
+#if HAVE_FP8
+    } else if( DENSE_FP8 == new_decision ){
+        int fp8_ld = stream_found->fp8_ld;
+        int use_padded_fp8 = (fp8_ld != descA->mb) || (tempmm != descA->mb) || (tempnn != descA->mb);
+
+        /* Convert datatype, A */
+        if( DENSE_DP == Aprecision ) {
+            if( use_padded_fp8 ) {
+                double2fp8_padded_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                double2fp8_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
+            A_use = A_fp8;
+        } else if( DENSE_SP == Aprecision ) {
+            if( use_padded_fp8 ) {
+                float2fp8_padded_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                float2fp8_GPU( tempmm, descA->mb, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
+            A_use = A_fp8;
+        } else {
+            fprintf(stderr, "Precision A is not correct PF8: %d %d %d: %u!\n", m, n, k, (unsigned)Aprecision);
+            return;
+        }
+
+        /* Convert datatype, B */
+        if( DENSE_DP == Bprecision ) {
+            if( use_padded_fp8 ) {
+                double2fp8_padded_GPU( tempnn, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                double2fp8_GPU( tempnn, descA->mb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
+            B_use = B_fp8;
+        } else if( DENSE_SP == Bprecision ) {
+            if( use_padded_fp8 ) {
+                float2fp8_padded_GPU( tempnn, descA->mb, B, descA->mb, B_fp8, fp8_ld, fp8_ld, fp8_ld, cuda_stream->cuda_stream );
+            } else {
+                float2fp8_GPU( tempnn, descA->mb, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
+            }
+            B_use = B_fp8;
+        } else {
+            fprintf(stderr, "Precision B is not correct FP8: %d %d %d: %u!\n", m, n, k, (unsigned)Bprecision);
+            return;
+        }
+
+        /* FP8 */
+        cublasLtHandle_t lightHandle = stream_found->lightHandle;
+        cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
+        cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
+        cublasLtMatrixLayout_t Bdesc = stream_found->Bdesc;
+        cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc;
+        size_t workspaceSize = stream_found->workspaceSize;
+        void *workspace = stream_found->workspace;
+        cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;
+
+        if( DENSE_DP == params_tlr->decisions[idx_C] || use_padded_fp8 ) {
+            float alpha = 1.0f, beta = 0.0f;
+            status = cublasLtMatmul(lightHandle, matmulDesc,
+                    &alpha, A_use, Adesc, B_use, Bdesc,
+                    &beta, C_s, Cdesc, C_s, Cdesc,
+                    &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+            if( 0 != hicma_parsec_check_cublaslt_status(status, "cublasLtMatmul", m, n, k) ) {
+                return;
+            }
+            if( DENSE_DP == params_tlr->decisions[idx_C] ) {
+                sub_float_from_double_ld_GPU(tempmm, tempnn, C_s, fp8_ld, C, ldam, cuda_stream->cuda_stream);
+            } else {
+                sub_float_from_float_ld_GPU(tempmm, tempnn, C_s, fp8_ld, C, ldam, cuda_stream->cuda_stream);
+                params_tlr->decisions[idx_C] = DENSE_SP;
+            }
+        } else {
+            float alpha = -1.0f, beta = 1.0f;
+            status = cublasLtMatmul(lightHandle, matmulDesc,
+                    &alpha, A_use, Adesc, B_use, Bdesc,
+                    &beta, C, Cdesc, C, Cdesc,
+                    &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+            if( 0 != hicma_parsec_check_cublaslt_status(status, "cublasLtMatmul", m, n, k) ) {
+                return;
+            }
+            params_tlr->decisions[idx_C] = DENSE_SP;
+        }
+#endif
+
+    //} else if( DENSE_FP4 == new_decision ){
     } else {
             fprintf(stderr, "New decision is not supported: %d %d %d!\n", m, n, k);
     }
