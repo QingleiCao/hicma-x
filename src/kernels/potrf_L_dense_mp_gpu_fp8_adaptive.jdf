@@ -480,14 +480,12 @@ BODY [type=CUDA]
             double C_precision_dp = (double)DENSE_DP;
             cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
             set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
-        } else if( DENSE_SP == decision ) {
+        } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
             cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
             copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
             set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
-        } else {
-            fprintf(stderr, "Error in TRSM %d %d\n", m, k);
         }
     }
     this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
@@ -517,14 +515,12 @@ BODY [type=HIP]
             double C_precision_dp = (double)DENSE_DP;
             cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
             set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
-        if( DENSE_SP == decision ) {
+        } else {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
             cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
             copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
             set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
-        } else {
-            fprintf(stderr, "Error in TRSM %d %d\n", m, k);
         }
     }
     this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));

@@ -3511,7 +3511,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             float2fp8_GPU( tempmm, tempnn, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
             A_use = A_fp8;
         } else {
-            fprintf(stderr, "Precision A is not correct PF8: %d %d %d!\n", m, n, k);
+            fprintf(stderr, "Precision A is not correct PF8: %d %d %d: %lu!\n", m, n, k, Aprecision);
         }
 
         /* Convert datatype, B */
@@ -3522,7 +3522,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             float2fp8_GPU( tempmm, tempnn, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
             B_use = B_fp8;
         } else {
-            fprintf(stderr, "Precision B is not correct FP8: %d %d %d!\n", m, n, k);
+            fprintf(stderr, "Precision B is not correct FP8: %d %d %d: %lu!\n", m, n, k, Bprecision);
         }
 
         /* FP8 */
