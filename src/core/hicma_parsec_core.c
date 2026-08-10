@@ -3307,7 +3307,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     C_s = (float *)stream_found->gpu_buffer_C;
     C_h = (void *)stream_found->gpu_buffer_C;
 
-    /* Fetch {norm, precision} in one transfer per input tile. */
+    /* Fetch runtime {norm, precision} metadata from TRSM outputs. */
     if( NULL != A_norm ) {
         double A_meta[2];
         cudaMemcpy(A_meta, (double *)A_norm, 2 * sizeof(double), cudaMemcpyDeviceToHost);
@@ -3355,16 +3355,22 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     /* If dgemm */
     if( DENSE_DP == new_decision ) {
 
-        if( DENSE_DP != Aprecision ) {
+        if( DENSE_SP == Aprecision ) {
             float2double_GPU(tempmm, tempnn, A, descA->mb, A_d, descA->mb, cuda_stream->cuda_stream);
-            A_use = A_d; 
+            A_use = A_d;
+        } else if( DENSE_DP != Aprecision ) {
+            fprintf(stderr, "Unsupported A precision in DP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
+            return;
         }
 
         /* Convert datatype, B */
         //if( DENSE_DP != params_tlr->decisions[k*descA->lmt+n] ) {
-        if( DENSE_DP != Bprecision ) {
+        if( DENSE_SP == Bprecision ) {
             float2double_GPU(tempmm, tempnn, B, descA->mb, B_d, descA->mb, cuda_stream->cuda_stream);
             B_use = B_d;
+        } else if( DENSE_DP != Bprecision ) {
+            fprintf(stderr, "Unsupported B precision in DP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
+            return;
         }
 
         /* Convert datatype, C */
@@ -3425,12 +3431,18 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         if( DENSE_DP == Aprecision ) {
             double2float_GPU( tempmm, tempnn, A, descA->mb, A_s, descA->mb, cuda_stream->cuda_stream );
             A_use = A_s;
+        } else if( DENSE_SP != Aprecision ) {
+            fprintf(stderr, "Unsupported A precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
+            return;
         }
 
         /* Convert datatype, B */
         if( DENSE_DP == Bprecision ) {
             double2float_GPU( tempmm, tempnn, B, descA->mb, B_s, descA->mb, cuda_stream->cuda_stream );
             B_use = B_s;
+        } else if( DENSE_SP != Bprecision ) {
+            fprintf(stderr, "Unsupported B precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
+            return;
         }
 
         /* SGEMM */
@@ -3464,7 +3476,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             float2half_GPU( tempmm, tempnn, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
             A_use = A_h;
         } else {
-            fprintf(stderr, "Precision A is not correct: %d %d %d!\n", m, n, k);
+            fprintf(stderr, "Precision A is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Aprecision);
+            return;
         }
 
         /* Convert datatype, B */
@@ -3475,7 +3488,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             float2half_GPU( tempmm, tempnn, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
             B_use = B_h;
         } else {
-            fprintf(stderr, "Precision B is not correct: %d %d %d!\n", m, n, k);
+            fprintf(stderr, "Precision B is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Bprecision);
+            return;
         }
 
         /* HGEMM */
@@ -3511,7 +3525,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             float2fp8_GPU( tempmm, tempnn, A, descA->mb, A_fp8, descA->mb, cuda_stream->cuda_stream );
             A_use = A_fp8;
         } else {
-            fprintf(stderr, "Precision A is not correct PF8: %d %d %d: %lu!\n", m, n, k, Aprecision);
+            fprintf(stderr, "Precision A is not correct PF8: %d %d %d: %u!\n", m, n, k, (unsigned)Aprecision);
+            return;
         }
 
         /* Convert datatype, B */
@@ -3522,7 +3537,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             float2fp8_GPU( tempmm, tempnn, B, descA->mb, B_fp8, descA->mb, cuda_stream->cuda_stream );
             B_use = B_fp8;
         } else {
-            fprintf(stderr, "Precision B is not correct FP8: %d %d %d: %lu!\n", m, n, k, Bprecision);
+            fprintf(stderr, "Precision B is not correct FP8: %d %d %d: %u!\n", m, n, k, (unsigned)Bprecision);
+            return;
         }
 
         /* FP8 */
