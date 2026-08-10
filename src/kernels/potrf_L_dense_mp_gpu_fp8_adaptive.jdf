@@ -480,12 +480,14 @@ BODY [type=CUDA]
             double C_precision_dp = (double)DENSE_DP;
             cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
             set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
-        } else {
+        } else if( DENSE_SP == decision ) {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
             cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
             copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
             set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
+        } else {
+            fprintf(stderr, "Error in TRSM %d %d\n", m, k);
         }
     }
     this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
@@ -515,12 +517,14 @@ BODY [type=HIP]
             double C_precision_dp = (double)DENSE_DP;
             cublasDnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, (double *)C_norm);
             set_device_double(((double *)C_norm) + 1, C_precision_dp, cuda_stream->cuda_stream);
-        } else {
+        if( DENSE_SP == decision ) {
             double C_precision_sp = (double)DENSE_SP;
             float *norm_sp_device = (float *)stream_found->gpu_buffer_C;
             cublasSnrm2(stream_found->handle_cublas_deviceptr, tile_elems, C, 1, norm_sp_device);
             copy_device_float_to_device_double((double *)C_norm, norm_sp_device, cuda_stream->cuda_stream);
             set_device_double(((double *)C_norm) + 1, C_precision_sp, cuda_stream->cuda_stream);
+        } else {
+            fprintf(stderr, "Error in TRSM %d %d\n", m, k);
         }
     }
     this_task->locals.size.value = tile_elems * ((DENSE_DP == decision) ? sizeof(double) : sizeof(float));
@@ -979,23 +983,6 @@ BODY [type=CUDA]
     gettimeofday(&tstart, NULL);
     double start_time = tstart.tv_sec + tstart.tv_usec / 1.0e6 - params_tlr->start_time_potrf;
 
-    /* Calculate communication size based on data type and precision */
-    if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
-    } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-    } else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
-        if( n-1 == k)
-            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-        else
-            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 2;
-    } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
-        if( n-1 == k)
-            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-        else
-            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 4;
-    }
-
     /* GPU-accelerated GEMM with different data structure combinations */
     /* Case 1: C, A, B are all dense - standard GEMM */
     if ( IS_DENSE(m, n) && IS_DENSE(m, k) && IS_DENSE(n, k) )
@@ -1032,23 +1019,6 @@ BODY [type=CUDA]
                 C, A, B, m, n, k, 0, Arank, Brank );
     }
 
-#endif
-}
-END
-
-BODY [type=HIP]
-{
-#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-    /* Skip GPU execution for low-rank C blocks */
-    if( !IS_DENSE(m, n) ) {
-        return PARSEC_HOOK_RETURN_NEXT;
-    }
-
-    /* Performance timing for debugging */
-    struct timeval tstart;
-    gettimeofday(&tstart, NULL);
-    double start_time = tstart.tv_sec + tstart.tv_usec / 1.0e6 - params_tlr->start_time_potrf;
-
     /* Calculate communication size based on data type and precision */
     if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
@@ -1065,6 +1035,23 @@ BODY [type=HIP]
         else
             this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 4;
     }
+
+#endif
+}
+END
+
+BODY [type=HIP]
+{
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* Skip GPU execution for low-rank C blocks */
+    if( !IS_DENSE(m, n) ) {
+        return PARSEC_HOOK_RETURN_NEXT;
+    }
+
+    /* Performance timing for debugging */
+    struct timeval tstart;
+    gettimeofday(&tstart, NULL);
+    double start_time = tstart.tv_sec + tstart.tv_usec / 1.0e6 - params_tlr->start_time_potrf;
 
     /* HIP-accelerated GEMM with different data structure combinations */
     /* Case 1: C, A, B are all dense - standard GEMM */
@@ -1100,6 +1087,23 @@ BODY [type=HIP]
         }
         hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream,
                 C, A, B, m, n, k, 0, Arank, Brank );
+    }
+
+    /* Calculate communication size based on data type and precision */
+    if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+    } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
+        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+    } else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
+        if( n-1 == k)
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        else
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 2;
+    } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
+        if( n-1 == k)
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        else
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 4;
     }
 
 #endif

@@ -3202,6 +3202,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             B_use = B_fp8;
         }
 
+#if 0
         /* First local GEMM convert C from single to half */
         if( 0 == k ) {
             /* Convert datatype */
@@ -3210,6 +3211,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             /* Copy C_h to C */
             memcpy_half_GPU( descA->mb, descA->nb, C_h, C, cuda_stream->cuda_stream );
         }
+#endif
 
         cublasLtHandle_t lightHandle = stream_found->lightHandle; 
         cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
@@ -3231,6 +3233,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
         //printf("FP8_GEMM %d %d %d\n", m, n, k);
 
+#if 0
         /* After last local GEMM convert C from half to single */
         if( n-1 == k ) {
             /* Convert datatype */
@@ -3239,6 +3242,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             /* Copy C_s to C */
             memcpy_float_GPU( descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream );
         }
+#endif
+
 #endif // HAVE_FP8
     }
 }
@@ -3525,7 +3530,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc;
         cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
         cublasLtMatrixLayout_t Bdesc = stream_found->Bdesc;
-        cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc_fp32;
+        cublasLtMatrixLayout_t Cdesc = stream_found->Cdesc;
         size_t workspaceSize = stream_found->workspaceSize;
         void *workspace = stream_found->workspace;
         cublasLtMatmulHeuristicResult_t heuristicResultsArray = stream_found->heuristicResultsArray;

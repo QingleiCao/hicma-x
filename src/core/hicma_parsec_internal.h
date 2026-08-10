@@ -835,7 +835,6 @@ typedef struct parsec_potrf_stream_workspace_s {
     cublasLtMatrixLayout_t Adesc;           /**< Matrix A layout */
     cublasLtMatrixLayout_t Bdesc;           /**< Matrix B layout */
     cublasLtMatrixLayout_t Cdesc;           /**< Matrix C layout, FP16 */
-    cublasLtMatrixLayout_t Cdesc_fp32;      /**< Matrix C layout */
     void *workspace;                        /**< FP8 workspace */
     size_t workspaceSize;                   /**< FP8 workspace size */
     cublasLtMatmulHeuristicResult_t heuristicResultsArray; /**< Heuristic results */
