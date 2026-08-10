@@ -19,6 +19,21 @@ extern int parsec_device_cuda_enabled;
 extern int parsec_device_hip_enabled;
 #endif
 
+#if HAVE_FP8
+static int hicma_parsec_check_cublaslt_status(cublasStatus_t status,
+                                              const char *op,
+                                              int m, int n, int k)
+{
+    if( CUBLAS_STATUS_SUCCESS == status ) {
+        return 0;
+    }
+
+    fprintf(stderr, "%s failed in FP8 GEMM (%d, %d, %d): cublas status %d\n",
+            op, m, n, k, (int)status);
+    return -1;
+}
+#endif
+
 static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device,
                                         parsec_data_copy_t *active_copy,
                                         void *expected_ptr,
@@ -3553,17 +3568,23 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 
         if( DENSE_DP == params_tlr->decisions[idx_C] ) {
             float alpha = 1.0f, beta = 0.0f;
-            cublasLtMatmul(lightHandle, matmulDesc,
+            status = cublasLtMatmul(lightHandle, matmulDesc,
                     &alpha, A_use, Adesc, B_use, Bdesc,
                     &beta, C_s, Cdesc, C_s, Cdesc,
                     &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+            if( 0 != hicma_parsec_check_cublaslt_status(status, "cublasLtMatmul", m, n, k) ) {
+                return;
+            }
             sub_float_from_double_GPU(tempmm, tempnn, C_s, C, cuda_stream->cuda_stream);
         } else {
             float alpha = -1.0f, beta = 1.0f;
-            cublasLtMatmul(lightHandle, matmulDesc,
+            status = cublasLtMatmul(lightHandle, matmulDesc,
                     &alpha, A_use, Adesc, B_use, Bdesc,
                     &beta, C, Cdesc, C, Cdesc,
                     &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
+            if( 0 != hicma_parsec_check_cublaslt_status(status, "cublasLtMatmul", m, n, k) ) {
+                return;
+            }
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
 #endif
