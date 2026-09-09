@@ -1387,6 +1387,18 @@ int hicma_parsec_rank_print(parsec_context_t *parsec,
                       int band_size_dense);
 
 /**
+ * @brief Update the byte count stored in every tile's PaRSEC data object
+ *
+ * @param [in] parsec PaRSEC context
+ * @param [inout] A Tiled matrix whose metadata is updated
+ * @param [in] element_size Size in bytes of one matrix element
+ * @return 0 on success
+ */
+int parsec_change_nb_elts(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *A,
+        size_t element_size);
+
+/**
  * @brief Warm up system for POTRF computation
  * 
  * This function performs a warm-up computation to initialize the system

@@ -106,6 +106,7 @@ set(JDF
     # Conversion JDF files
     kernels/convert_d2s.jdf
     kernels/convert_s2d.jdf
+    kernels/change_nb_elts.jdf
     kernels/datatype_convert_dense_static.jdf
     kernels/datatype_convert_dense_adaptive.jdf
     kernels/memory_allocation_dense_static.jdf
