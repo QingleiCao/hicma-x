@@ -15,6 +15,7 @@
 #endif
 
 #include <pthread.h>
+#include "parsec/mca/device/device.h"
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -80,6 +81,95 @@ static inline double hicma_kernel_time_take(const void *task, double fallback_st
     pthread_mutex_unlock(&hicma_kernel_time_lock);
 
     return start_time;
+}
+
+static inline double hicma_kernel_time_add_interval(hicma_kernel_time_interval_t **intervals,
+                                                    double *sum_array,
+                                                    int id,
+                                                    double start_time,
+                                                    double end_time)
+{
+    hicma_kernel_time_interval_t **intervalp;
+    hicma_kernel_time_interval_t *interval;
+    hicma_kernel_time_interval_t *new_interval;
+    double merged_start = start_time;
+    double merged_end = end_time;
+
+    if(end_time <= start_time) {
+        return sum_array[id];
+    }
+
+    intervalp = &intervals[id];
+    while(NULL != *intervalp && (*intervalp)->end_time < merged_start) {
+        intervalp = &(*intervalp)->next;
+    }
+
+    while(NULL != *intervalp && (*intervalp)->start_time <= merged_end) {
+        interval = *intervalp;
+        if(interval->start_time < merged_start) {
+            merged_start = interval->start_time;
+        }
+        if(interval->end_time > merged_end) {
+            merged_end = interval->end_time;
+        }
+        sum_array[id] -= interval->end_time - interval->start_time;
+        *intervalp = interval->next;
+        free(interval);
+    }
+
+    new_interval = (hicma_kernel_time_interval_t *)malloc(sizeof(*new_interval));
+    if(NULL == new_interval) {
+        sum_array[id] += end_time - start_time;
+        return sum_array[id];
+    }
+
+    new_interval->start_time = merged_start;
+    new_interval->end_time = merged_end;
+    new_interval->next = *intervalp;
+    *intervalp = new_interval;
+
+    sum_array[id] += merged_end - merged_start;
+    return sum_array[id];
+}
+
+static inline double hicma_kernel_time_accumulate(const parsec_task_t *task,
+                                                  hicma_parsec_params_t *params_tlr,
+                                                  int cpu_id,
+                                                  double start_time,
+                                                  double end_time,
+                                                  const char **sum_scope,
+                                                  int *sum_id)
+{
+    const parsec_device_module_t *device = (NULL != task) ? task->selected_device : NULL;
+    double *sum_array = (NULL != params_tlr) ? params_tlr->kernel_time_cpu : NULL;
+    hicma_kernel_time_interval_t **intervals = (NULL != params_tlr) ? params_tlr->kernel_time_cpu_intervals : NULL;
+    int sum_count = (NULL != params_tlr) ? params_tlr->kernel_time_cpu_count : 0;
+    int id = cpu_id;
+    double sum_time;
+
+    *sum_scope = "cpu";
+    if(NULL != device && PARSEC_DEV_IS_GPU(device->type)) {
+        *sum_scope = "gpu";
+        sum_array = (NULL != params_tlr) ? params_tlr->kernel_time_gpu : NULL;
+        intervals = (NULL != params_tlr) ? params_tlr->kernel_time_gpu_intervals : NULL;
+        sum_count = (NULL != params_tlr) ? params_tlr->kernel_time_gpu_count : 0;
+        id = device->device_index;
+    }
+
+    if(id < 0 || id >= sum_count || NULL == sum_array || NULL == intervals) {
+        id = 0;
+    }
+
+    pthread_mutex_lock(&hicma_kernel_time_lock);
+    if(NULL != sum_array && NULL != intervals && sum_count > 0) {
+        sum_time = hicma_kernel_time_add_interval(intervals, sum_array, id, start_time, end_time);
+    } else {
+        sum_time = end_time - start_time;
+    }
+    pthread_mutex_unlock(&hicma_kernel_time_lock);
+
+    *sum_id = id;
+    return sum_time;
 }
 
 #endif /* HICMA_KERNEL_TIME_H */

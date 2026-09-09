@@ -479,6 +479,26 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
     return 0;
 }
 
+static void hicma_parsec_free_kernel_time_intervals(hicma_kernel_time_interval_t **intervals, int count)
+{
+    int i;
+    hicma_kernel_time_interval_t *interval, *next_interval;
+
+    if(NULL == intervals) {
+        return;
+    }
+
+    for(i = 0; i < count; i++) {
+        interval = intervals[i];
+        while(NULL != interval) {
+            next_interval = interval->next;
+            free(interval);
+            interval = next_interval;
+        }
+    }
+    free(intervals);
+}
+
 /**
  * @brief Parse command line arguments and initialize MPI
  * 
@@ -542,6 +562,12 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Hardware configuration - these control resource utilization
     params->cores = -1;         // Number of cores per node (-1 = auto-detect from system)
     params->gpus  = 0;          // Number of GPUs to use (0 = CPU only, >0 enables GPU acceleration)
+    params->kernel_time_cpu = NULL;
+    params->kernel_time_gpu = NULL;
+    params->kernel_time_cpu_intervals = NULL;
+    params->kernel_time_gpu_intervals = NULL;
+    params->kernel_time_cpu_count = 0;
+    params->kernel_time_gpu_count = 0;
     
     // Band size configuration for different precision types
     // Band size controls the width of the dense diagonal band in the matrix
@@ -896,6 +922,17 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
         // Gather time in JDF (Job Data Flow) execution
         params->gather_time = (double *)calloc(params->cores, sizeof(double));
         params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
+        params->kernel_time_cpu_count = params->cores;
+        params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
+        params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
+        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 1 : 0;
+        if(params->kernel_time_gpu_count > 0) {
+            params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
+            params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
+        } else {
+            params->kernel_time_gpu = NULL;
+            params->kernel_time_gpu_intervals = NULL;
+        }
 
         if(params->gpus > 0) {
             params->counter_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
@@ -1211,6 +1248,17 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     if( params->cores > 0 ) {
         params->gather_time = (double *)calloc(params->cores, sizeof(double));
         params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
+        params->kernel_time_cpu_count = params->cores;
+        params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
+        params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
+        params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 1 : 0;
+        if(params->kernel_time_gpu_count > 0) {
+            params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
+            params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
+        } else {
+            params->kernel_time_gpu = NULL;
+            params->kernel_time_gpu_intervals = NULL;
+        }
     }
     params->critical_path_time = 0.0;
     params->potrf_time = 0.0;
@@ -2704,6 +2752,10 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     free( params->op_offpath );
     free( params->gather_time );
     free( params->gather_time_tmp );
+    free( params->kernel_time_cpu );
+    free( params->kernel_time_gpu );
+    hicma_parsec_free_kernel_time_intervals(params->kernel_time_cpu_intervals, params->kernel_time_cpu_count);
+    hicma_parsec_free_kernel_time_intervals(params->kernel_time_gpu_intervals, params->kernel_time_gpu_count);
     free( params->decisions );
     free( params->decisions_send);
     free( params->decisions_gemm_gpu);

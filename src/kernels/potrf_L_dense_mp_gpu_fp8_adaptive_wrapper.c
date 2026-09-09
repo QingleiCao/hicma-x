@@ -297,14 +297,19 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
     
     // Calculate execution time and update thread-local gather time
     double end_time = MPI_Wtime();
-    parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - start_time; 
+    double elapsed_time = end_time - start_time;
+    parsec_tp->_g_params_tlr->gather_time[es->th_id] += elapsed_time;
 
     // Log detailed GEMM execution information when debug mode is enabled
 #if PRINT_KERNEL_TIME
-        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time_%d %lf\n",
+    const char *sum_time_scope;
+    int sum_time_id;
+    double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
+                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
+        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time_%s_%d %lf\n",
 			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
                         this_task->locals.m.value, this_task->locals.n.value, this_task->locals.k.value,
-                        end_time, start_time, end_time - start_time, es->th_id, parsec_tp->_g_params_tlr->gather_time[es->th_id]);
+                        end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time);
 #endif
     return val;
 }
