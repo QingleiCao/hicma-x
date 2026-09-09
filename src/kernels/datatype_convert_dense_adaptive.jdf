@@ -14,6 +14,7 @@ extern "C" %{
  *                              All rights reserved.
  */
 #include "hicma_parsec.h"
+#include "parsec/mca/device/device.h"
 #include "src/include/dplasma/constants.h"
 
 %}
@@ -206,6 +207,15 @@ int parsec_datatype_convert_dense_adaptive(parsec_context_t *parsec,
      * before the conversion taskpool is created and scheduled.
      */
     parsec_change_nb_elts(parsec, A, sizeof(double));
+
+    /*
+     * A low-precision GPU copy may still be cached from the preceding
+     * computation.  Its allocation does not grow when nb_elts is increased,
+     * and PaRSEC otherwise reuses it for the double-precision output.
+     */
+    if (0 != convert_direction) {
+        parsec_devices_release_memory();
+    }
 
     // Create the taskpool for datatype conversion
     parsec_datatype_convert_dense_adaptive = parsec_datatype_convert_dense_adaptive_New(data, params, uplo, A, decisions, convert_direction);
