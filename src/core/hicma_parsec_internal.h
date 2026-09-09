@@ -378,7 +378,12 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define RANK_MAP_TYPE 5  /**< Number of rank mapping types supported */
 
 /* Critical path analysis - performance analysis flags */
+#ifndef PRINT_CRITICAL_PATH_TIME
 #define PRINT_CRITICAL_PATH_TIME 0  /**< Print critical path timing information */
+#endif
+#ifndef PRINT_KERNEL_TIME
+#define PRINT_KERNEL_TIME 1  /**< Print per-kernel/task timing information */
+#endif
 
 /* ============================================================================
  * Memory and performance configuration

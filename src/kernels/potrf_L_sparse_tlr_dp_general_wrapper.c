@@ -18,6 +18,7 @@
  */
 
 #include "hicma_parsec.h"
+#include "hicma_kernel_time.h"
 #include "potrf_L_sparse_tlr_dp_general.h"
 
 /**
@@ -264,7 +265,7 @@ static int wrap_gemm(parsec_execution_stream_t * es,
         (parsec_potrf_L_sparse_tlr_dp_general_taskpool_t*)this_task->taskpool;
     
     /* Record start time for thread-level timing (GEMM not in critical path) */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    hicma_kernel_time_record(this_task, MPI_Wtime());
     
     /* Call the actual GEMM implementation */
     return parsec_tp->_g_params_tlr->wrap_gemm(es, (parsec_task_t *)this_task);
@@ -287,7 +288,7 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
     parsec_potrf_L_sparse_tlr_dp_general_taskpool_t *parsec_tp = 
         (parsec_potrf_L_sparse_tlr_dp_general_taskpool_t*)this_task->taskpool;
     int val;
-    double start_time = parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+    double start_time = hicma_kernel_time_take(this_task, MPI_Wtime());
     
     /* Call the actual GEMM completion function */
     val = parsec_tp->_g_params_tlr->wrap_gemm_complete(es, (parsec_task_t *)this_task);
@@ -296,12 +297,13 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
     double end_time = MPI_Wtime();
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - start_time; 
 
-    /* Print debug timing information if enabled */
-    if( DEBUG_INFO )
-        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+    /* Print GEMM timing information if enabled */
+#if PRINT_KERNEL_TIME
+    fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time_%d %lf\n",
 			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
                         this_task->locals.m.value, this_task->locals.n.value, this_task->locals.k.value,
-                        end_time, start_time, end_time - start_time, parsec_tp->_g_params_tlr->gather_time[es->th_id]);
+                        end_time, start_time, end_time - start_time, es->th_id, parsec_tp->_g_params_tlr->gather_time[es->th_id]);
+#endif
     return val;
 }
 
