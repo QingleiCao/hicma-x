@@ -898,16 +898,13 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
         params->gather_time_tmp = (double *)calloc(params->cores, sizeof(double));
 
         if(params->gpus > 0) {
-            params->nb_gemms_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
+            params->counter_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
         } else {
-            params->nb_gemms_stride = params->cores;
+            params->counter_stride = params->cores;
         }
 
-        if(params->gpus > 0) {
-            params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->gpus*PARSEC_GPU_MAX_STREAMS, sizeof(uint64_t));
-        } else {
-            params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->cores, sizeof(uint64_t));
-        }
+        params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->counter_stride, sizeof(uint64_t));
+        params->nb_datatype_conversions = (uint64_t *)calloc(params->counter_stride, sizeof(uint64_t));
     }
 
     // Print parameter summary for verification
@@ -1093,16 +1090,13 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
 
     if( params->cores > 0 ) {
         if(params->gpus > 0) {
-            params->nb_gemms_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
+            params->counter_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
         } else {
-            params->nb_gemms_stride = params->cores;
+            params->counter_stride = params->cores;
         }
 
-        if(params->gpus > 0) {
-            params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->gpus*PARSEC_GPU_MAX_STREAMS, sizeof(uint64_t));
-        } else {
-            params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->cores, sizeof(uint64_t));
-        }
+        params->nb_gemms = (uint64_t *)calloc((NB_DECISIONS+1)*params->counter_stride, sizeof(uint64_t));
+        params->nb_datatype_conversions = (uint64_t *)calloc(params->counter_stride, sizeof(uint64_t));
     }
 
     /* ===========================================
@@ -1342,7 +1336,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%e %d %d %e %e %e %e ", params->result_accuracy, params->left_looking, params->gpu_type, params->norm_global_diff, params->fixedacc * params->norm_global, params->log_det_dp, params->log_det_mp);
         printf("%lf %lf %lf %d  ", params->time_decision_kernel, params->time_decision_sender, params->time_syrk_app, params->numobj);
         printf("%d %d %d %g %g %d ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density, params->adaptive_decision_runtime);
-        printf("%lu %lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->nb_gemms_stride], params->nb_gemms[DENSE_SP*params->nb_gemms_stride], params->nb_gemms[DENSE_HP*params->nb_gemms_stride], params->nb_gemms[LOW_RANK_DP*params->nb_gemms_stride], params->nb_gemms[LOW_RANK_DP*params->nb_gemms_stride], params->nb_gemms[DENSE_FP8*params->nb_gemms_stride]);
+        printf("%lu %lu %lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->counter_stride], params->nb_gemms[DENSE_SP*params->counter_stride], params->nb_gemms[DENSE_HP*params->counter_stride], params->nb_gemms[LOW_RANK_DP*params->counter_stride], params->nb_gemms[LOW_RANK_DP*params->counter_stride], params->nb_gemms[DENSE_FP8*params->counter_stride], params->nb_datatype_conversions[0]);
 #ifdef GITHASH
         printf("%s ", xstr(GITHASH));
 #else
@@ -2703,6 +2697,7 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
 
     free( params->rank_array );
     free( params->nb_gemms ); 
+    free( params->nb_datatype_conversions );
     free( params->op_band );
     free( params->op_offband );
     free( params->op_path );

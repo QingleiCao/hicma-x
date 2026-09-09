@@ -305,6 +305,14 @@ void hicma_parsec_core_syrk_runtime_decision_cpu(parsec_tiled_matrix_t* descA,
 void hicma_parsec_convert_2fp8_bit(hicma_parsec_params_t *params_tlr,
                                    float *A, float *A_use, int m, int n, int mb, int nb);
 
+void hicma_parsec_count_datatype_conversion(hicma_parsec_params_t *params_tlr,
+                                            int counter_id);
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+int hicma_parsec_gpu_counter_id(parsec_device_cuda_module_t *cuda_device,
+                                parsec_cuda_exec_stream_t *cuda_stream);
+#endif
+
 /**
  * @brief Print tile matrix in new format
  * 

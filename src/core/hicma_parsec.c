@@ -499,16 +499,21 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
 
     /* Statistics for number of GEMMs in different precision */
     if(params->verbose > 1) {
-        int cores = params->nb_gemms_stride;
+        int counter_stride = params->counter_stride;
         for( int i = 0; i < NB_DECISIONS+1; i++ ) {
-            for( int j = 1; j < cores; j++ ) {
-                params->nb_gemms[i*cores] += params->nb_gemms[i*cores+j]; 
+            for( int j = 1; j < counter_stride; j++ ) {
+                params->nb_gemms[i*counter_stride] += params->nb_gemms[i*counter_stride+j];
             }
         }
-        MPI_Allreduce(MPI_IN_PLACE, params->nb_gemms, (NB_DECISIONS+1)*params->cores, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, params->nb_gemms, (NB_DECISIONS+1)*counter_stride, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+        for( int j = 1; j < counter_stride; j++ ) {
+            params->nb_datatype_conversions[0] += params->nb_datatype_conversions[j];
+        }
+        MPI_Allreduce(MPI_IN_PLACE, params->nb_datatype_conversions, counter_stride, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
         fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu DENSE_FP8= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu\n"RESET,
-                params->nb_gemms[DENSE_DP*cores], params->nb_gemms[DENSE_SP*cores], params->nb_gemms[DENSE_HP*cores],
-                params->nb_gemms[DENSE_FP8*cores], params->nb_gemms[LOW_RANK_DP*cores], params->nb_gemms[LOW_RANK_DP*cores]);
+                params->nb_gemms[DENSE_DP*counter_stride], params->nb_gemms[DENSE_SP*counter_stride], params->nb_gemms[DENSE_HP*counter_stride],
+                params->nb_gemms[DENSE_FP8*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride]);
+        fprintf(stderr, GRN"Number_of_Datatype_Conversions: %lu\n"RESET, params->nb_datatype_conversions[0]);
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)

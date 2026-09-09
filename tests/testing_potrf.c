@@ -66,7 +66,10 @@ int main(int argc, char **argv)
         }
 
         /* Reset nb_gemms */
-        if(params.nruns > 1) memset(params.nb_gemms, 0, (NB_DECISIONS+1)*params.nb_gemms_stride*sizeof(uint64_t));
+        if(params.nruns > 1) {
+            memset(params.nb_gemms, 0, (NB_DECISIONS+1)*params.counter_stride*sizeof(uint64_t));
+            memset(params.nb_datatype_conversions, 0, params.counter_stride*sizeof(uint64_t));
+        }
         //if(0 == i) params.adaptive_decision_runtime = 0;
         
         /* Perform Cholesky decomposition */
