@@ -289,10 +289,16 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
     int sum_time_id;
     double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
                                                   start_time, end_time, &sum_time_scope, &sum_time_id);
-    fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time_%s_%d %lf\n",
-			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
-                        this_task->locals.m.value, this_task->locals.n.value, this_task->locals.k.value,
-                        end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time);
+    int gpu_time_id = -1;
+    double gpu_exe_time = 0.0;
+    double gpu_sum_time = 0.0;
+    int has_gpu_time = hicma_kernel_time_gpu_event_take((parsec_task_t *)this_task, parsec_tp->_g_params_tlr,
+                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
+    hicma_kernel_time_print_gemm(parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes,
+                                 parsec_tp->_g_descA->lm, this_task->locals.m.value,
+                                 this_task->locals.n.value, this_task->locals.k.value,
+                                 end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
+                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
 #endif
     return val;
 }

@@ -564,10 +564,12 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->gpus  = 0;          // Number of GPUs to use (0 = CPU only, >0 enables GPU acceleration)
     params->kernel_time_cpu = NULL;
     params->kernel_time_gpu = NULL;
+    params->kernel_time_gpu_event = NULL;
     params->kernel_time_cpu_intervals = NULL;
     params->kernel_time_gpu_intervals = NULL;
     params->kernel_time_cpu_count = 0;
     params->kernel_time_gpu_count = 0;
+    params->kernel_time_gpu_event_count = 0;
     
     // Band size configuration for different precision types
     // Band size controls the width of the dense diagonal band in the matrix
@@ -926,11 +928,14 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
         params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
         params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
         params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 1 : 0;
+        params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
         if(params->kernel_time_gpu_count > 0) {
             params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
+            params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
             params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
         } else {
             params->kernel_time_gpu = NULL;
+            params->kernel_time_gpu_event = NULL;
             params->kernel_time_gpu_intervals = NULL;
         }
 
@@ -1252,11 +1257,14 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
         params->kernel_time_cpu = (double *)calloc(params->kernel_time_cpu_count, sizeof(double));
         params->kernel_time_cpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_cpu_count, sizeof(hicma_kernel_time_interval_t *));
         params->kernel_time_gpu_count = (params->gpus > 0) ? params->gpus + 1 : 0;
+        params->kernel_time_gpu_event_count = params->kernel_time_gpu_count;
         if(params->kernel_time_gpu_count > 0) {
             params->kernel_time_gpu = (double *)calloc(params->kernel_time_gpu_count, sizeof(double));
+            params->kernel_time_gpu_event = (double *)calloc(params->kernel_time_gpu_event_count, sizeof(double));
             params->kernel_time_gpu_intervals = (hicma_kernel_time_interval_t **)calloc(params->kernel_time_gpu_count, sizeof(hicma_kernel_time_interval_t *));
         } else {
             params->kernel_time_gpu = NULL;
+            params->kernel_time_gpu_event = NULL;
             params->kernel_time_gpu_intervals = NULL;
         }
     }
@@ -2754,6 +2762,7 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     free( params->gather_time_tmp );
     free( params->kernel_time_cpu );
     free( params->kernel_time_gpu );
+    free( params->kernel_time_gpu_event );
     hicma_parsec_free_kernel_time_intervals(params->kernel_time_cpu_intervals, params->kernel_time_cpu_count);
     hicma_parsec_free_kernel_time_intervals(params->kernel_time_gpu_intervals, params->kernel_time_gpu_count);
     free( params->decisions );

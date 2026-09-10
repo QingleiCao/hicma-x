@@ -8,6 +8,7 @@
  **/
 
 #include "hicma_parsec.h"
+#include "hicma_kernel_time.h"
 #include "potrf_L_dense_mp_gpu_fp8_adaptive.h"
 
 /* Count conversions per worker/stream; slot 0 is reduced after execution. */
@@ -3065,6 +3066,22 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         cublasSetStream( handle, cuda_stream->cuda_stream );
     //}
 
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    cudaEvent_t gpu_time_start = NULL;
+    cudaEvent_t gpu_time_stop = NULL;
+    int gpu_time_active = hicma_kernel_time_gpu_event_begin((NULL != gpu_task) ? gpu_task->ec : NULL,
+                                                            cuda_stream->cuda_stream,
+                                                            &gpu_time_start, &gpu_time_stop);
+#define HICMA_GPU_TIME_RETURN do {                                      \
+        if(gpu_time_active) {                                           \
+            hicma_kernel_time_gpu_event_abort(gpu_time_start, gpu_time_stop); \
+        }                                                               \
+        return;                                                         \
+    } while(0)
+#else
+#define HICMA_GPU_TIME_RETURN do { return; } while(0)
+#endif
+
     /* Get the temporary buffer on GPU */
     A_d = (double *)stream_found->gpu_buffer_A;
     A_s = (float *)stream_found->gpu_buffer_A;
@@ -3400,7 +3417,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
                 use_padded_fp8 ? C_s : C, Cdesc,
                 &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
         if( 0 != hicma_parsec_check_cublaslt_status(status, "cublasLtMatmul", m, n, k) ) {
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
         if( use_padded_fp8 ) {
             sub_float_from_float_ld_GPU(tempmm, descA->mb, C_s, fp8_ld, C, ldam, cuda_stream->cuda_stream);
@@ -3421,6 +3438,18 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
 
 #endif // HAVE_FP8
     }
+
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if(gpu_time_active) {
+        parsec_task_t *parsec_task = (NULL != gpu_task) ? gpu_task->ec : NULL;
+        int gpu_time_id = (NULL != parsec_task && NULL != parsec_task->selected_device) ?
+                          parsec_task->selected_device->device_index : cuda_device->super.super.device_index;
+        hicma_kernel_time_gpu_event_record(parsec_task, gpu_time_id,
+                                           cuda_stream->cuda_stream,
+                                           gpu_time_start, gpu_time_stop);
+    }
+#endif
+#undef HICMA_GPU_TIME_RETURN
 }
 
 
@@ -3499,6 +3528,22 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     hicma_parsec_get_precision_tile(params_tlr, &new_decision, Anorm * Bnorm, m, n);
     cublasSetStream( handle, cuda_stream->cuda_stream );
 
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    cudaEvent_t gpu_time_start = NULL;
+    cudaEvent_t gpu_time_stop = NULL;
+    int gpu_time_active = hicma_kernel_time_gpu_event_begin((NULL != gpu_task) ? gpu_task->ec : NULL,
+                                                            cuda_stream->cuda_stream,
+                                                            &gpu_time_start, &gpu_time_stop);
+#define HICMA_GPU_TIME_RETURN do {                                      \
+        if(gpu_time_active) {                                           \
+            hicma_kernel_time_gpu_event_abort(gpu_time_start, gpu_time_stop); \
+        }                                                               \
+        return;                                                         \
+    } while(0)
+#else
+#define HICMA_GPU_TIME_RETURN do { return; } while(0)
+#endif
+
     if( new_decision != params_tlr->decisions[idx_C] && params_tlr->verbose > 99 ) {
         printf("The decision in gemm_gpu(%d, %d, %d) would change from %u to %u: norm_old %lf norm_new %.16lf (Anorm %.16lf Bnorm %.16lf) Aprecision %u Bprecision %u\n",
                 m, n, k,
@@ -3534,7 +3579,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             A_use = A_d;
         } else if( DENSE_DP != Aprecision ) {
             fprintf(stderr, "Unsupported A precision in DP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
 
         /* Convert datatype, B */
@@ -3545,7 +3590,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             B_use = B_d;
         } else if( DENSE_DP != Bprecision ) {
             fprintf(stderr, "Unsupported B precision in DP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
 
         /* Convert datatype, C */
@@ -3581,7 +3626,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             }
             active_copy = (NULL != c_dev_copy) ? c_dev_copy : c_copy;
             if( 0 != hicma_reallocate_tile_on_gpu(cuda_device, active_copy, C, target_bytes, m, n, k, &new_C) ) {
-                return;
+                HICMA_GPU_TIME_RETURN;
             }
             if( NULL != c_copy && c_copy != active_copy ) {
                 c_copy->device_private = new_C;
@@ -3592,7 +3637,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             if( params_tlr->adaptive_memory ) {
                 if( NULL != cpu_copy && cpu_copy != active_copy ) {
                     if( 0 != hicma_reallocate_tile_on_cpu(cpu_copy, target_bytes, m, n, k) ) {
-                        return;
+                        HICMA_GPU_TIME_RETURN;
                     }
                 }
             }
@@ -3610,7 +3655,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             A_use = A_s;
         } else if( DENSE_SP != Aprecision ) {
             fprintf(stderr, "Unsupported A precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Aprecision, m, n, k);
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
 
         /* Convert datatype, B */
@@ -3620,7 +3665,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             B_use = B_s;
         } else if( DENSE_SP != Bprecision ) {
             fprintf(stderr, "Unsupported B precision in SP GEMM: %u (%d,%d,%d)\n", (unsigned)Bprecision, m, n, k);
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
 
         /* SGEMM */
@@ -3657,7 +3702,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             A_use = A_h;
         } else {
             fprintf(stderr, "Precision A is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Aprecision);
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
 
         /* Convert datatype, B */
@@ -3671,7 +3716,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             B_use = B_h;
         } else {
             fprintf(stderr, "Precision B is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Bprecision);
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
 
         /* HGEMM */
@@ -3720,7 +3765,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             A_use = A_fp8;
         } else {
             fprintf(stderr, "Precision A is not correct PF8: %d %d %d: %u!\n", m, n, k, (unsigned)Aprecision);
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
 
         /* Convert datatype, B */
@@ -3742,7 +3787,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             B_use = B_fp8;
         } else {
             fprintf(stderr, "Precision B is not correct FP8: %d %d %d: %u!\n", m, n, k, (unsigned)Bprecision);
-            return;
+            HICMA_GPU_TIME_RETURN;
         }
 
         /* FP8 */
@@ -3762,7 +3807,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                     &beta, C_s, Cdesc, C_s, Cdesc,
                     &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
             if( 0 != hicma_parsec_check_cublaslt_status(status, "cublasLtMatmul", m, n, k) ) {
-                return;
+                HICMA_GPU_TIME_RETURN;
             }
             if( DENSE_DP == params_tlr->decisions[idx_C] ) {
                 sub_float_from_double_ld_GPU(tempmm, tempnn, C_s, fp8_ld, C, ldam, cuda_stream->cuda_stream);
@@ -3777,7 +3822,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
                     &beta, C, Cdesc, C, Cdesc,
                     &heuristicResultsArray.algo, workspace, workspaceSize, cuda_stream->cuda_stream);
             if( 0 != hicma_parsec_check_cublaslt_status(status, "cublasLtMatmul", m, n, k) ) {
-                return;
+                HICMA_GPU_TIME_RETURN;
             }
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
@@ -3787,6 +3832,18 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     } else {
             fprintf(stderr, "New decision is not supported: %d %d %d!\n", m, n, k);
     }
+
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if(gpu_time_active) {
+        parsec_task_t *parsec_task = (NULL != gpu_task) ? gpu_task->ec : NULL;
+        int gpu_time_id = (NULL != parsec_task && NULL != parsec_task->selected_device) ?
+                          parsec_task->selected_device->device_index : cuda_device->super.super.device_index;
+        hicma_kernel_time_gpu_event_record(parsec_task, gpu_time_id,
+                                           cuda_stream->cuda_stream,
+                                           gpu_time_start, gpu_time_stop);
+    }
+#endif
+#undef HICMA_GPU_TIME_RETURN
 
 #if 0
     /* The last local GEMM */

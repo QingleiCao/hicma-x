@@ -172,4 +172,53 @@ static inline double hicma_kernel_time_accumulate(const parsec_task_t *task,
     return sum_time;
 }
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+int hicma_kernel_time_gpu_event_begin(const void *task,
+                                      cudaStream_t stream,
+                                      cudaEvent_t *start_event,
+                                      cudaEvent_t *stop_event);
+void hicma_kernel_time_gpu_event_record(const void *task,
+                                        int gpu_id,
+                                        cudaStream_t stream,
+                                        cudaEvent_t start_event,
+                                        cudaEvent_t stop_event);
+void hicma_kernel_time_gpu_event_abort(cudaEvent_t start_event,
+                                       cudaEvent_t stop_event);
+#endif
+
+int hicma_kernel_time_gpu_event_take(const void *task,
+                                     hicma_parsec_params_t *params_tlr,
+                                     int *gpu_id,
+                                     double *gpu_exe_time,
+                                     double *gpu_sum_time);
+
+static inline void hicma_kernel_time_print_gemm(int band_size_dense,
+                                                int nodes,
+                                                int matrix,
+                                                int m,
+                                                int n,
+                                                int k,
+                                                double end_time,
+                                                double start_time,
+                                                double exe_time,
+                                                const char *sum_time_scope,
+                                                int sum_time_id,
+                                                double sum_time,
+                                                int has_gpu_time,
+                                                int gpu_time_id,
+                                                double gpu_exe_time,
+                                                double gpu_sum_time)
+{
+    if(has_gpu_time) {
+        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time_%s_%d %lf gpu_exe_time %lf gpu_sum_time_%d %lf\n",
+                band_size_dense, nodes, matrix, m, n, k,
+                end_time, start_time, exe_time, sum_time_scope, sum_time_id, sum_time,
+                gpu_exe_time, gpu_time_id, gpu_sum_time);
+    } else {
+        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time_%s_%d %lf\n",
+                band_size_dense, nodes, matrix, m, n, k,
+                end_time, start_time, exe_time, sum_time_scope, sum_time_id, sum_time);
+    }
+}
+
 #endif /* HICMA_KERNEL_TIME_H */

@@ -12,6 +12,7 @@ set(SRC
     core/hicma_parsec_internal.c
     core/hicma_parsec_core.c
     core/hicma_parsec_gpu.c
+    kernels/hicma_kernel_time.c
     
     # Wrapper files
     kernels/potrf_L_dense_tlr_dp_wrapper.c

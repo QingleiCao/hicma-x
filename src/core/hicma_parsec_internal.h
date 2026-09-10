@@ -763,10 +763,12 @@ typedef struct hicma_parsec_params_s {
     double *gather_time_tmp;      /**< Temporary array for timing information */
     double *kernel_time_cpu;      /**< Per-CPU-worker GEMM timing accumulator */
     double *kernel_time_gpu;      /**< Per-GPU-device GEMM timing accumulator */
+    double *kernel_time_gpu_event; /**< Per-GPU CUDA-event GEMM timing accumulator */
     hicma_kernel_time_interval_t **kernel_time_cpu_intervals; /**< Per-CPU-worker GEMM timing intervals */
     hicma_kernel_time_interval_t **kernel_time_gpu_intervals; /**< Per-GPU-device GEMM timing intervals */
     int kernel_time_cpu_count;    /**< Number of CPU timing accumulator entries */
     int kernel_time_gpu_count;    /**< Number of GPU timing accumulator entries */
+    int kernel_time_gpu_event_count; /**< Number of CUDA-event GPU timing accumulator entries */
     double potrf_time;            /**< Total POTRF execution time */
     double trsm_time;             /**< Total TRSM execution time */
     double syrk_time;             /**< Total SYRK execution time */
