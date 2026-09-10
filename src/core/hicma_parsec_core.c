@@ -2690,6 +2690,14 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
     /* Set stream */
     cusolverDnSetStream( handle, cuda_stream->cuda_stream );
 
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    cudaEvent_t gpu_time_start = NULL;
+    cudaEvent_t gpu_time_stop = NULL;
+    int gpu_time_active = hicma_kernel_time_gpu_event_begin((NULL != gpu_task) ? gpu_task->ec : NULL,
+                                                            cuda_stream->cuda_stream,
+                                                            &gpu_time_start, &gpu_time_stop);
+#endif
+
     /* GPU kernel */
     if( DENSE_SP == params_tlr->decisions[k*descA->lmt+k] ) { 
         dev_info = (int *)(stream_found->gpu_buffer + buffer_size * sizeof(float));
@@ -2722,6 +2730,17 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
 
     /* Update info */
     cudaMemcpyAsync(&params_tlr->info_gpu[k], dev_info, sizeof(int), cudaMemcpyDeviceToHost, cuda_stream->cuda_stream);
+
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if(gpu_time_active) {
+        parsec_task_t *parsec_task = (NULL != gpu_task) ? gpu_task->ec : NULL;
+        int gpu_time_id = (NULL != parsec_task && NULL != parsec_task->selected_device) ?
+                          parsec_task->selected_device->device_index : cuda_device->super.super.device_index;
+        hicma_kernel_time_gpu_event_record(parsec_task, gpu_time_id,
+                                           cuda_stream->cuda_stream,
+                                           gpu_time_start, gpu_time_stop);
+    }
+#endif
 }
 
 
@@ -2767,6 +2786,14 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
     cublasStatus_t status;
     cublasSetStream( handle, cuda_stream->cuda_stream );
 
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    cudaEvent_t gpu_time_start = NULL;
+    cudaEvent_t gpu_time_stop = NULL;
+    int gpu_time_active = hicma_kernel_time_gpu_event_begin((NULL != gpu_task) ? gpu_task->ec : NULL,
+                                                            cuda_stream->cuda_stream,
+                                                            &gpu_time_start, &gpu_time_stop);
+#endif
+
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         status = cublasDtrsm( handle, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_LOWER,
                 CUBLAS_OP_T, CUBLAS_DIAG_NON_UNIT,
@@ -2791,6 +2818,17 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
                 &alpha_float, (float *)T_s /*A(k, k)*/, ldak,
                               (float *)C   /*A(m, k)*/, ldam);
     }
+
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if(gpu_time_active) {
+        parsec_task_t *parsec_task = (NULL != gpu_task) ? gpu_task->ec : NULL;
+        int gpu_time_id = (NULL != parsec_task && NULL != parsec_task->selected_device) ?
+                          parsec_task->selected_device->device_index : cuda_device->super.super.device_index;
+        hicma_kernel_time_gpu_event_record(parsec_task, gpu_time_id,
+                                           cuda_stream->cuda_stream,
+                                           gpu_time_start, gpu_time_stop);
+    }
+#endif
 
 }
 
@@ -2834,6 +2872,14 @@ void hicma_parsec_core_syrk_gpu( parsec_tiled_matrix_t* descA,
 
     cublasStatus_t status;
     cublasSetStream( handle, cuda_stream->cuda_stream );
+
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    cudaEvent_t gpu_time_start = NULL;
+    cudaEvent_t gpu_time_stop = NULL;
+    int gpu_time_active = hicma_kernel_time_gpu_event_begin((NULL != gpu_task) ? gpu_task->ec : NULL,
+                                                            cuda_stream->cuda_stream,
+                                                            &gpu_time_start, &gpu_time_stop);
+#endif
 
     /* A is dense */
     if( IS_DENSE(m, k) ) {
@@ -2924,6 +2970,17 @@ void hicma_parsec_core_syrk_gpu( parsec_tiled_matrix_t* descA,
 
     }
 
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if(gpu_time_active) {
+        parsec_task_t *parsec_task = (NULL != gpu_task) ? gpu_task->ec : NULL;
+        int gpu_time_id = (NULL != parsec_task && NULL != parsec_task->selected_device) ?
+                          parsec_task->selected_device->device_index : cuda_device->super.super.device_index;
+        hicma_kernel_time_gpu_event_record(parsec_task, gpu_time_id,
+                                           cuda_stream->cuda_stream,
+                                           gpu_time_start, gpu_time_stop);
+    }
+#endif
+
 }
 
 
@@ -2954,6 +3011,14 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
 
     cublasStatus_t status;
     cublasSetStream( handle, cuda_stream->cuda_stream );
+
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    cudaEvent_t gpu_time_start = NULL;
+    cudaEvent_t gpu_time_stop = NULL;
+    int gpu_time_active = hicma_kernel_time_gpu_event_begin((NULL != gpu_task) ? gpu_task->ec : NULL,
+                                                            cuda_stream->cuda_stream,
+                                                            &gpu_time_start, &gpu_time_stop);
+#endif
 
     double Aprecision_as_double;
     cudaMemcpy(&Aprecision_as_double, ((double *)A_norm) + 1, sizeof(double), cudaMemcpyDeviceToHost);
@@ -2991,6 +3056,17 @@ void hicma_parsec_core_syrk_runtime_decision_gpu( parsec_tiled_matrix_t* descA,
     } else {
             fprintf(stderr, "Should not reach here: SYRK LOW_RANK %d\n", m);
     }
+
+#if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if(gpu_time_active) {
+        parsec_task_t *parsec_task = (NULL != gpu_task) ? gpu_task->ec : NULL;
+        int gpu_time_id = (NULL != parsec_task && NULL != parsec_task->selected_device) ?
+                          parsec_task->selected_device->device_index : cuda_device->super.super.device_index;
+        hicma_kernel_time_gpu_event_record(parsec_task, gpu_time_id,
+                                           cuda_stream->cuda_stream,
+                                           gpu_time_start, gpu_time_stop);
+    }
+#endif
 #else
 
     uint16_t old_decision = params_tlr->decisions_send[k*descA->lmt+m];

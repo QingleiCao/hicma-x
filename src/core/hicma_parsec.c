@@ -559,13 +559,14 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
         hicma_parsec_matrix_analysis_t *analysis ) {
 
     /* Convert single precision results back to double precision for validation */
-    if( params->kind_of_cholesky == DENSE_MP_BAND
+    if( params->check
+            && (params->kind_of_cholesky == DENSE_MP_BAND
             || params->kind_of_cholesky == DENSE_SP_HP_BAND
             || params->kind_of_cholesky == DENSE_TLR_MP
             || params->kind_of_cholesky == DENSE_MP_GPU
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8
             || params->kind_of_cholesky == DENSE_MP_GPU_FP8_ADAPTIVE
-            || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP
+            || params->kind_of_cholesky == DENSE_MP_GPU_FP8_SP)
       ) {
         SYNC_TIME_START();
         hicma_parsec_convert_s2d( parsec, data, params);

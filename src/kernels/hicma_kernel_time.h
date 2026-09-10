@@ -145,11 +145,13 @@ static inline double hicma_kernel_time_accumulate(const parsec_task_t *task,
     hicma_kernel_time_interval_t **intervals = (NULL != params_tlr) ? params_tlr->kernel_time_cpu_intervals : NULL;
     int sum_count = (NULL != params_tlr) ? params_tlr->kernel_time_cpu_count : 0;
     int id = cpu_id;
+    int is_gpu = 0;
     double sum_time;
 
     *sum_scope = "cpu";
     if(NULL != device && PARSEC_DEV_IS_GPU(device->type)) {
         *sum_scope = "gpu";
+        is_gpu = 1;
         sum_array = (NULL != params_tlr) ? params_tlr->kernel_time_gpu : NULL;
         intervals = (NULL != params_tlr) ? params_tlr->kernel_time_gpu_intervals : NULL;
         sum_count = (NULL != params_tlr) ? params_tlr->kernel_time_gpu_count : 0;
@@ -162,7 +164,12 @@ static inline double hicma_kernel_time_accumulate(const parsec_task_t *task,
 
     pthread_mutex_lock(&hicma_kernel_time_lock);
     if(NULL != sum_array && NULL != intervals && sum_count > 0) {
-        sum_time = hicma_kernel_time_add_interval(intervals, sum_array, id, start_time, end_time);
+        if(is_gpu) {
+            sum_time = hicma_kernel_time_add_interval(intervals, sum_array, id, start_time, end_time);
+        } else {
+            sum_array[id] += end_time - start_time;
+            sum_time = sum_array[id];
+        }
     } else {
         sum_time = end_time - start_time;
     }
@@ -192,7 +199,8 @@ int hicma_kernel_time_gpu_event_take(const void *task,
                                      double *gpu_exe_time,
                                      double *gpu_sum_time);
 
-static inline void hicma_kernel_time_print_gemm(int band_size_dense,
+static inline void hicma_kernel_time_print_task(const char *task_name,
+                                                int band_size_dense,
                                                 int nodes,
                                                 int matrix,
                                                 int m,
@@ -200,7 +208,7 @@ static inline void hicma_kernel_time_print_gemm(int band_size_dense,
                                                 int k,
                                                 double end_time,
                                                 double start_time,
-                                                double exe_time,
+                                                double task_exe_time,
                                                 const char *sum_time_scope,
                                                 int sum_time_id,
                                                 double sum_time,
@@ -210,15 +218,37 @@ static inline void hicma_kernel_time_print_gemm(int band_size_dense,
                                                 double gpu_sum_time)
 {
     if(has_gpu_time) {
-        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time_%s_%d %lf gpu_exe_time %lf gpu_sum_time_%d %lf\n",
-                band_size_dense, nodes, matrix, m, n, k,
-                end_time, start_time, exe_time, sum_time_scope, sum_time_id, sum_time,
+        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d %s %d %d %d end_time %lf start_time %lf task_exe_time %lf task_sum_time_%s_%d %lf gpu_exe_time %lf gpu_sum_time_%d %lf\n",
+                band_size_dense, nodes, matrix, task_name, m, n, k,
+                end_time, start_time, task_exe_time, sum_time_scope, sum_time_id, sum_time,
                 gpu_exe_time, gpu_time_id, gpu_sum_time);
     } else {
-        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d GEMM %d %d %d end_time %lf start_time %lf exe_time %lf sum_time_%s_%d %lf\n",
-                band_size_dense, nodes, matrix, m, n, k,
-                end_time, start_time, exe_time, sum_time_scope, sum_time_id, sum_time);
+        fprintf(stderr, "band_size_dense %d Nodes %d Matrix %d %s %d %d %d end_time %lf start_time %lf task_exe_time %lf task_sum_time_%s_%d %lf\n",
+                band_size_dense, nodes, matrix, task_name, m, n, k,
+                end_time, start_time, task_exe_time, sum_time_scope, sum_time_id, sum_time);
     }
+}
+
+static inline void hicma_kernel_time_print_gemm(int band_size_dense,
+                                                int nodes,
+                                                int matrix,
+                                                int m,
+                                                int n,
+                                                int k,
+                                                double end_time,
+                                                double start_time,
+                                                double task_exe_time,
+                                                const char *sum_time_scope,
+                                                int sum_time_id,
+                                                double sum_time,
+                                                int has_gpu_time,
+                                                int gpu_time_id,
+                                                double gpu_exe_time,
+                                                double gpu_sum_time)
+{
+    hicma_kernel_time_print_task("GEMM", band_size_dense, nodes, matrix, m, n, k,
+                                 end_time, start_time, task_exe_time, sum_time_scope, sum_time_id, sum_time,
+                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
 }
 
 #endif /* HICMA_KERNEL_TIME_H */

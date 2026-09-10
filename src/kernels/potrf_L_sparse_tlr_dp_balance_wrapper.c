@@ -49,8 +49,10 @@ static int wrap_potrf(parsec_execution_stream_t * es,
     parsec_potrf_L_sparse_tlr_dp_balance_taskpool_t *parsec_tp = (parsec_potrf_L_sparse_tlr_dp_balance_taskpool_t*)this_task->taskpool;
     
     /* Record start time of POTRF operation for timing analysis */
-    parsec_tp->_g_params_tlr->potrf_time_temp = MPI_Wtime();
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = parsec_tp->_g_params_tlr->potrf_time_temp;
+    double start_time = MPI_Wtime();
+    hicma_kernel_time_record(this_task, start_time);
+    parsec_tp->_g_params_tlr->potrf_time_temp = start_time;
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
     /* Execute the actual POTRF operation */
     return parsec_tp->_g_params_tlr->wrap_potrf(es, (parsec_task_t *)this_task);
@@ -83,12 +85,31 @@ static int wrap_potrf_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
     /* Print detailed timing information for critical path analysis */
-    fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d POTRF %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+    fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d POTRF %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 		    parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 		    this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->potrf_time_temp,
 		    end_time - parsec_tp->_g_params_tlr->potrf_time_temp, parsec_tp->_g_params_tlr->potrf_time);
 #endif
 
+#if PRINT_KERNEL_TIME
+    double start_time = hicma_kernel_time_take(this_task, end_time);
+    double elapsed_time = end_time - start_time;
+    const char *sum_time_scope;
+    int sum_time_id;
+    double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
+                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
+    int gpu_time_id = -1;
+    double gpu_exe_time = 0.0;
+    double gpu_sum_time = 0.0;
+    int has_gpu_time = hicma_kernel_time_gpu_event_take((parsec_task_t *)this_task, parsec_tp->_g_params_tlr,
+                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
+    hicma_kernel_time_print_task("POTRF", parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes,
+                                 parsec_tp->_g_descA->lm, this_task->locals.k.value, -1, -1,
+                                 end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
+                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+#endif
+
+    val = parsec_tp->_g_params_tlr->wrap_potrf_complete(es, (parsec_task_t *)this_task);
     return val;
 }
 
@@ -109,12 +130,14 @@ static int wrap_trsm(parsec_execution_stream_t * es,
     parsec_potrf_L_sparse_tlr_dp_balance_taskpool_t *parsec_tp = (parsec_potrf_L_sparse_tlr_dp_balance_taskpool_t*)this_task->taskpool;
     
     /* Record start time for thread-level timing */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    double start_time = MPI_Wtime();
+    hicma_kernel_time_record(this_task, start_time);
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
 
     /* Only record critical path timing for the first TRSM in each column */
     if(this_task->locals.m.value == this_task->locals.k.value + 1){
         /* Record start time of TRSM for critical path analysis */
-        parsec_tp->_g_params_tlr->trsm_time_temp = MPI_Wtime();
+        parsec_tp->_g_params_tlr->trsm_time_temp = start_time;
         return parsec_tp->_g_params_tlr->wrap_trsm(es, (parsec_task_t *)this_task);
     } else {
         /* Execute TRSM without critical path timing */
@@ -148,7 +171,7 @@ static int wrap_trsm_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
         /* Print detailed timing information for critical path analysis */
-	fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d TRSM %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+	fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d TRSM %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 			this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->trsm_time_temp,
 			end_time - parsec_tp->_g_params_tlr->trsm_time_temp, parsec_tp->_g_params_tlr->trsm_time);
@@ -161,6 +184,25 @@ static int wrap_trsm_complete(parsec_execution_stream_t * es,
 
     /* Update thread-level timing statistics */
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+#if PRINT_KERNEL_TIME
+    double start_time = hicma_kernel_time_take(this_task, end_time);
+    double elapsed_time = end_time - start_time;
+    const char *sum_time_scope;
+    int sum_time_id;
+    double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
+                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
+    int gpu_time_id = -1;
+    double gpu_exe_time = 0.0;
+    double gpu_sum_time = 0.0;
+    int has_gpu_time = hicma_kernel_time_gpu_event_take((parsec_task_t *)this_task, parsec_tp->_g_params_tlr,
+                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
+    hicma_kernel_time_print_task("TRSM", parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes,
+                                 parsec_tp->_g_descA->lm, this_task->locals.m.value, this_task->locals.k.value, -1,
+                                 end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
+                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+#endif
+
+    val = parsec_tp->_g_params_tlr->wrap_trsm_complete(es, (parsec_task_t *)this_task);
     return val;
 }
 
@@ -181,12 +223,14 @@ static int wrap_syrk(parsec_execution_stream_t * es,
     parsec_potrf_L_sparse_tlr_dp_balance_taskpool_t *parsec_tp = (parsec_potrf_L_sparse_tlr_dp_balance_taskpool_t*)this_task->taskpool;
     
     /* Record start time for thread-level timing */
-    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = MPI_Wtime();
+    double start_time = MPI_Wtime();
+    hicma_kernel_time_record(this_task, start_time);
+    parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id] = start_time;
     
     /* Only record critical path timing for the first SYRK in each column */
     if(this_task->locals.m.value == this_task->locals.k.value + 1){
         /* Record start time of SYRK for critical path analysis */
-        parsec_tp->_g_params_tlr->syrk_time_temp = MPI_Wtime();
+        parsec_tp->_g_params_tlr->syrk_time_temp = start_time;
         return parsec_tp->_g_params_tlr->wrap_syrk(es, (parsec_task_t *)this_task);
     } else {
         /* Execute SYRK without critical path timing */
@@ -220,7 +264,7 @@ static int wrap_syrk_complete(parsec_execution_stream_t * es,
 
 #if PRINT_CRITICAL_PATH_TIME
         /* Print detailed timing information for critical path analysis */
-	fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d SYRK %d end_time %lf start_time %lf exe_time %lf sum_time %lf\n",
+	fprintf(stderr, "OUT_critical_path_time band_size_dense %d Nodes %d Matrix %d SYRK %d end_time %lf start_time %lf task_exe_time %lf sum_time %lf\n",
 			parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes, parsec_tp->_g_descA->lm,
 			this_task->locals.k.value, end_time, parsec_tp->_g_params_tlr->syrk_time_temp,
 			end_time - parsec_tp->_g_params_tlr->syrk_time_temp, parsec_tp->_g_params_tlr->syrk_time);
@@ -233,6 +277,25 @@ static int wrap_syrk_complete(parsec_execution_stream_t * es,
 
     /* Update thread-level timing statistics */
     parsec_tp->_g_params_tlr->gather_time[es->th_id] += end_time - parsec_tp->_g_params_tlr->gather_time_tmp[es->th_id];
+#if PRINT_KERNEL_TIME
+    double start_time = hicma_kernel_time_take(this_task, end_time);
+    double elapsed_time = end_time - start_time;
+    const char *sum_time_scope;
+    int sum_time_id;
+    double sum_time = hicma_kernel_time_accumulate((parsec_task_t *)this_task, parsec_tp->_g_params_tlr, es->th_id,
+                                                  start_time, end_time, &sum_time_scope, &sum_time_id);
+    int gpu_time_id = -1;
+    double gpu_exe_time = 0.0;
+    double gpu_sum_time = 0.0;
+    int has_gpu_time = hicma_kernel_time_gpu_event_take((parsec_task_t *)this_task, parsec_tp->_g_params_tlr,
+                                                        &gpu_time_id, &gpu_exe_time, &gpu_sum_time);
+    hicma_kernel_time_print_task("SYRK", parsec_tp->_g_params_tlr->band_size_dense, parsec_tp->_g_descA->super.nodes,
+                                 parsec_tp->_g_descA->lm, this_task->locals.m.value, this_task->locals.k.value, -1,
+                                 end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
+                                 has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
+#endif
+
+    val = parsec_tp->_g_params_tlr->wrap_syrk_complete(es, (parsec_task_t *)this_task);
     return val;
 }
 
@@ -300,6 +363,7 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
                                  end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
                                  has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
 #endif
+    val = parsec_tp->_g_params_tlr->wrap_gemm_complete(es, (parsec_task_t *)this_task);
     return val;
 }
 
