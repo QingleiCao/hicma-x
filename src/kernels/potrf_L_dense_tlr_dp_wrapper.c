@@ -105,7 +105,6 @@ static int wrap_potrf_complete(parsec_execution_stream_t * es,
                                  has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
 #endif
 
-    val = parsec_tp->_g_params_tlr->wrap_potrf_complete(es, (parsec_task_t *)this_task);
     return val;
 }
 
@@ -216,7 +215,6 @@ static int wrap_trsm_complete(parsec_execution_stream_t * es,
                                  has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
 #endif
 
-    val = parsec_tp->_g_params_tlr->wrap_trsm_complete(es, (parsec_task_t *)this_task);
     return val;
 }
 
@@ -327,7 +325,6 @@ static int wrap_syrk_complete(parsec_execution_stream_t * es,
                                  has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
 #endif
 
-    val = parsec_tp->_g_params_tlr->wrap_syrk_complete(es, (parsec_task_t *)this_task);
     return val;
 }
 
@@ -413,7 +410,6 @@ static int wrap_gemm_complete(parsec_execution_stream_t * es,
                                  end_time, start_time, elapsed_time, sum_time_scope, sum_time_id, sum_time,
                                  has_gpu_time, gpu_time_id, gpu_exe_time, gpu_sum_time);
 #endif
-    val = parsec_tp->_g_params_tlr->wrap_gemm_complete(es, (parsec_task_t *)this_task);
     return val;
 }
 

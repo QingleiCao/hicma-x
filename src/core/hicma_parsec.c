@@ -574,7 +574,7 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
     }
 
     if(params->verbose > 9) {
-        get_decisions(params->decisions, (size_t)params->MB * params->NB);
+        get_decisions(params->decisions, (size_t)params->MT * params->NT);
         print_decisions(params);
     }
 

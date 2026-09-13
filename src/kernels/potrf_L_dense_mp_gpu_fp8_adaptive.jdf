@@ -798,7 +798,7 @@ m = k+1 .. descA->mt-1
 : descA(m, m)
 
 // Data dependencies and flow
-READ  A <- C potrf_dtrsm(m, k)                                                   [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, k, descA->lmt)]; %} ] 
+READ  A <- C potrf_dtrsm(m, k)                                                   [ type_remote = FULL_DP ] 
 READ  Ar <- (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, k): NULL    [ type_remote = AR ]
 READ  A_norm <- (params_tlr->adaptive_decision_runtime) ? C_norm potrf_dtrsm(m, k): NULL    [ type_remote = NORM ]
 
@@ -951,12 +951,12 @@ band_size_dense_local = params_tlr->band_size_dense
 : descA(m, n)
 
 // Parameters
-READ   A <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? C0 potrf_dtrsm_send(m, k)    [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, k, descA->lmt)]; %} ] 
-         <- C potrf_dtrsm_send(m, k)                                                         [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions_send, m, k, descA->lmt)]; %} ] 
+READ   A <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, m, k); %})? C0 potrf_dtrsm_send(m, k)  [ type_remote = FULL_DP ] 
+         <- C potrf_dtrsm_send(m, k)                                                                    [ type_remote = FULL_DP ] 
 READ  Ar <- (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, k): NULL                [ type_remote = AR ]
 
-READ   B <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, n, k); %})? C0 potrf_dtrsm_send(n, k)    [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, n, k, descA->lmt)]; %} ] 
-         <- C potrf_dtrsm_send(n, k)                                                         [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_send_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions_send, n, k, descA->lmt)]; %} ]
+READ   B <- (%{ return !hicma_parsec_convert_in_trsm(params_tlr, n, k); %})? C0 potrf_dtrsm_send(n, k)  [ type_remote = FULL_DP ] 
+         <- C potrf_dtrsm_send(n, k)                                                                    [ type_remote = FULL_DP ] 
 READ  Br <- (n-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(n, k): NULL                [ type_remote = AR ]
 
 RW    C <- (k == 0 && m-n < params_tlr->band_size_dense) ? A potrf_bind_A(m, n)              [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu_fp8_adaptive(params_tlr->decisions, m, n, descA->lmt)]; %} ]
