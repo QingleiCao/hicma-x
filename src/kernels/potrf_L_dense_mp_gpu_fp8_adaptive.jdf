@@ -445,7 +445,8 @@ READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
 
-RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? descNorm(m, k): NULL
+//RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? descNorm(m, k): NULL
+RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? NEW: NULL                                      [ type = NORM ]
            -> (params_tlr->adaptive_decision_runtime) ? A_norm potrf_dsyrk(k, m)                       [ type_remote = NORM ]
            -> (params_tlr->adaptive_decision_runtime) ? A_norm potrf_dgemm(m, k+1..m-1, k)              [ type_remote = NORM ]
            -> (params_tlr->adaptive_decision_runtime) ? B_norm potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = NORM ]
