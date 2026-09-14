@@ -340,7 +340,8 @@ void hicma_parsec_decisions_gemm_gpu_init(hicma_parsec_params_t *params);
 void print_decisions(hicma_parsec_params_t *params);
 
 
-void get_decisions(uint16_t *decisions, size_t size );
+void get_decisions(uint16_t *decisions, size_t size,
+        parsec_tiled_matrix_t *descA );
 
 /**
  * @brief Print convert type decisions

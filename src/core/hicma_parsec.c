@@ -576,7 +576,13 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
     }
 
     if(params->verbose > 9) {
-        get_decisions(params->decisions, (size_t)params->MT * params->NT);
+        parsec_tiled_matrix_t *decision_desc = (parsec_tiled_matrix_t *)&data->dcA;
+        if( params->band_size_dense >= params->NT &&
+                params->auto_band == 0 && !params->adaptive_memory ) {
+            decision_desc = (parsec_tiled_matrix_t *)&data->dcAd;
+        }
+        get_decisions(params->decisions, (size_t)params->MT * params->NT,
+                decision_desc);
         print_decisions(params);
     }
 

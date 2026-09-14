@@ -174,8 +174,23 @@ void print_decisions( hicma_parsec_params_t *params ) {
         sleep(1);
 }
 
-void get_decisions(uint16_t *decisions, size_t size ) {
+void get_decisions(uint16_t *decisions, size_t size,
+        parsec_tiled_matrix_t *descA ) {
     assert((int)size == size);
+    assert(size == (size_t)descA->lmt * descA->lnt);
+
+    /* Runtime decisions are updated only by the rank owning each output tile.
+     * Remove stale replicas before summing so every tile has one contributor. */
+    for( int n = 0; n < descA->lnt; n++ ) {
+        for( int m = 0; m < descA->lmt; m++ ) {
+            size_t index = (size_t)n * descA->lmt + m;
+            if( m < n || descA->super.myrank !=
+                    descA->super.rank_of(&descA->super, m, n) ) {
+                decisions[index] = 0;
+            }
+        }
+    }
+
     MPI_Allreduce(MPI_IN_PLACE, decisions, size, MPI_UNSIGNED_SHORT, MPI_SUM, MPI_COMM_WORLD);
 }
 
@@ -721,6 +736,5 @@ void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
     }
 
 }
-
 
 
