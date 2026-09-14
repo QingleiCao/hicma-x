@@ -510,10 +510,12 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             params->nb_datatype_conversions[0] += params->nb_datatype_conversions[j];
         }
         MPI_Allreduce(MPI_IN_PLACE, params->nb_datatype_conversions, counter_stride, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
-        fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu DENSE_FP8= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu\n"RESET,
-                params->nb_gemms[DENSE_DP*counter_stride], params->nb_gemms[DENSE_SP*counter_stride], params->nb_gemms[DENSE_HP*counter_stride],
-                params->nb_gemms[DENSE_FP8*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride]);
-        fprintf(stderr, GRN"Number_of_Datatype_Conversions: %lu\n"RESET, params->nb_datatype_conversions[0]);
+        if( 0 == params->rank ) {
+            fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu DENSE_FP8= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu\n"RESET,
+                    params->nb_gemms[DENSE_DP*counter_stride], params->nb_gemms[DENSE_SP*counter_stride], params->nb_gemms[DENSE_HP*counter_stride],
+                    params->nb_gemms[DENSE_FP8*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride]);
+            fprintf(stderr, GRN"Number_of_Datatype_Conversions: %lu\n"RESET, params->nb_datatype_conversions[0]);
+        }
     }
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
