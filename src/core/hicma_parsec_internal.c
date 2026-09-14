@@ -321,6 +321,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"adaptive_decision", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach", 0, &params->adaptive_decision},
         {"adaptive_decision_runtime", "0: disabled; ~0: adaptive_decision of each tile's format using norm approach during runtime", 0, &params->adaptive_decision_runtime},
         {"adaptive_memory", "0: memory allocated once; 1: memory reallocated per tile after precision decision", 0, &params->adaptive_memory},
+        {"arena_pinned_memory", "Use pinned host memory for taskpool arenas when GPUs are enabled", 3, &params->arena_pinned_memory},
         {"adaptive_maxrank", "In -D 6, adaptively set the maxrank used in Cholesky based on the generation", 0, &params->adaptive_maxrank},
         {"kind_of_cholesky", "Cholesky type", 0, &params->kind_of_cholesky},
         {"mesh_file", "Path to mesh file", 2, &params->mesh_file},
@@ -586,6 +587,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->adaptive_decision_runtime = 0;  // Disable adaptive tile format decision during runtime (0=disabled, >0=enabled)
     // TODO: Need to test the overhead and restructure memory allocation strategy
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
+    params->arena_pinned_memory = 0;         // Use the default arena allocator unless explicitly enabled
     params->lookahead = -1;                 // Lookahead depth (auto-tuned based on band_size_dense)
     
     // Problem configuration - define the computational problem
@@ -1330,7 +1332,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
         printf("kind_of_problem=%d %s\n", params->kind_of_problem, params->str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
-        printf("send_full_tile=%d lookahead= %d adaptive_decision= %d adaptive_decision_runtime= %d adaptive_memory= %d\n", params->send_full_tile, params->lookahead, params->adaptive_decision, params->adaptive_decision_runtime, params->adaptive_memory);
+        printf("send_full_tile=%d lookahead= %d adaptive_decision= %d adaptive_decision_runtime= %d adaptive_memory= %d arena_pinned_memory= %d\n", params->send_full_tile, params->lookahead, params->adaptive_decision, params->adaptive_decision_runtime, params->adaptive_memory, params->arena_pinned_memory);
         printf("band_size_dist= %d band_size_dense_dp:%d band_size_dense_sp:%d band_size_dense_hp: %d band_size_dense: %d band_size_low_rank_dp:%d NT= %d band_p= %d\n", params->band_size_dist, params->band_size_dense_dp, params->band_size_dense_sp, params->band_size_dense_hp, params->band_size_dense, params->band_size_low_rank_dp, params->NT, params->band_p);
         printf("band_size_auto_tuning_termination= %lf band_size_dense_gpu_memory_max= %d exe_file_path= %s\n", params->band_size_auto_tuning_termination, params->band_size_dense_gpu_memory_max, params->exe_file_path);
         printf("max_rank=%d gen=%d comp=%d\n", params->maxrank, params->genmaxrank, params->compmaxrank);
@@ -1393,6 +1395,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%lf %lf %lf %d  ", params->time_decision_kernel, params->time_decision_sender, params->time_syrk_app, params->numobj);
         printf("%d %d %d %g %g %d ", params->order, params->nsnp, params->rbf_kernel, params->radius, params->density, params->adaptive_decision_runtime);
         printf("%lu %lu %lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->counter_stride], params->nb_gemms[DENSE_SP*params->counter_stride], params->nb_gemms[DENSE_HP*params->counter_stride], params->nb_gemms[LOW_RANK_DP*params->counter_stride], params->nb_gemms[LOW_RANK_DP*params->counter_stride], params->nb_gemms[DENSE_FP8*params->counter_stride], params->nb_datatype_conversions[0]);
+        printf("%d ", params->arena_pinned_memory);
 #ifdef GITHASH
         printf("%s ", xstr(GITHASH));
 #else

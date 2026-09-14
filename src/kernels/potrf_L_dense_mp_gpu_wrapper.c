@@ -776,6 +776,12 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
             1, 1, 1, 1,
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
+    if( params->arena_pinned_memory && nb > 0 ) {
+        hicma_parsec_arenas_use_pinned_memory(
+                hicma_dpotrf->arenas_datatypes,
+                PARSEC_potrf_L_dense_mp_gpu_ADT_IDX_MAX);
+    }
+
     return (parsec_taskpool_t*)hicma_dpotrf;
 }
 

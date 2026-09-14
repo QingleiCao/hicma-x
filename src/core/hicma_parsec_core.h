@@ -53,6 +53,15 @@ extern "C" {
  */
 void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *allocate_type, size_t *data_size);
 
+/**
+ * @brief Configure initialized taskpool arenas to allocate pinned host memory.
+ *
+ * Uninitialized entries are ignored. This must be called before an arena makes
+ * its first allocation so that allocation and release always use a matched pair.
+ */
+void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
+                                           int arena_count);
+
 /* ============================================================================
  * Utility and debugging functions
  * ============================================================================ */

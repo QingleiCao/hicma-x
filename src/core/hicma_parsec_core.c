@@ -38,6 +38,48 @@ extern int parsec_device_cuda_enabled;
 extern int parsec_device_hip_enabled;
 #endif
 
+static void *hicma_parsec_pinned_memory_allocate(size_t size)
+{
+    void *ptr = NULL;
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    if( cudaSuccess != cudaMallocHost(&ptr, size) ) {
+        return NULL;
+    }
+#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if( hipSuccess != hipHostMalloc(&ptr, size, hipHostMallocDefault) ) {
+        return NULL;
+    }
+#else
+    ptr = malloc(size);
+#endif
+    return ptr;
+}
+
+static void hicma_parsec_pinned_memory_free(void *ptr)
+{
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
+    cudaFreeHost(ptr);
+#elif defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    hipHostFree(ptr);
+#else
+    free(ptr);
+#endif
+}
+
+void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
+                                           int arena_count)
+{
+    for( int i = 0; i < arena_count; i++ ) {
+        parsec_arena_t *arena = arenas[i].arena;
+        if( NULL == arena ) {
+            continue;
+        }
+        arena->data_malloc = hicma_parsec_pinned_memory_allocate;
+        arena->data_free = hicma_parsec_pinned_memory_free;
+    }
+}
+
 #if HAVE_FP8
 static int hicma_parsec_check_cublaslt_status(cublasStatus_t status,
                                               const char *op,

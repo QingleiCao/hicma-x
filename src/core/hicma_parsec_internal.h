@@ -562,6 +562,7 @@ typedef struct hicma_parsec_params_s {
     int adaptive_decision;    /**< Enable adaptive tile format decisions */
     int adaptive_decision_runtime;    /**< Enable adaptive tile format decisions during runtime */
     int adaptive_memory;      /**< Enable adaptive memory allocation: 0=memory allocated once; 1=memory reallocated per tile after precision decision */
+    int arena_pinned_memory;  /**< Use pinned host memory for arenas when GPUs are enabled */
     int lookahead;            /**< Lookahead depth */
     int kind_of_problem;      /**< Type of problem being solved */
     int send_full_tile;       /**< Send full tile instead of compressed */
