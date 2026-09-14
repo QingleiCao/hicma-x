@@ -445,12 +445,11 @@ READ  Cr <- (k == 0 && m-k >= params_tlr->band_size_dense) ? descAr(m, k)
          -> (m-k >= params_tlr->band_size_dense) ? Br potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = AR ]
          -> (m-k >= params_tlr->band_size_dense) ? descAr(m, k)               
 
-//RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? descNorm(m, k): NULL
-RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? NEW: NULL                                      [ type = NORM ]
+RW  C_norm <- (params_tlr->adaptive_decision_runtime) ? descNorm(m, k): NULL
            -> (params_tlr->adaptive_decision_runtime) ? A_norm potrf_dsyrk(k, m)                       [ type_remote = NORM ]
            -> (params_tlr->adaptive_decision_runtime) ? A_norm potrf_dgemm(m, k+1..m-1, k)              [ type_remote = NORM ]
            -> (params_tlr->adaptive_decision_runtime) ? B_norm potrf_dgemm(m+1..descA->mt-1, m, k)      [ type_remote = NORM ]
-           //-> descNorm(m, k)
+           -> (params_tlr->adaptive_decision_runtime) ? descNorm(m, k)
 
 CTL ctl  <- (params_tlr->lookahead == 1 && m > params_tlr->lookahead+k)? ctl potrf_dsyrk(k, k+1)
 CTL ctl1 <- (params_tlr->lookahead > 1 && m > params_tlr->lookahead+k)? ctl2 potrf_dtrsm(k+2, k)
@@ -636,8 +635,11 @@ potrf_dtrsm_send(m, k) [high_priority = on]
 m = 1 .. descA->mt-1
 k = 0 .. m-1
 
-// Control message size for rank information
-size = 1
+// Communication size must be valid even when conversion is disabled and this
+// task is only forwarding the TRSM output. Runtime TRSM stores non-DP tiles in
+// single precision, independently of the static decisions_send value.
+size = %{ return descA->mb * descA->mb *
+                 ((DENSE_DP == params_tlr->decisions[k*descA->lmt+m]) ? sizeof(double) : sizeof(float)); %}
 
 // Local copy of band size for GPU evaluation
 band_size_dense_local = params_tlr->band_size_dense
@@ -666,15 +668,21 @@ BODY [type=CUDA]
         return PARSEC_HOOK_RETURN_NEXT;
     }
 
-    /* Calculate communication size based on target precision */
-    if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
-    } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-    } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb * 2;
-    } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb;
+    /* Use the converted precision when conversion runs; otherwise forward the
+     * physical TRSM representation selected at runtime. */
+    if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
+        if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+        } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * 2;
+        } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb;
+        }
+    } else {
+        this_task->locals.size.value = descA->mb * descA->mb *
+            ((DENSE_DP == params_tlr->decisions[k*descA->lmt+m]) ? sizeof(double) : sizeof(float));
     }
 
     /* Perform precision conversion if needed */
@@ -719,15 +727,21 @@ BODY [type=HIP]
         return PARSEC_HOOK_RETURN_NEXT;
     }
 
-    /* Calculate communication size based on target precision */
-    if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
-    } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-    } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb * 2;
-    } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = descA->mb * descA->mb;
+    /* Use the converted precision when conversion runs; otherwise forward the
+     * physical TRSM representation selected at runtime. */
+    if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
+        if( DENSE_DP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
+        } else if( DENSE_SP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
+        } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb * 2;
+        } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
+            this_task->locals.size.value = descA->mb * descA->mb;
+        }
+    } else {
+        this_task->locals.size.value = descA->mb * descA->mb *
+            ((DENSE_DP == params_tlr->decisions[k*descA->lmt+m]) ? sizeof(double) : sizeof(float));
     }
 
     /* Perform precision conversion if needed */
