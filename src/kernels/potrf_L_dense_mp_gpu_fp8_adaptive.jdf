@@ -478,7 +478,7 @@ BODY [type=CUDA]
     const size_t tile_elems = descA->mb * descA->nb;
     const int idx_C = k * descA->lmt + m;
     uint16_t decision = params_tlr->decisions[idx_C];
-    if(0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
+    if( 0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
         double C_norm_host = 0.0;
         float *C_s = (float *)stream_found->gpu_buffer_C;
         cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
@@ -492,6 +492,7 @@ BODY [type=CUDA]
                              cuda_stream->cuda_stream);
             memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
             this_task->data._f_C.data_out->original->nb_elts = (size_t)tile_elems * sizeof(float);
+            gpu_task->flow_nb_elts[0] = (size_t)tile_elems * sizeof(float);
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
     }
@@ -537,7 +538,7 @@ BODY [type=HIP]
     const size_t tile_elems = descA->mb * descA->nb;
     const int idx_C = k * descA->lmt + m;
     uint16_t decision = params_tlr->decisions[idx_C];
-    if(0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
+    if( 0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
         double C_norm_host = 0.0;
         float *C_s = (float *)stream_found->gpu_buffer_C;
         cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
@@ -552,6 +553,7 @@ BODY [type=HIP]
             memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
             this_task->data._f_C.data_out->original->nb_elts =
                 (size_t)tile_elems * sizeof(float);
+            gpu_task->flow_nb_elts[0] = (size_t)tile_elems * sizeof(float);
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
     }
