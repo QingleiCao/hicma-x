@@ -58,7 +58,7 @@ BODY
 
     /* Allocate memory for band tiles if not using contiguous memory layout */
 #if !BAND_MEMORY_CONTIGUOUS && !GENOMICS
-    if( params_tlr->band_size_dense <= descA->nt || params_tlr->auto_band || params_tlr->adaptive_memory ) {
+    if( params_tlr->band_size_dense < params_tlr->NT || params_tlr->auto_band || params_tlr->adaptive_memory ) {
         /* Reuse existing copy when available to avoid leaking one copy object per tile. */
         this_task->data._f_D.data_out = parsec_data_get_copy(data_of_descA(m, n), 0);
         if( NULL == this_task->data._f_D.data_out ) {
