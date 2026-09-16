@@ -3963,13 +3963,28 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 #endif
 #undef HICMA_GPU_TIME_RETURN
 
-#if 0
-    /* The last local GEMM */
-    if(k+1 == n) {
-        if(params_tlr->decisions[idx_C] == DENSE_DP) {
-            this_task->data._f_C.data_out->original->nb_elts = tempmm * tempnn * sizeof(double);
-        } else {
-            this_task->data._f_C.data_out->original->nb_elts = tempmm * tempnn * sizeof(float);
+// trsm handles the first column
+#if 1
+    /* After the last GEMM that writes C, optionally store C in SP.
+     * handle_cublas is HOST pointer mode (synchronous nrm2 result).
+     * handle_cublas_deviceptr cannot write into a host stack address. */
+    if( k+1 == n && 0 == params_tlr->adaptive_decision
+            && DENSE_DP == params_tlr->decisions[idx_C] ) {
+        double C_norm = 0.0;
+        const size_t tile_elems = descA->mb * descA->nb;
+        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm);
+        hicma_parsec_get_precision_tile(params_tlr, &new_decision, C_norm, m, n);
+        if( params_tlr->verbose > 100 ) {
+            printf("m %d n %d C_norm %lf new_decision %d old_decision %d\n",
+                   m, n, C_norm, new_decision, params_tlr->decisions[idx_C]);
+        }
+        if( DENSE_DP != new_decision ) {
+            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
+                             cuda_stream->cuda_stream);
+            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            this_task->data._f_C.data_out->original->nb_elts =
+                (size_t)tempmm * (size_t)tempnn * sizeof(float);
+            params_tlr->decisions[idx_C] = DENSE_SP;
         }
     }
 #endif

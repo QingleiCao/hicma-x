@@ -472,12 +472,36 @@ BODY [type=CUDA]
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
     cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
 
+    /* After the last GEMM that writes C, optionally store C in SP.
+     * handle_cublas is HOST pointer mode (synchronous nrm2 result).
+     * handle_cublas_deviceptr cannot write into a host stack address. */
+    const size_t tile_elems = descA->mb * descA->nb;
+    const int idx_C = k * descA->lmt + m;
+    uint16_t decision = params_tlr->decisions[idx_C];
+    if(0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
+        double C_norm_host = 0.0;
+        float *C_s = (float *)stream_found->gpu_buffer_C;
+        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
+        hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
+        if( params_tlr->verbose > 100 ) {
+            printf("m %d k %d C_norm %lf new_decision %d old_decision %d\n",
+                   m, k, C_norm, decision, params_tlr->decisions[idx_C]);
+        }
+        if( DENSE_DP != decision ) {
+            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
+                             cuda_stream->cuda_stream);
+            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            this_task->data._f_C.data_out->original->nb_elts = (size_t)tile_elems * sizeof(float);
+            params_tlr->decisions[idx_C] = DENSE_SP;
+        }
+    }
+
     /* GPU-accelerated triangular solve using CUDA */
     hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update communication size and optionally compute F norm for runtime adaptation. */
-    const int decision = params_tlr->decisions[k*descA->lmt+m];
-    const int tile_elems = descA->mb * descA->mb;
+    //const int decision = params_tlr->decisions[k*descA->lmt+m];
+    //const size_t tile_elems = descA->mb * descA->mb;
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
@@ -507,12 +531,37 @@ BODY [type=HIP]
     parsec_potrf_stream_workspace_t *stream_found = lookup_gpu_workspace(cuda_device, cuda_stream, ws_gpu);
     cublasSetStream( stream_found->handle_cublas, cuda_stream->cuda_stream );
 
+    /* After the last GEMM that writes C, optionally store C in SP.
+     * handle_cublas is HOST pointer mode (synchronous nrm2 result).
+     * handle_cublas_deviceptr cannot write into a host stack address. */
+    const size_t tile_elems = descA->mb * descA->nb;
+    const int idx_C = k * descA->lmt + m;
+    uint16_t decision = params_tlr->decisions[idx_C];
+    if(0 == k && 0 == params_tlr->adaptive_decision && DENSE_DP == params_tlr->decisions[idx_C] ) {
+        double C_norm_host = 0.0;
+        float *C_s = (float *)stream_found->gpu_buffer_C;
+        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm_host);
+        hicma_parsec_get_precision_tile(params_tlr, &decision, C_norm_host, m, k);
+        if( params_tlr->verbose > 100 ) {
+            printf("m %d k %d C_norm %lf new_decision %d old_decision %d\n",
+                   m, k, C_norm, decision, params_tlr->decisions[idx_C]);
+        }
+        if( DENSE_DP != decision ) {
+            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
+                             cuda_stream->cuda_stream);
+            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            this_task->data._f_C.data_out->original->nb_elts =
+                (size_t)tile_elems * sizeof(float);
+            params_tlr->decisions[idx_C] = DENSE_SP;
+        }
+    }
+
     /* GPU-accelerated triangular solve using HIP (AMD ROCm) */
     hicma_parsec_core_trsm_gpu( descA, params_tlr, stream_found, cuda_device, gpu_task, cuda_stream, T, C, m, k );
 
     /* Update communication size and optionally compute F norm for runtime adaptation. */
-    const int decision = params_tlr->decisions[k*descA->lmt+m];
-    const int tile_elems = descA->mb * descA->mb;
+    //const int decision = params_tlr->decisions[k*descA->lmt+m];
+    //const size_t tile_elems = descA->mb * descA->mb;
     if(params_tlr->adaptive_decision_runtime) {
         if( DENSE_DP == decision ) {
             double C_precision_dp = (double)DENSE_DP;
