@@ -57,7 +57,7 @@ n = 0 .. %{ return sym? m: descA->lnt-1; %}
 : descA(m, n)
 
 /* Data flow: read matrix tile and pass to warmup task */
-RW A <- descA(m, n)
+READ A <- descA(m, n)
        -> A warmup_task(m, n)
 
 
@@ -80,7 +80,8 @@ BODY
         /* Select appropriate load balancing strategy based on matrix type */
         if( GENOMICS
                 || DENSE_MP_GPU_FP8 == params_tlr->kind_of_cholesky
-                || DENSE_MP_GPU_FP8_SP == params_tlr->kind_of_cholesky ) { 
+                || DENSE_MP_GPU_FP8_SP == params_tlr->kind_of_cholesky
+                || DENSE_MP_GPU_FP8_ADAPTIVE == params_tlr->kind_of_cholesky ) { 
             /* Use 2D load balancing for general matrices or FP8 precision */
             g = gpu_load_balance_2d( m, n, params_tlr );
         } else {
