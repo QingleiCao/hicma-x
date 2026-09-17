@@ -66,7 +66,8 @@ BODY
             if(0) printf("(%d %d) needs D2S\n", m, n);
         } else {
             // Already in single precision, just update element count
-            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+            //if( params_tlr->adaptive_memory )
+                this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
             return PARSEC_HOOK_RETURN_DONE; 
         }
 
@@ -105,7 +106,8 @@ BODY
             this_task->data._f_A.data_out->device_private = new_memory;
         }
         // Update element count for single precision
-        this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
+        //if( params_tlr->adaptive_memory )
+            this_task->data._f_A.data_out->original->nb_elts = descA->mb * size * sizeof(float);
     }
 
     // Handle low-rank matrix tiles that need conversion to single precision

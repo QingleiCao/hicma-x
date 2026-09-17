@@ -95,15 +95,181 @@ static int hicma_parsec_check_cublaslt_status(cublasStatus_t status,
 }
 #endif
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#define HICMA_GPU_COPY_ATOMIC_SENTINEL 1024
+
+static int hicma_gpu_copy_used_by_task(parsec_gpu_task_t *gpu_task,
+                                       parsec_data_copy_t *copy,
+                                       parsec_data_copy_t *keep_copy)
+{
+    parsec_task_t *task = NULL;
+    int nflows = 0;
+
+    if( copy == keep_copy ) {
+        return 1;
+    }
+    if( NULL == gpu_task || NULL == gpu_task->ec || NULL == copy ) {
+        return 0;
+    }
+
+    task = gpu_task->ec;
+    nflows = (NULL != task->task_class) ? task->task_class->nb_flows : 0;
+    for( int i = 0; i < nflows; i++ ) {
+        parsec_data_copy_t *in = task->data[i].data_in;
+        parsec_data_copy_t *out = task->data[i].data_out;
+        if( copy == in || copy == out ) {
+            return 1;
+        }
+        if( NULL != copy->original ) {
+            if( NULL != in && in->original == copy->original ) {
+                return 1;
+            }
+            if( NULL != out && out->original == copy->original ) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int hicma_gpu_evict_one_lru_copy(parsec_device_gpu_module_t *gpu_device,
+                                        parsec_gpu_task_t *gpu_task,
+                                        parsec_data_copy_t *keep_copy,
+                                        parsec_data_copy_t **cycling)
+{
+    parsec_gpu_data_copy_t *lru_gpu_elem = NULL;
+    parsec_data_t *oldmaster = NULL;
+
+    lru_gpu_elem = (parsec_gpu_data_copy_t *)parsec_list_pop_front(&gpu_device->gpu_mem_lru);
+    if( NULL == lru_gpu_elem ) {
+        return 0;
+    }
+    PARSEC_LIST_ITEM_SINGLETON(lru_gpu_elem);
+
+    if( *cycling == lru_gpu_elem ) {
+        parsec_list_push_front(&gpu_device->gpu_mem_lru, (parsec_list_item_t *)lru_gpu_elem);
+        return 0;
+    }
+
+    if( hicma_gpu_copy_used_by_task(gpu_task, lru_gpu_elem, keep_copy) ) {
+        parsec_list_push_back(&gpu_device->gpu_mem_lru, &lru_gpu_elem->super);
+        if( NULL == *cycling ) {
+            *cycling = lru_gpu_elem;
+        }
+        return -1;
+    }
+
+    /* In-use copies will be returned to the LRU by their owner. */
+    if( 0 != lru_gpu_elem->readers ) {
+        return -1;
+    }
+
+    if( lru_gpu_elem->super.super.obj_reference_count > 1
+            || 0 == (lru_gpu_elem->flags & PARSEC_DATA_FLAG_PARSEC_OWNED)
+            || NULL == lru_gpu_elem->device_private ) {
+        parsec_list_push_back(&gpu_device->gpu_mem_lru, &lru_gpu_elem->super);
+        if( NULL == *cycling ) {
+            *cycling = lru_gpu_elem;
+        }
+        return -1;
+    }
+
+    oldmaster = lru_gpu_elem->original;
+    if( NULL != oldmaster ) {
+        if( !parsec_atomic_trylock(&oldmaster->lock) ) {
+            parsec_list_push_back(&gpu_device->gpu_mem_lru, &lru_gpu_elem->super);
+            if( NULL == *cycling ) {
+                *cycling = lru_gpu_elem;
+            }
+            return -1;
+        }
+        if( !parsec_atomic_cas_int32(&lru_gpu_elem->readers, 0, -HICMA_GPU_COPY_ATOMIC_SENTINEL) ) {
+            parsec_list_push_back(&gpu_device->gpu_mem_lru, &lru_gpu_elem->super);
+            if( NULL == *cycling ) {
+                *cycling = lru_gpu_elem;
+            }
+            parsec_atomic_unlock(&oldmaster->lock);
+            return -1;
+        }
+        int do_unlock = oldmaster->super.obj_reference_count != 1;
+        parsec_data_copy_detach(oldmaster, lru_gpu_elem, gpu_device->super.device_index);
+        parsec_atomic_wmb();
+        if( do_unlock ) {
+            parsec_atomic_unlock(&oldmaster->lock);
+        }
+    }
+
+    zone_free(gpu_device->memory, lru_gpu_elem->device_private);
+    lru_gpu_elem->device_private = NULL;
+    gpu_device->super.nb_evictions++;
+    gpu_device->data_avail_epoch++;
+    PARSEC_OBJ_RELEASE(lru_gpu_elem);
+    return 1;
+}
+
+static void *hicma_gpu_zone_malloc_with_evict(parsec_device_gpu_module_t *gpu_device,
+                                              parsec_gpu_task_t *gpu_task,
+                                              parsec_data_copy_t *keep_copy,
+                                              size_t target_bytes)
+{
+    parsec_data_copy_t *cycling = NULL;
+    void *ptr = zone_malloc(gpu_device->memory, target_bytes);
+
+    while( NULL == ptr ) {
+        int evicted = hicma_gpu_evict_one_lru_copy(gpu_device, gpu_task, keep_copy, &cycling);
+        if( 0 == evicted ) {
+            break;
+        }
+        if( evicted < 0 ) {
+            continue;
+        }
+        ptr = zone_malloc(gpu_device->memory, target_bytes);
+    }
+    return ptr;
+}
+
+static void hicma_update_tile_nb_elts(parsec_data_copy_t *active_copy,
+                                      parsec_gpu_task_t *gpu_task,
+                                      size_t target_bytes)
+{
+    parsec_task_t *task = NULL;
+    int nflows = 0;
+
+    if( NULL != active_copy && NULL != active_copy->original ) {
+        active_copy->original->nb_elts = target_bytes;
+    }
+    if( NULL == gpu_task || NULL == gpu_task->ec || NULL == gpu_task->ec->task_class ) {
+        return;
+    }
+
+    task = gpu_task->ec;
+    nflows = task->task_class->nb_flows;
+    for( int i = 0; i < nflows; i++ ) {
+        parsec_data_copy_t *in = task->data[i].data_in;
+        parsec_data_copy_t *out = task->data[i].data_out;
+        int match = (out == active_copy) || (in == active_copy);
+        if( !match && NULL != active_copy && NULL != active_copy->original ) {
+            match = (NULL != out && out->original == active_copy->original)
+                 || (NULL != in && in->original == active_copy->original);
+        }
+        if( match ) {
+            gpu_task->flow_nb_elts[i] = target_bytes;
+        }
+    }
+}
+
 static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device,
+                                        parsec_gpu_task_t *gpu_task,
                                         parsec_data_copy_t *active_copy,
                                         void *expected_ptr,
                                         size_t target_bytes,
                                         int m, int n, int k,
                                         void **new_ptr_out)
 {
+    parsec_device_gpu_module_t *gpu_device = &cuda_device->super;
     void *old_ptr = NULL;
     void *new_ptr = NULL;
+    int freed_old = 0;
 
     if( NULL == active_copy ) {
         fprintf(stderr, "Missing device copy before FP64 promotion in GEMM runtime decision (%d, %d, %d)\n",
@@ -117,23 +283,45 @@ static int hicma_reallocate_tile_on_gpu(parsec_device_cuda_module_t *cuda_device
         return -1;
     }
 
-    old_ptr = active_copy->device_private;
-    if( NULL != old_ptr ) {
-        zone_free(cuda_device->super.memory, old_ptr);
-        active_copy->device_private = NULL;
+    if( NULL != active_copy->original
+            && active_copy->original->nb_elts >= target_bytes
+            && NULL != active_copy->device_private ) {
+        hicma_update_tile_nb_elts(active_copy, gpu_task, target_bytes);
+        *new_ptr_out = active_copy->device_private;
+        return 0;
     }
 
-    new_ptr = zone_malloc(cuda_device->super.memory, target_bytes);
+    old_ptr = active_copy->device_private;
+
+    /* Allocate the larger buffer first so a failed grow cannot drop C. */
+    new_ptr = hicma_gpu_zone_malloc_with_evict(gpu_device, gpu_task, active_copy, target_bytes);
+
+    /* Last resort: the DP GEMM result already lives in the C workspace, so the
+     * old SP buffer can be released to create a contiguous FP64 slot. */
+    if( NULL == new_ptr && NULL != old_ptr ) {
+        zone_free(gpu_device->memory, old_ptr);
+        active_copy->device_private = NULL;
+        old_ptr = NULL;
+        freed_old = 1;
+        new_ptr = hicma_gpu_zone_malloc_with_evict(gpu_device, gpu_task, active_copy, target_bytes);
+    }
+
     if( NULL == new_ptr ) {
         fprintf(stderr, "Failed to allocate FP64 dense C tile in GEMM runtime decision (%d, %d, %d)\n",
                 m, n, k);
         return -1;
     }
 
+    if( !freed_old && NULL != old_ptr && old_ptr != new_ptr ) {
+        zone_free(gpu_device->memory, old_ptr);
+    }
+
     active_copy->device_private = new_ptr;
+    hicma_update_tile_nb_elts(active_copy, gpu_task, target_bytes);
     *new_ptr_out = new_ptr;
     return 0;
 }
+#endif /* PARSEC_HAVE_DEV_CUDA_SUPPORT || PARSEC_HAVE_DEV_HIP_SUPPORT */
 
 static int hicma_reallocate_tile_on_cpu(parsec_data_copy_t *cpu_copy,
                                         size_t target_bytes,
@@ -3646,6 +3834,30 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     hicma_parsec_get_precision_tile(params_tlr, &new_decision, Anorm * Bnorm, m, n);
     cublasSetStream( handle, cuda_stream->cuda_stream );
 
+
+#if 1
+    /* The first local GEMM */
+    if( 0 == k && 0 == params_tlr->adaptive_decision
+            && DENSE_DP == params_tlr->decisions[idx_C] ) {
+        double C_norm = 0.0;
+        const size_t tile_elems = descA->mb * descA->nb;
+        cublasDnrm2(stream_found->handle_cublas, tile_elems, C, 1, &C_norm);
+        hicma_parsec_get_precision_tile(params_tlr, &new_decision, C_norm, m, n);
+        if( params_tlr->verbose > 100 ) {
+            printf("k 0 m %d n %d C_norm %lf new_decision %d old_decision %d\n",
+                   m, n, C_norm, new_decision, params_tlr->decisions[idx_C]);
+        }
+        if( DENSE_DP != new_decision ) {
+            double2float_GPU(descA->mb, descA->nb, C, descA->mb, C_s, descA->mb,
+                             cuda_stream->cuda_stream);
+            memcpy_float_GPU(descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream);
+            this_task->data._f_C.data_out->original->nb_elts =
+                (size_t)tempmm * (size_t)tempnn * sizeof(float);
+            params_tlr->decisions[idx_C] = DENSE_SP;
+        }
+    }
+#endif
+
 #if PRINT_KERNEL_TIME && defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
     cudaEvent_t gpu_time_start = NULL;
     cudaEvent_t gpu_time_stop = NULL;
@@ -3731,31 +3943,31 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         // Reallocate memory on CPU if adaptive_memory is enabled
         // Copy back data from C_use to C
         if( DENSE_DP != Cprecision ) {
-            size_t target_bytes = (size_t)tempmm * (size_t)tempnn * sizeof(double);
-            parsec_data_copy_t *c_copy = this_task->data._f_C.data_out;
-            parsec_data_copy_t *c_dev_copy = NULL;
-            parsec_data_copy_t *active_copy = NULL;
-            parsec_data_copy_t *cpu_copy = NULL;
-            void *new_C = NULL;
+            if( params_tlr->adaptive_memory || params_tlr->adaptive_decision ) {
+                size_t target_bytes = (size_t)descA->mb * (size_t)descA->nb * sizeof(double);
+                parsec_data_copy_t *c_copy = this_task->data._f_C.data_out;
+                parsec_data_copy_t *c_dev_copy = NULL;
+                parsec_data_copy_t *active_copy = NULL;
+                parsec_data_copy_t *cpu_copy = NULL;
+                void *new_C = NULL;
 
-            if( NULL != c_copy && NULL != c_copy->original ) {
-                c_dev_copy = PARSEC_DATA_GET_COPY(c_copy->original, c_copy->device_index);
-                cpu_copy = PARSEC_DATA_GET_COPY(c_copy->original, 0);
-            }
-            active_copy = (NULL != c_dev_copy) ? c_dev_copy : c_copy;
-            if( 0 != hicma_reallocate_tile_on_gpu(cuda_device, active_copy, C, target_bytes, m, n, k, &new_C) ) {
-                HICMA_GPU_TIME_RETURN;
-            }
-            if( NULL != c_copy && c_copy != active_copy ) {
-                c_copy->device_private = new_C;
-            }
-            C = new_C;
-            this_task->data._f_C.data_out->original->nb_elts = target_bytes;
+                if( NULL != c_copy && NULL != c_copy->original ) {
+                    c_dev_copy = PARSEC_DATA_GET_COPY(c_copy->original, c_copy->device_index);
+                    cpu_copy = PARSEC_DATA_GET_COPY(c_copy->original, 0);
+                }
+                active_copy = (NULL != c_dev_copy) ? c_dev_copy : c_copy;
+                if( 0 != hicma_reallocate_tile_on_gpu(cuda_device, gpu_task, active_copy, C, target_bytes, m, n, k, &new_C) ) {
+                    HICMA_GPU_TIME_RETURN;
+                }
+                C = new_C;
 
-            if( params_tlr->adaptive_memory ) {
-                if( NULL != cpu_copy && cpu_copy != active_copy ) {
-                    if( 0 != hicma_reallocate_tile_on_cpu(cpu_copy, target_bytes, m, n, k) ) {
-                        HICMA_GPU_TIME_RETURN;
+                /* Host tiles are a contiguous cudaHostRegister region unless
+                 * adaptive_memory allocated them one-by-one with cudaMallocHost. */
+                if( params_tlr->adaptive_memory ) {
+                    if( NULL != cpu_copy && cpu_copy != active_copy ) {
+                        if( 0 != hicma_reallocate_tile_on_cpu(cpu_copy, target_bytes, m, n, k) ) {
+                            HICMA_GPU_TIME_RETURN;
+                        }
                     }
                 }
             }
@@ -3792,7 +4004,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     tempmm, tempnn, descA->mb,
                     &alpha, A_use, CUDA_R_32F, ldam,
-                            B_use, CUDA_R_32F, ldan,
+                    B_use, CUDA_R_32F, ldan,
                     &beta,  C_s,   CUDA_R_32F, ldam,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
             sub_float_from_double_GPU(tempmm, tempnn, C_s, C, cuda_stream->cuda_stream);
@@ -3801,7 +4013,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     tempmm, tempnn, descA->mb,
                     &alpha, A_use, CUDA_R_32F, ldam,
-                            B_use, CUDA_R_32F, ldan,
+                    B_use, CUDA_R_32F, ldan,
                     &beta,  C,     CUDA_R_32F, ldam,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
             params_tlr->decisions[idx_C] = DENSE_SP;
@@ -3843,7 +4055,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     tempmm, tempnn, descA->mb,
                     &alpha, A_use, CUDA_R_16F, ldam,
-                            B_use, CUDA_R_16F, ldan,
+                    B_use, CUDA_R_16F, ldan,
                     &beta,  C_s,   CUDA_R_32F, ldam,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
@@ -3853,7 +4065,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     tempmm, tempnn, descA->mb,
                     &alpha, A_use, CUDA_R_16F, ldam,
-                            B_use, CUDA_R_16F, ldan,
+                    B_use, CUDA_R_16F, ldan,
                     &beta,  C,     CUDA_R_32F, ldam,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
             params_tlr->decisions[idx_C] = DENSE_SP;
