@@ -2811,14 +2811,12 @@ void hicma_parsec_memory_flush_choleksy( parsec_context_t *parsec,
         cudaHostUnregister(data->dcAd.mat);
 #endif
         /*
-         * Matrix generation allocates per-tile buffers when band_size_dense <= NT
-         * (including the dense boundary case band_size_dense == NT). In that mode,
-         * release tile buffers explicitly; otherwise release the contiguous slab.
+         * This branch allocated one contiguous dcAd.mat slab. Tile pointers are
+         * offsets into that slab, so they must not be freed individually.
+         * Per-tile buffers exist only when band_size_dense < NT.
          */
-        if( params->band_size_dense <= data->dcAd.super.nt || params->auto_band || params->adaptive_memory ) {
-            parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t*)&data->dcAd, params, 1);
-        }
         parsec_data_free(data->dcAd.mat);
+        data->dcAd.mat = NULL;
 #endif
 #if PREDICTION || CHECKSOLVE
         parsec_data_free(data->dcAcpy.mat);
