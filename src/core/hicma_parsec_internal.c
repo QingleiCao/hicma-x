@@ -711,14 +711,14 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
 
     // Matrix size M defaults to N if not specified
     if( params->M <= 0 ) {
-        if( 0 == params->rank & params->verbose )
+        if( 0 == params->rank && params->verbose )
             fprintf(stderr, "Matrix size (M) is not set; Automatically set to N!\n");
         params->M = params->N;
     }
 
     // Matrix size K defaults to N if not specified
     if( params->K <= 0 ) {
-        if( 0 == params->rank & params->verbose )
+        if( 0 == params->rank && params->verbose )
             fprintf(stderr, "Matrix size (K) is not set; Automatically set to N!\n");
         params->K = params->N;
     }
@@ -941,9 +941,12 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
             params->kernel_time_gpu_intervals = NULL;
         }
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         if(params->gpus > 0) {
             params->counter_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
-        } else {
+        } else
+#endif
+	{
             params->counter_stride = params->cores;
         }
 
@@ -1133,9 +1136,12 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->nb_low_rank_sp = 0.0;     // Number of single precision low-rank tiles
 
     if( params->cores > 0 ) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
         if(params->gpus > 0) {
             params->counter_stride = params->gpus * PARSEC_GPU_MAX_STREAMS;
-        } else {
+        } else
+#endif
+	{
             params->counter_stride = params->cores;
         }
 
