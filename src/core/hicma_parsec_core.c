@@ -1512,8 +1512,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
         /* Call hgemm */
         fjcblas_gemm_r16(CblasColMajor, PlasmaNoTrans, PlasmaTrans,
                 tempmm, descA->mb, descA->mb,
-                (__fp16)-1.0, A /*A(m, k)*/, ldam,
-                              B /*A(n, k)*/, ldan,
+                (__fp16)-1.0, A_use /*A(m, k)*/, ldam,
+                              B_use /*A(n, k)*/, ldan,
                 (__fp16) 1.0, C /*A(m, n)*/, ldam);
 
         /* After last local GEMM convert C from half to single */
@@ -1918,8 +1918,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 
         fjcblas_gemm_r16(CblasColMajor, PlasmaNoTrans, PlasmaTrans,
                 tempmm, descA->mb, descA->mb,
-                (__fp16)-1.0, A /*A(m, k)*/, ldam,
-                              B /*A(n, k)*/, ldan,
+                (__fp16)-1.0, A_use /*A(m, k)*/, ldam,
+                              B_use /*A(n, k)*/, ldan,
                 (__fp16) 0.0, C_h /*A(m, n)*/, ldam);
 
         /* HGEMM */
