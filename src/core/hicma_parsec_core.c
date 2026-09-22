@@ -1800,7 +1800,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 #if !HAVE_HP_CPU
     /* Convert A and B in 16-bit and call sgemm */
     //else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ){
-        else{
+    else{
             /* Convert datatype, A */
         A_use = parsec_private_memory_pop( p_work_full_sp );
         hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
@@ -1885,79 +1885,62 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 
         parsec_private_memory_push(p_work_full_sp, A_use);
         parsec_private_memory_push(p_work_full_sp, B_use);
-        }
+    }
 #else
         /* If hgemm */
         //else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ){
-        else{
-
-            fprintf(stderr, "This is not supported!!!\n");
-
-            /* Convert datatype, A */
-            if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-                A_s = parsec_private_memory_pop( p_work_full_sp );
+    else{
             A_h = parsec_private_memory_pop( p_work_full_hp );
+            B_h = parsec_private_memory_pop( p_work_full_hp );
+            C_h = parsec_private_memory_pop( p_work_full_hp );
+
+        /* Convert datatype, A */
+        if( DENSE_DP == Aprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( A_h, A_s, descA->mb, descA->nb);
+            convert_d2h_binary_CPU( A_h, A, descA->mb, descA->nb);
             A_use = A_h;
         } else {
-            A_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             convert_s2h_binary_CPU( A_h, A, descA->mb, descA->nb);
             A_use = A_h;
         }
 
         /* Convert datatype, B */
-        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
-            B_s = parsec_private_memory_pop( p_work_full_sp );
-            B_h = parsec_private_memory_pop( p_work_full_hp );
+        if( DENSE_DP == Bprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( B_h, B_s, descA->mb, descA->nb);
+            convert_d2h_binary_CPU( B_h, B, descA->mb, descA->nb);
             B_use = B_h;
         } else {
-            B_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             convert_s2h_binary_CPU( B_h, B, descA->mb, descA->nb);
             B_use = B_h;
         }
 
-        /* First local GEMM convert C from single to half */
-        if( 0 == k ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_unary_CPU( C, descA->mb, descA->nb );
-        }
-
-        /* Call hgemm */
         fjcblas_gemm_r16(CblasColMajor, PlasmaNoTrans, PlasmaTrans,
                 tempmm, descA->mb, descA->mb,
                 (__fp16)-1.0, A /*A(m, k)*/, ldam,
                               B /*A(n, k)*/, ldan,
-                (__fp16) 1.0, C /*A(m, n)*/, ldam);
+                (__fp16) 0.0, C_h /*A(m, n)*/, ldam);
 
-        /* After last local GEMM convert C from half to single */
-        if( n-1 == k ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_h2s_unary_CPU( C, descA->mb, descA->nb );
+        /* HGEMM */
+        if( DENSE_DP == params_tlr->decisions[idx_C] ) {
+            for(int j = 0; j < descA->nb; j++) {
+                for(int i = 0; i < descA->mb; i++) {
+                    ((double *)C)[j*descA->nb+i] -= ((__fp16 *)C_h)[j*descA->mb+i];
+                }
+            }
+        } else {
+            for(int j = 0; j < descA->nb; j++) {
+                for(int i = 0; i < descA->mb; i++) {
+                    ((float*)C)[j*descA->nb+i] -= ((__fp16 *)C_h)[j*descA->mb+i];
+                }
+            }
         }
 
         /* Push back to mempool */
-        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-            parsec_private_memory_push(p_work_full_sp, A_s);
-            parsec_private_memory_push(p_work_full_hp, A_h);
-        } else {
-            parsec_private_memory_push(p_work_full_hp, A_h);
-        }
-
-        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
-            parsec_private_memory_push(p_work_full_sp, B_s);
-            parsec_private_memory_push(p_work_full_hp, B_h);
-        } else {
-            parsec_private_memory_push(p_work_full_hp, B_h);
-        }
+        parsec_private_memory_push(p_work_full_hp, A_h);
+        parsec_private_memory_push(p_work_full_hp, B_h);
+        parsec_private_memory_push(p_work_full_hp, C_h);
 
     }
 #endif
