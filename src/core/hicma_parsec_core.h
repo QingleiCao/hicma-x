@@ -33,18 +33,6 @@
 extern "C" {
 #endif
 
-#if HAVE_HP_CPU
-/* Fujitsu SSL2 half-precision GEMM. The SDK does not always export a
- * prototype for the thread-safe fjcblas_ name used here. */
-void fjcblas_gemm_r16(int Order, int TransA, int TransB,
-                      int M, int N, int K,
-                      __fp16 alpha,
-                      const __fp16 *A, int lda,
-                      const __fp16 *B, int ldb,
-                      __fp16 beta,
-                      __fp16 *C, int ldc);
-#endif
-
 /* ============================================================================
  * Memory management functions
  * ============================================================================ */
