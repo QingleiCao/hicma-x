@@ -1630,7 +1630,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     if(DEBUG_INFO) printf("GEMM_CPU (%d, %d, %d) : %d %d %d : C_DENSE, A_DENSE, B_DENSE\n",
             m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
 
-#define ACC_DP 0
+#define ACC_DP 1
 
     /* If dgemm */
     if( DENSE_DP == new_decision ) {
@@ -1707,26 +1707,42 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 
 #if ACC_DP
         void *C_use = parsec_private_memory_pop( p_work_full_dp );
-        CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
-                tempmm, descA->mb, descA->nb,
-                (float)1.0, A_use /*A(m, k)*/, ldam,
-                             B_use /*A(n, k)*/, ldan,
-                //(float)1.0,  C     /*A(m, n)*/, ldam);
-                (float) 0.0, C_use     /*A(m, n)*/, ldam);
+        //CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
+        //        tempmm, descA->mb, descA->nb,
+        //        (float)1.0, A_use /*A(m, k)*/, ldam,
+        //                     B_use /*A(n, k)*/, ldan,
+        //        //(float)1.0,  C     /*A(m, n)*/, ldam);
+        //        (float) 0.0, C_use     /*A(m, n)*/, ldam);
 
         /* For the first GEMM */
-        if( DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2d_unary_CPU(C, descA->mb, descA->nb);
-        }
+        //if( DENSE_DP != params_tlr->decisions[n*descA->lmt+m] ) {
+        //    hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+        //    convert_s2d_unary_CPU(C, descA->mb, descA->nb);
+        //}
 
-        for(int j = 0; j < descA->nb; j++) {
-            for(int i = 0; i < descA->mb; i++) {
-                ((double *)C)[j*descA->mb+i] -= ((float*)C_use)[j*descA->mb+i];
+        if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
+            CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
+                    tempmm, descA->mb, descA->nb,
+                    (float)1.0, A_use /*A(m, k)*/, ldam,
+                                B_use /*A(n, k)*/, ldan,
+                    //(float)1.0,  C     /*A(m, n)*/, ldam);
+                    (float) 0.0, C_use     /*A(m, n)*/, ldam);
+            for(int j = 0; j < descA->nb; j++) {
+                for(int i = 0; i < descA->mb; i++) {
+                    ((double *)C)[j*descA->mb+i] -= ((float*)C_use)[j*descA->mb+i];
+                }
             }
+        } else {
+            CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
+                    tempmm, descA->mb, descA->nb,
+                    (float)-1.0, A_use /*A(m, k)*/, ldam,
+                                B_use /*A(n, k)*/, ldan,
+                    (float)1.0,  C     /*A(m, n)*/, ldam);
+                    //(float) 0.0, C_use     /*A(m, n)*/, ldam);
+            params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
         }
         parsec_private_memory_push( p_work_full_dp, C_use);
-        params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
+        //params_tlr->decisions[n*descA->lmt+m] = DENSE_DP;
 #else
         /* Convert datatype, C, in place */
         if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
@@ -1908,7 +1924,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 
         fjcblas_gemm_r16(CblasColMajor, PlasmaNoTrans, PlasmaTrans,
                 tempmm, descA->mb, descA->mb,
-                (__fp16)-1.0, A_use /*A(m, k)*/, ldam,
+                (__fp16) 1.0, A_use /*A(m, k)*/, ldam,
                               B_use /*A(n, k)*/, ldan,
                 (__fp16) 0.0, C_h /*A(m, n)*/, ldam);
 
@@ -1925,6 +1941,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
                     ((float*)C)[j*descA->nb+i] -= ((__fp16 *)C_h)[j*descA->mb+i];
                 }
             }
+            params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
         }
 
         /* Push back to mempool */
