@@ -718,6 +718,17 @@ void convert_d2s_binary_CPU(float *_target, double *_source, int mb, int nb);
 void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb);
 
 /**
+ * @brief Convert double precision to half precision (unary version)
+ *
+ * Converts a double precision matrix to half precision in-place.
+ *
+ * @param[in,out] data Pointer to the matrix data to convert
+ * @param[in] mb Number of rows
+ * @param[in] nb Number of columns
+ */
+void convert_d2h_unary_CPU(double *data, int mb, int nb);
+
+/**
  * @brief Convert half precision to double precision (binary version)
  * 
  * Converts a half precision matrix to double precision with separate
@@ -729,6 +740,17 @@ void convert_d2h_binary_CPU(__fp16 *_target, double *_source, int mb, int nb);
  * @param[in] nb Number of columns
  */
 void convert_h2d_binary_CPU(double *_target, __fp16 *_source, int mb, int nb);
+
+/**
+ * @brief Convert half precision to double precision (unary version)
+ *
+ * Converts a half precision matrix to double precision in-place.
+ *
+ * @param[in,out] data Pointer to the matrix data to convert
+ * @param[in] mb Number of rows
+ * @param[in] nb Number of columns
+ */
+void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb);
 
 /**
  * @brief Convert single precision to half precision (binary version)

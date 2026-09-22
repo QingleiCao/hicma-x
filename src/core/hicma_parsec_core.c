@@ -1922,6 +1922,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             B_use = B_h;
         }
 
+#if 0
+
         fjcblas_gemm_r16(CblasColMajor, PlasmaNoTrans, PlasmaTrans,
                 tempmm, descA->mb, descA->mb,
                 (__fp16) 1.0, A_use /*A(m, k)*/, ldam,
@@ -1943,6 +1945,37 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
             }
             params_tlr->decisions[n*descA->lmt+m] = DENSE_SP;
         }
+#else
+	/* Convert datatype, C */
+	if( 0 == k ) {
+        if( DENSE_DP == Cprecision ) {
+            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+            convert_d2h_unary_CPU( C, descA->mb, descA->nb);
+        } else {
+            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+            convert_s2h_unary_CPU( C, descA->mb, descA->nb);
+        }
+	}
+
+        /* Call hgemm */
+        fjcblas_gemm_r16(CblasColMajor, PlasmaNoTrans, PlasmaTrans,
+                tempmm, descA->mb, descA->mb,
+                (__fp16)-1.0, A_use /*A(m, k)*/, ldam,
+                              B_use /*A(n, k)*/, ldan,
+                (__fp16) 1.0, C /*A(m, n)*/, ldam);
+
+        /* Convert datatype, C */
+        if( n-1  == k ) {
+        if( DENSE_DP == Cprecision ) {
+            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+            convert_h2d_unary_CPU( C, descA->mb, descA->nb);
+        } else {
+            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+            convert_h2s_unary_CPU( C, descA->mb, descA->nb);
+        }       
+        }
+
+#endif
 
         /* Push back to mempool */
         parsec_private_memory_push(p_work_full_hp, A_h);

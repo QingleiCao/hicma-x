@@ -378,13 +378,13 @@ int convert_datatype_unary_CPU(void *A, int mb, int nb, int lda, char *type, siz
     }
     else if (strcmp(type_lower, "d2h") == 0) {
         /* Double to Half precision conversion */
-        convert_d2h_binary_CPU((__fp16*)A, (double*)A, mb, nb);
+        convert_d2h_unary_CPU((double*)A, mb, nb);
         *size = mb * nb * sizeof(__fp16);
         return 0;
     }
     else if (strcmp(type_lower, "h2d") == 0) {
         /* Half to Double precision conversion */
-        convert_h2d_binary_CPU((double*)A, (__fp16*)A, mb, nb);
+        convert_h2d_unary_CPU((__fp16*)A, mb, nb);
         *size = mb * nb * sizeof(double);
         return 0;
     }
@@ -649,6 +649,40 @@ void convert_h2d_binary_CPU(double *_target, __fp16 *_source, int mb, int nb) {
      for( int j = 0; j < nb; j++ )
          for( int i = 0; i < mb; i++ )
              target[j*mb+i] = (double)source[j*mb+i];
+}
+
+/**
+ * @brief Converts double precision to half precision in-place
+ *
+ * The conversion is performed in forward order so that writing each smaller
+ * half-precision value does not overwrite an unread double-precision value.
+ *
+ * @param[in,out] data Pointer to the matrix data (converted in-place)
+ * @param[in] mb Number of rows in the matrix tile
+ * @param[in] nb Number of columns in the matrix tile
+ */
+void convert_d2h_unary_CPU(double *data, int mb, int nb) {
+     __fp16 *data_h = (__fp16 *)data;
+     for( int j = 0; j < nb; j++ )
+         for( int i = 0; i < mb; i++ )
+             data_h[j*mb+i] = (__fp16)data[j*mb+i];
+}
+
+/**
+ * @brief Converts half precision to double precision in-place
+ *
+ * The conversion is performed in reverse order so that expanding each value
+ * does not overwrite half-precision values that have not yet been read.
+ *
+ * @param[in,out] data Pointer to the matrix data (converted in-place)
+ * @param[in] mb Number of rows in the matrix tile
+ * @param[in] nb Number of columns in the matrix tile
+ */
+void convert_h2d_unary_CPU(__fp16 *data, int mb, int nb) {
+     double *data_d = (double *)data;
+     for( int j = nb-1; j >= 0; j-- )
+         for( int i = mb-1; i >= 0; i-- )
+             data_d[j*mb+i] = (double)data[j*mb+i];
 }
 
 /**
