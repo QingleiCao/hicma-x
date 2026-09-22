@@ -1471,17 +1471,20 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
     /* If hgemm */
     //else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ){
     else{
+        A_h = parsec_private_memory_pop( p_work_full_hp );
+        B_h = parsec_private_memory_pop( p_work_full_hp );
+
         /* Convert datatype, A */
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-            A_s = parsec_private_memory_pop( p_work_full_sp );
-            A_h = parsec_private_memory_pop( p_work_full_hp );
+            //A_s = parsec_private_memory_pop( p_work_full_sp );
+            //A_h = parsec_private_memory_pop( p_work_full_hp );
+            //hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+            //LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, A, descA->mb, A_s, descA->mb );
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( A_h, A_s, descA->mb, descA->nb);
+            convert_d2h_binary_CPU( A_h, A, descA->mb, descA->nb);
             A_use = A_h;
         } else {
-            A_h = parsec_private_memory_pop( p_work_full_hp );
+            //A_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             convert_s2h_binary_CPU( A_h, A, descA->mb, descA->nb);
             A_use = A_h;
@@ -1489,15 +1492,15 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
 
         /* Convert datatype, B */
         if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
-            B_s = parsec_private_memory_pop( p_work_full_sp );
-            B_h = parsec_private_memory_pop( p_work_full_hp );
+            //B_s = parsec_private_memory_pop( p_work_full_sp );
+            //B_h = parsec_private_memory_pop( p_work_full_hp );
+            //hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
+            //LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
-            hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            convert_s2h_binary_CPU( B_h, B_s, descA->mb, descA->nb);
+            convert_d2h_binary_CPU( B_h, B, descA->mb, descA->nb);
             B_use = B_h;
         } else {
-            B_h = parsec_private_memory_pop( p_work_full_hp );
+            //B_h = parsec_private_memory_pop( p_work_full_hp );
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             convert_s2h_binary_CPU( B_h, B, descA->mb, descA->nb);
             B_use = B_h;
@@ -1522,21 +1525,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu( parsec_tiled_matrix_t* des
             convert_h2s_unary_CPU( C, descA->mb, descA->nb );
         }
 
-        /* Push back to mempool */
-        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
-            parsec_private_memory_push(p_work_full_sp, A_s);
-            parsec_private_memory_push(p_work_full_hp, A_h);
-        } else {
-            parsec_private_memory_push(p_work_full_hp, A_h);
-        }
-
-        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
-            parsec_private_memory_push(p_work_full_sp, B_s);
-            parsec_private_memory_push(p_work_full_hp, B_h);
-        } else {
-            parsec_private_memory_push(p_work_full_hp, B_h);
-        }
-
+        parsec_private_memory_push(p_work_full_hp, A_h);
+        parsec_private_memory_push(p_work_full_hp, B_h);
     }
 #endif
 
