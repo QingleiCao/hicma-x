@@ -1602,7 +1602,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     int ldan = BLKLDD( descA, n );
     void *A_use = A;
     void *B_use = B;
-    void *A_d, *A_s, *B_d, *B_s, *A_h, *B_h;
+    void *A_d, *A_s, *B_d, *B_s, *A_h, *B_h, *C_h;
     double Anorm = (params_tlr->adaptive_decision_runtime)? ((double *)A_norm)[0]: 0;
     double Bnorm = (params_tlr->adaptive_decision_runtime)? ((double *)B_norm)[0]: 0;
     uint16_t Aprecision = (params_tlr->adaptive_decision_runtime)? (uint16_t)(((double *)A_norm)[1]): -1;
@@ -1889,10 +1889,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
 #else
         /* If hgemm */
         //else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ){
-    else{
-            A_h = parsec_private_memory_pop( p_work_full_hp );
-            B_h = parsec_private_memory_pop( p_work_full_hp );
-            C_h = parsec_private_memory_pop( p_work_full_hp );
+    else {
+        A_h = parsec_private_memory_pop( p_work_full_hp );
+        B_h = parsec_private_memory_pop( p_work_full_hp );
+        C_h = parsec_private_memory_pop( p_work_full_hp );
 
         /* Convert datatype, A */
         if( DENSE_DP == Aprecision ) {
@@ -1923,7 +1923,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
                 (__fp16) 0.0, C_h /*A(m, n)*/, ldam);
 
         /* HGEMM */
-        if( DENSE_DP == params_tlr->decisions[idx_C] ) {
+        if( DENSE_DP == params_tlr->decisions[n*descA->lmt+m] ) {
             for(int j = 0; j < descA->nb; j++) {
                 for(int i = 0; i < descA->mb; i++) {
                     ((double *)C)[j*descA->nb+i] -= ((__fp16 *)C_h)[j*descA->mb+i];
