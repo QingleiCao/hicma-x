@@ -1331,6 +1331,66 @@ void memcpy_half_GPU( int nrows, int ncols, void *_src, void *_dest, hipStream_t
 /****************************************************************************************************/
 
 /**
+ * @brief HIP kernel for copying double precision matrix data
+ */
+__global__ void memcpy_double_GPU_kernel( int nrows, int ncols,
+                const double *src, double *dest ) {
+    const int idx = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
+    const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
+
+    if( idx >= nrows || idy >= ncols ) {
+        return;
+    }
+
+    dest[idy * nrows + idx] = src[idy * nrows + idx];
+}
+
+extern "C"
+void memcpy_double_GPU( int nrows, int ncols, void *_src, void *_dest,
+                        hipStream_t stream ) {
+    const dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+    const dim3 dimGrid((nrows + CHUNKSIZE - 1) / CHUNKSIZE,
+                       (ncols + CHUNKSIZE - 1) / CHUNKSIZE);
+
+    const double *src = (const double *)_src;
+    double *dest = (double *)_dest;
+
+    memcpy_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+/****************************************************************************************************/
+
+/**
+ * @brief HIP kernel for subtracting a float matrix from a double matrix
+ */
+__global__ void sub_float_from_double_GPU_kernel( int nrows, int ncols,
+                const float *src, double *dest ) {
+    const int idx = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
+    const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
+
+    if( idx >= nrows || idy >= ncols ) {
+        return;
+    }
+
+    dest[idy * nrows + idx] -= (double)src[idy * nrows + idx];
+}
+
+extern "C"
+void sub_float_from_double_GPU( int nrows, int ncols, void *_src, void *_dest,
+                                hipStream_t stream ) {
+    const dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+    const dim3 dimGrid((nrows + CHUNKSIZE - 1) / CHUNKSIZE,
+                       (ncols + CHUNKSIZE - 1) / CHUNKSIZE);
+
+    const float *src = (const float *)_src;
+    double *dest = (double *)_dest;
+
+    sub_float_from_double_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, src, dest);
+}
+
+/****************************************************************************************************/
+
+/**
  * @brief HIP kernel for copying single precision matrix
  * 
  * Copies elements from source single precision matrix to destination single precision matrix.
