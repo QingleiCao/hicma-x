@@ -41,7 +41,11 @@ int main(int argc, char **argv)
 #endif
 
     /* Initialize HiCMA and PaRSEC */
-    parsec_context_t* parsec = hicma_parsec_init(argc, argv, &params, &params_kernel, &data); 
+    parsec_context_t* parsec = hicma_parsec_init(argc, argv, &params, &params_kernel, &data);
+    if( parsec == NULL ) {
+        fprintf(stderr, "Failed to initialize HiCMA PaRSEC\n");
+        return EXIT_FAILURE;
+    }
 
     /* Generate test matrix */
     if (params.rank == 0) {

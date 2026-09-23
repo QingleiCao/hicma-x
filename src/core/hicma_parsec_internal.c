@@ -1662,6 +1662,13 @@ int hicma_parsec_kernel_init( starsh_params_t *params_kernel, hicma_parsec_param
             gsl_set_error_handler_off();
 
             break;
+#else
+        case 8: case 9: case 10: case 11: case 12: case 13:
+            fprintf(stderr,
+                    "Problem type %d (%s) requires GSL support, but this build was configured without GSL.\n"
+                    "Load GSL (for example, 'module load gsl'), reconfigure, and rebuild.\n",
+                    params->kind_of_problem, str_problem[params->kind_of_problem]);
+            return -1;
 #endif
 
         case 14:

@@ -85,7 +85,9 @@ parsec_context_t * hicma_parsec_init( int argc, char ** argv,
     hicma_parsec_params_init(params, argv);
 
     /* Step 4: Initialize STARSH kernels for efficient matrix operations */
-    hicma_parsec_kernel_init(params_kernel, params);
+    if( hicma_parsec_kernel_init(params_kernel, params) != 0 ) {
+        return NULL;
+    }
 
     /* Step 5: Validate and adjust parameters based on system constraints */
     hicma_parsec_params_check(params);

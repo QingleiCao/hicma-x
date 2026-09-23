@@ -197,18 +197,16 @@ message(STATUS "HCORE configured from submodule")
 # STARSH is now built as part of the project via submodule
 # The starsh library target is available after add_subdirectory(stars-h)
 
-# Check if GSL is needed by STARSH
-find_library(_STARSH_LIB NAME starsh PATHS ${CMAKE_BINARY_DIR}/stars-h/src)
-if(_STARSH_LIB AND EXISTS "${_STARSH_LIB}")
-    execute_process(COMMAND nm ${_STARSH_LIB} COMMAND grep -q gsl RESULT_VARIABLE GSL_IN_STARSH)
-    if(${GSL_IN_STARSH} EQUAL 0)
-        message(STATUS "STARSH depends on GSL. Adding it to dependency list")
-        find_package(GSL REQUIRED)
-        add_definitions(-DGSL)
-        include_directories(${GSL_INCLUDE_DIRS})
-        message(STATUS "GSL support enabled")
-        list(APPEND HCORE_STARSH_LIB ${GSL_LIBRARIES})
-    endif()
+# STARSH exposes its GSL option through the CMake cache. Use that option
+# directly instead of inspecting a previously-built archive: on a clean build
+# (or when GSL is newly enabled) the archive does not exist yet or is stale.
+if(GSL)
+    message(STATUS "STARSH depends on GSL. Adding it to dependency list")
+    find_package(GSL REQUIRED)
+    add_definitions(-DGSL)
+    include_directories(${GSL_INCLUDE_DIRS})
+    message(STATUS "GSL support enabled")
+    list(APPEND HCORE_STARSH_LIB ${GSL_LIBRARIES})
 endif()
 
 # Add STARSH library to our dependency list
