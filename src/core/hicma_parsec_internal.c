@@ -678,7 +678,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     free(value);
 
     // Enable GPU debugging output if verbose mode is enabled
-    if(params->gpus > 0 && params->verbose > 1) {
+    if(params->gpus > 0 && params->verbose > 5) {
         parsec_setenv_mca_param( "device_show_capabilities", "1", &environ );
         parsec_setenv_mca_param( "device_show_statistics", "1", &environ );
     }
