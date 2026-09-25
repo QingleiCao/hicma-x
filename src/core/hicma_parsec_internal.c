@@ -997,7 +997,7 @@ parsec_context_t* setup_parsec(int argc, char **argv, hicma_parsec_params_t * pa
 
 #endif
     if(params->verbose > 1 && nb_gpus_check !=  params->gpus) {
-        fprintf(stderr, RED "Rank %d: Update nb_gpus from input %d to real %d\n" RESET, params->rank, params->gpus, params->gpus);
+        fprintf(stderr, RED "Rank %d: Update nb_gpus from input %d to real %d\n" RESET, params->rank, params->gpus, hicma_parsec_min(nb_gpus_check, params->gpus));
     }
     params->gpus = hicma_parsec_min(nb_gpus_check, params->gpus);
 
