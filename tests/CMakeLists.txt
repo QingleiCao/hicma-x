@@ -168,4 +168,13 @@ if( CMAKE_Fortran_COMPILER_WORKS )
                           LINKER_LANGUAGE Fortran)
 endif()
 
+add_executable(testing_trmm_performance testing_trmm_performance.c)
+target_link_libraries(testing_trmm_performance PRIVATE ${LD_LIB_HICMA_PARSEC} hicma_parsec ${HCORE_STARSH_LIB})
+target_sources(testing_trmm_performance PRIVATE $<TARGET_OBJECTS:dplasma_tests_common>)
+
+if( CMAKE_Fortran_COMPILER_WORKS )
+    set_target_properties(testing_trmm_performance PROPERTIES
+                          LINKER_LANGUAGE Fortran)
+endif()
+
 # Header and library installation is handled by the top-level CMakeLists.txt
