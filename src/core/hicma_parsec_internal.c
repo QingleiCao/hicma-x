@@ -542,6 +542,29 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Get MPI communicator information for process grid setup
     MPI_Comm_size(MPI_COMM_WORLD, &params->nodes);
     MPI_Comm_rank(MPI_COMM_WORLD, &params->rank);
+#if defined(OMPI_MAJOR_VERSION) && OMPI_MAJOR_VERSION == 5
+    /* Open MPI 5 / UCX can defer PMIx worker-address lookups until the
+     * first send to a peer. On Vista these lookups intermittently fail
+     * with PMIX_ERR_BAD_PARAM when first triggered by PaRSEC workers.
+     * Connect every peer here, before starting those workers. A private
+     * communicator keeps startup messages separate from caller traffic;
+     * one byte ensures the transport actually establishes the endpoint.
+     */
+    if (params->nodes > 1) {
+        MPI_Comm startup_comm;
+        unsigned char send_byte = 0, recv_byte;
+        MPI_Comm_dup(MPI_COMM_WORLD, &startup_comm);
+        for (int step = 1; step < params->nodes; ++step) {
+            int destination = (params->rank + step) % params->nodes;
+            int source = (params->rank - step + params->nodes) % params->nodes;
+            MPI_Sendrecv(&send_byte, 1, MPI_BYTE, destination, 0,
+                         &recv_byte, 1, MPI_BYTE, source, 0,
+                         startup_comm, MPI_STATUS_IGNORE);
+        }
+        MPI_Barrier(startup_comm);
+        MPI_Comm_free(&startup_comm);
+    }
+#endif
 #else
     // Single process execution - no MPI available
     params->nodes = 1;
