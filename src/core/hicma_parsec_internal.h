@@ -2595,6 +2595,21 @@ int hicma_parsec_memory_allocation_dense_static(parsec_context_t *parsec,
         parsec_tiled_matrix_t *A,
         char *allocate_type);
 
+int hicma_parsec_memory_allocation_dense_decision(
+        parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        uint16_t *decisions,
+        int matrix_is_symmetric,
+        int hp_allocate_as_sp,
+        unsigned long long int seed);
+
+int hicma_parsec_memory_free_dense_decision(
+        parsec_context_t *parsec,
+        dplasma_enum_t uplo,
+        parsec_tiled_matrix_t *A,
+        hicma_parsec_params_t *params);
+
 /**
  * @brief Test performance of CPU vs GPU computation
  * 

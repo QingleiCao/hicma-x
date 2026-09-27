@@ -110,6 +110,8 @@ set(JDF
     kernels/datatype_convert_dense_static.jdf
     kernels/datatype_convert_dense_adaptive.jdf
     kernels/memory_allocation_dense_static.jdf
+    kernels/memory_allocation_dense_decision.jdf
+    kernels/memory_free_dense_decision.jdf
     kernels/matrix_dsum.jdf
     kernels/matrix_check_norm_diff.jdf
     kernels/matrix_det.jdf
