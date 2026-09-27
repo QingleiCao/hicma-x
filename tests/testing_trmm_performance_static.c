@@ -19,10 +19,26 @@ static int parse_percentage(const char *text, double *value)
     return 0;
 }
 
+static int parse_binary_flag(const char *text, int *value)
+{
+    char *end = NULL;
+    long parsed;
+
+    errno = 0;
+    parsed = strtol(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' ||
+        (parsed != 0 && parsed != 1)) {
+        return -1;
+    }
+    *value = (int)parsed;
+    return 0;
+}
+
 static int parse_portion_arguments(int *argc, char ***argv,
                                    double *portion_dp,
                                    double *portion_sp,
-                                   double *portion_hp)
+                                   double *portion_hp,
+                                   int *pinned_memory)
 {
     char **args = *argv;
     int write_index = 1;
@@ -30,6 +46,7 @@ static int parse_portion_arguments(int *argc, char ***argv,
     *portion_dp = 20.0;
     *portion_sp = 30.0;
     *portion_hp = 50.0;
+    *pinned_memory = 0;
 
     for (int read_index = 1; read_index < *argc; read_index++) {
         char *argument = args[read_index];
@@ -44,9 +61,28 @@ static int parse_portion_arguments(int *argc, char ***argv,
                    "(default: 30)\n"
                    "  --portion_hp PERCENT   Random off-diagonal HP portion "
                    "(default: 50)\n"
+                   "  --pinned_memory 0|1    Use registered/pinned host memory "
+                   "(default: 0)\n"
                    "  --adaptive_decision 0  Use the band-size decision map\n"
                    "  --adaptive_decision 1  Use the randomized decision map\n\n");
             args[write_index++] = argument;
+            continue;
+        } else if (strcmp(argument, "--pinned_memory") == 0 ||
+                   strncmp(argument, "--pinned_memory=", 16) == 0) {
+            if (argument[15] == '=') {
+                value_text = argument + 16;
+            } else {
+                if (++read_index >= *argc) {
+                    fprintf(stderr, "%s requires 0 or 1\n", argument);
+                    return -1;
+                }
+                value_text = args[read_index];
+            }
+            if (parse_binary_flag(value_text, pinned_memory) != 0) {
+                fprintf(stderr, "Invalid value for %s: %s (expected 0 or 1)\n",
+                        argument, value_text);
+                return -1;
+            }
             continue;
         } else if (strcmp(argument, "--portion_dp") == 0) {
             target = portion_dp;
@@ -244,10 +280,12 @@ int main(int argc, char **argv)
     const unsigned long long Bseed = 2873;
     const double alpha = 3.5;
     double portion_dp, portion_sp, portion_hp;
+    int pinned_memory;
     int ret = 0;
 
     if (parse_portion_arguments(&argc, &argv,
-                                &portion_dp, &portion_sp, &portion_hp) != 0) {
+                                &portion_dp, &portion_sp, &portion_hp,
+                                &pinned_memory) != 0) {
         return 1;
     }
 
@@ -295,6 +333,28 @@ int main(int argc, char **argv)
     const int rank = params.rank;
     const int nodes = params.nodes;
     const int P = params.P;
+    size_t A_tiles_dp = 0;
+    size_t A_tiles_sp = 0;
+    size_t A_tiles_hp = 0;
+
+    for (int m = 0; m < params.NT; m++) {
+        for (int n = 0; n <= m; n++) {
+            switch (params.decisions[n * params.NT + m]) {
+            case DENSE_DP: A_tiles_dp++; break;
+            case DENSE_SP: A_tiles_sp++; break;
+            case DENSE_HP: A_tiles_hp++; break;
+            default: break;
+            }
+        }
+    }
+    const size_t B_tiles_hp = (size_t)params.NT * (size_t)params.KT;
+    const size_t tile_elements = (size_t)MB * (size_t)NB;
+    const size_t A_capacity_bytes = tile_elements *
+        (A_tiles_dp * sizeof(double) +
+         (A_tiles_sp + A_tiles_hp) * sizeof(float));
+    const size_t A_payload_bytes = tile_elements *
+        (A_tiles_dp * sizeof(double) + A_tiles_sp * sizeof(float) +
+         A_tiles_hp * sizeof(uint16_t));
 
     assert(MB == NB);
     assert(MB == KB);
@@ -307,10 +367,12 @@ int main(int argc, char **argv)
     parsec_data_collection_set_key((parsec_data_collection_t *)&dcA, "dcA_static");
 
     parsec_matrix_block_cyclic_t dcB;
-    parsec_matrix_block_cyclic_init(&dcB, PARSEC_MATRIX_DOUBLE,
+    parsec_matrix_block_cyclic_init(&dcB, PARSEC_MATRIX_BYTE,
             PARSEC_MATRIX_TILE, rank, MB, KB, M, K, 0, 0,
             M, K, P, nodes / P,
             params.KP, params.KQ, 0, 0);
+    /* PARSEC_MATRIX_BYTE plus a two-byte tile stride represents binary16. */
+    dcB.super.bsiz *= (int)sizeof(uint16_t);
     dcB.mat = NULL;
     parsec_data_collection_set_key((parsec_data_collection_t *)&dcB, "dcB_static");
 
@@ -319,13 +381,42 @@ int main(int argc, char **argv)
 #endif
 
     SYNC_TIME_START();
+    const size_t B_allocate_size =
+        (size_t)dcB.super.nb_local_tiles * (size_t)dcB.super.bsiz;
+    dcB.mat = parsec_data_allocate(B_allocate_size);
+    if (dcB.mat == NULL) {
+        fprintf(stderr, "Contiguous HP allocation for B failed (%zu bytes)\n",
+                B_allocate_size);
+        abort();
+    }
+
+    int B_memory_registered = 0;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if (pinned_memory && params.gpus > 0) {
+        dcB.super.super.register_memory = NULL;
+        dcB.super.super.unregister_memory = NULL;
+        if (cudaSuccess != cudaHostRegister(
+                    dcB.mat, B_allocate_size, cudaHostRegisterDefault)) {
+            fprintf(stderr, "Unable to register the contiguous B allocation\n");
+            abort();
+        }
+        B_memory_registered = 1;
+    }
+#endif
+
     hicma_parsec_memory_allocation_dense_decision(
             parsec, dplasmaLower, (parsec_tiled_matrix_t *)&dcA,
-            params.decisions, 1, 1, Aseed);
+            params.decisions, 1, 1, pinned_memory, Aseed);
     hicma_parsec_memory_allocation_dense_decision(
             parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcB,
-            params.decisionsB, 0, 0, Bseed);
-    SYNC_TIME_PRINT(rank, ("Static mixed-precision allocation and initialization\n"));
+            params.decisionsB, 0, 0, 0, Bseed);
+    SYNC_TIME_PRINT(rank,
+            ("Static mixed-precision allocation and initialization "
+             "host_memory= %s A_capacity_bytes= %zu A_payload_bytes= %zu "
+             "B_bytes= %zu\n",
+             pinned_memory ? "pinned" : "pageable",
+             A_capacity_bytes, A_payload_bytes, B_allocate_size));
+    const double initialization_time = sync_time_elapsed;
 
     if (rank == 0 && params.verbose > 0) {
         printf("A decision mode: %s",
@@ -334,7 +425,8 @@ int main(int argc, char **argv)
             printf(" (DP %.2f%%, SP %.2f%%, HP %.2f%%)",
                    portion_dp, portion_sp, portion_hp);
         }
-        printf("; B precision: HP\n");
+        printf("; B precision: HP; host memory: %s\n",
+               pinned_memory ? "pinned/registered" : "pageable");
     }
     if (params.verbose > 9) {
         print_decisions(&params, params.decisions, uplo,
@@ -367,25 +459,51 @@ int main(int argc, char **argv)
                                (end.tv_usec - start.tv_usec) / 1.0e6;
         const double tflops = elapsed > 0.0 ? flops * 1.0e-12 / elapsed : 0.0;
         if (rank == 0) {
-            printf("Static TRMM run %d/%d: %.6f s, %.3f Tflop/s "
-                   "(nodes=%d gpus=%d P=%d Q=%d MB=%d M=%d K=%d)\n",
+            printf("TRMM_STATIC_RESULT run= %d nruns= %d time_s= %.9f "
+                   "tflops= %.6f initialization_s= %.9f flops= %.0f "
+                   "nodes= %d cores= %d gpus= %d gpu_type= %d P= %d Q= %d "
+                   "M= %d N= %d K= %d MB= %d NB= %d KB= %d NT= %d KT= %d "
+                   "side= left uplo= lower trans= notrans diag= nonunit "
+                   "alpha= %.17g decision_mode= %s adaptive_decision= %d "
+                   "portion_dp= %.6f portion_sp= %.6f portion_hp= %.6f "
+                   "band_dp= %d band_sp= %d band_hp= %d band_dense= %d "
+                   "A_tiles_dp= %zu A_tiles_sp= %zu A_tiles_hp= %zu "
+                   "B_tiles_hp= %zu A_capacity_bytes= %zu "
+                   "A_payload_bytes= %zu B_bytes= %zu "
+                   "A_hp_capacity= sp B_precision= hp host_memory= %s\n",
                    run + 1, params.nruns, elapsed, tflops,
-                   params.nodes, params.gpus, params.P, params.Q,
-                   MB, M, K);
+                   initialization_time, flops,
+                   params.nodes, params.cores, params.gpus, params.gpu_type,
+                   params.P, params.Q, M, params.N, K, MB, NB, KB,
+                   params.NT, params.KT,
+                   alpha,
+                   params.adaptive_decision == 0 ? "band" : "random",
+                   params.adaptive_decision,
+                   portion_dp, portion_sp, portion_hp,
+                   params.band_size_dense_dp, params.band_size_dense_sp,
+                   params.band_size_dense_hp, params.band_size_dense,
+                   A_tiles_dp, A_tiles_sp, A_tiles_hp, B_tiles_hp,
+                   A_capacity_bytes, A_payload_bytes, B_allocate_size,
+                   pinned_memory ? "pinned" : "pageable");
+            fflush(stdout);
         }
     }
 
     hicma_parsec_memory_free_dense_decision(
-            parsec, dplasmaUpperLower,
-            (parsec_tiled_matrix_t *)&dcB, &params);
-    hicma_parsec_memory_free_dense_decision(
             parsec, dplasmaLower,
-            (parsec_tiled_matrix_t *)&dcA, &params);
+            (parsec_tiled_matrix_t *)&dcA, &params, pinned_memory);
 
 #if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
     gpu_temporay_buffer_fini(&data, params.kind_of_cholesky);
 #endif
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    if (B_memory_registered) {
+        cudaHostUnregister(dcB.mat);
+    }
+#endif
+    parsec_data_free(dcB.mat);
+    dcB.mat = NULL;
     parsec_tiled_matrix_destroy((parsec_tiled_matrix_t *)&dcB);
     parsec_tiled_matrix_destroy((parsec_tiled_matrix_t *)&dcA);
     hicma_parsec_cleanup_parsec(parsec, &params);

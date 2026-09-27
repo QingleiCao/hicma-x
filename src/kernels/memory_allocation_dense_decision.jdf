@@ -67,6 +67,7 @@ descA               [ type = "parsec_tiled_matrix_t *" ]
 decisions           [ type = "uint16_t *" ]
 matrix_is_symmetric [ type = "int" ]
 hp_allocate_as_sp   [ type = "int" ]
+use_pinned_memory   [ type = "int" ]
 seed                [ type = "unsigned long long int" ]
 
 allocate_initialize(m, n)
@@ -104,15 +105,18 @@ BODY
         abort();
     }
 
-    /*
-     * Keep benchmark setup independent of HIP host-page registration.  A
-     * separate hipHostMalloc for every tile is extremely expensive on some
-     * Frontier login nodes, while PaRSEC can stage pageable host data for the
-     * device transfer.  The second timed run remains resident on the GPU.
-     */
     copy->original->nb_elts =
         tile_elements * get_datatype_size(allocation_type);
-    copy->device_private = malloc(copy->original->nb_elts);
+    if (copy->device_private == NULL) {
+        if (use_pinned_memory) {
+            hicma_parsec_core_memory_allocation(&copy->device_private,
+                                                tile_elements,
+                                                (char *)allocation_type,
+                                                &copy->original->nb_elts);
+        } else {
+            copy->device_private = malloc(copy->original->nb_elts);
+        }
+    }
     if (copy->device_private == NULL) {
         fprintf(stderr, "Tile allocation failed for (%d,%d)\n", m, n);
         abort();
@@ -155,12 +159,13 @@ hicma_parsec_memory_allocation_dense_decision_New(
         uint16_t *decisions,
         int matrix_is_symmetric,
         int hp_allocate_as_sp,
+        int use_pinned_memory,
         unsigned long long int seed)
 {
     parsec_memory_allocation_dense_decision_taskpool_t *taskpool =
         parsec_memory_allocation_dense_decision_new(
                 uplo, A, decisions, matrix_is_symmetric,
-                hp_allocate_as_sp, seed);
+                hp_allocate_as_sp, use_pinned_memory, seed);
     return (parsec_taskpool_t *)taskpool;
 }
 
@@ -177,12 +182,13 @@ int hicma_parsec_memory_allocation_dense_decision(
         uint16_t *decisions,
         int matrix_is_symmetric,
         int hp_allocate_as_sp,
+        int use_pinned_memory,
         unsigned long long int seed)
 {
     parsec_taskpool_t *taskpool =
         hicma_parsec_memory_allocation_dense_decision_New(
                 uplo, A, decisions, matrix_is_symmetric,
-                hp_allocate_as_sp, seed);
+                hp_allocate_as_sp, use_pinned_memory, seed);
 
     if (taskpool != NULL) {
         parsec_context_add_taskpool(parsec, taskpool);
