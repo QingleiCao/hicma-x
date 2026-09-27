@@ -1,5 +1,6 @@
 #include "hicma_parsec.h"
 #include "dplasma/tests/common.h"
+#include "dplasmaaux.h"
 
 #include <errno.h>
 #include <sys/time.h>
@@ -410,6 +411,26 @@ int main(int argc, char **argv)
     hicma_parsec_memory_allocation_dense_decision(
             parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcB,
             params.decisionsB, 0, 0, 0, Bseed);
+
+#if defined(DPLASMA_HAVE_CUDA) || defined(DPLASMA_HAVE_HIP)
+    /* Keep each local tile on its preferred GPU across the TRMM taskpool.
+     * This is placement advice only; the JDF control flows above bound the
+     * number of host-side broadcasts that may be active concurrently. */
+    if (params.gpus > 0) {
+/*
+        dplasma_advise_data_on_device(
+                parsec, dplasmaLower, (parsec_tiled_matrix_t *)&dcA,
+                (parsec_tiled_matrix_unary_op_t)
+                    dplasma_advise_data_on_device_ops_2D,
+                NULL);
+*/
+        dplasma_advise_data_on_device(
+                parsec, dplasmaUpperLower, (parsec_tiled_matrix_t *)&dcB,
+                (parsec_tiled_matrix_unary_op_t)
+                    dplasma_advise_data_on_device_ops_2D,
+                NULL);
+    }
+#endif
     SYNC_TIME_PRINT(rank,
             ("Static mixed-precision allocation and initialization "
              "host_memory= %s A_capacity_bytes= %zu A_payload_bytes= %zu "
@@ -470,7 +491,8 @@ int main(int argc, char **argv)
                    "A_tiles_dp= %zu A_tiles_sp= %zu A_tiles_hp= %zu "
                    "B_tiles_hp= %zu A_capacity_bytes= %zu "
                    "A_payload_bytes= %zu B_bytes= %zu "
-                   "A_hp_capacity= sp B_precision= hp host_memory= %s\n",
+                   "A_hp_capacity= sp B_precision= hp host_memory= %s "
+                   "trmm_window= %d\n",
                    run + 1, params.nruns, elapsed, tflops,
                    initialization_time, flops,
                    params.nodes, params.cores, params.gpus, params.gpu_type,
@@ -484,7 +506,8 @@ int main(int argc, char **argv)
                    params.band_size_dense_hp, params.band_size_dense,
                    A_tiles_dp, A_tiles_sp, A_tiles_hp, B_tiles_hp,
                    A_capacity_bytes, A_payload_bytes, B_allocate_size,
-                   pinned_memory ? "pinned" : "pageable");
+                   pinned_memory ? "pinned" : "pageable",
+                   params.trmm_window);
             fflush(stdout);
         }
     }

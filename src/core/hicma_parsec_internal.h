@@ -551,6 +551,7 @@ typedef struct hicma_parsec_params_s {
     int adaptive_decision;    /**< Enable adaptive tile format decisions */
     int adaptive_memory;      /**< Enable adaptive memory allocation: 0=memory allocated once; 1=memory reallocated per tile after precision decision */
     int lookahead;            /**< Lookahead depth */
+    int trmm_window;           /**< Number of TRMM input panels released concurrently; -1 selects an automatic value */
     int kind_of_problem;      /**< Type of problem being solved */
     int send_full_tile;       /**< Send full tile instead of compressed */
     int reorder_gemm;         /**< Enable GEMM reordering */

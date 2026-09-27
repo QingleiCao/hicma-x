@@ -313,6 +313,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"compmaxrank", "Maxrank limit used in allocation of buffers for HiCMA_dpotrf operation", 0, &params->compmaxrank},
         {"adddiag", "Add this number to diagonal elements to make the matrix positive definite", 1, &params->add_diag},
         {"lookahead", "Set lookahead, from -1 to NT-1; default -1, will set to auto_tuned band_size_dense", 0, &params->lookahead},
+        {"trmm_window", "TRMM input-panel window: -1=2*max(P,Q), 0=unbounded, positive=explicit window", 0, &params->trmm_window},
         {"kind_of_problem", "Problem type", 0, &params->kind_of_problem},
         {"send_full_tile", "Send full tile instead of compressed", 0, &params->send_full_tile},
         {"auto_band", "Auto select the most suitable band size", 0, &params->auto_band},
@@ -564,6 +565,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // TODO: Need to test the overhead and restructure memory allocation strategy
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
     params->lookahead = -1;                 // Lookahead depth (auto-tuned based on band_size_dense)
+    params->trmm_window = -1;               // TRMM input-panel window (-1 = 2 * max(P, Q))
     
     // Problem configuration - define the computational problem
     params->kind_of_problem = 2;            // Default: statistics-2d-sqexp problem (see str_problem array)
@@ -1080,6 +1082,21 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->NT = (params->N % params->NB == 0) ? (params->N/params->NB) : (params->N/params->NB + 1);
     params->KT = (params->K % params->KB == 0) ? (params->K/params->KB) : (params->K/params->KB + 1);    
 
+    /* A full process-grid cycle exposes every A/B panel owner.  Keep two
+     * ownership cycles ready so communication can overlap with computation,
+     * while avoiding the all-panels-at-once startup of the unbounded DAG. */
+    if (params->trmm_window == -1) {
+        const int grid_span = hicma_parsec_max(params->P, params->Q);
+        params->trmm_window = hicma_parsec_min(params->NT, 2 * grid_span);
+        if (params->rank == 0) {
+            fprintf(stderr,
+                    RED "Set TRMM window to %d = min(NT=%d, 2 * max(P=%d, Q=%d))\n" RESET,
+                    params->trmm_window, params->NT, params->P, params->Q);
+        }
+    } else if (params->trmm_window > params->NT) {
+        params->trmm_window = params->NT;
+    }
+
     /* ===========================================
      * Extract executable path
      * =========================================== */
@@ -1294,7 +1311,7 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
         printf("kind_of_problem=%d %s\n", params->kind_of_problem, params->str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
-        printf("send_full_tile=%d lookahead= %d adaptive_decision= %d adaptive_memory= %d\n", params->send_full_tile, params->lookahead, params->adaptive_decision, params->adaptive_memory);
+        printf("send_full_tile=%d lookahead= %d trmm_window= %d adaptive_decision= %d adaptive_memory= %d\n", params->send_full_tile, params->lookahead, params->trmm_window, params->adaptive_decision, params->adaptive_memory);
         printf("band_size_dist= %d band_size_dense_dp:%d band_size_dense_sp:%d band_size_dense_hp: %d band_size_dense: %d band_size_low_rank_dp:%d NT= %d band_p= %d\n", params->band_size_dist, params->band_size_dense_dp, params->band_size_dense_sp, params->band_size_dense_hp, params->band_size_dense, params->band_size_low_rank_dp, params->NT, params->band_p);
         printf("band_size_auto_tuning_termination= %lf band_size_dense_gpu_memory_max= %d exe_file_path= %s\n", params->band_size_auto_tuning_termination, params->band_size_dense_gpu_memory_max, params->exe_file_path);
         printf("max_rank=%d gen=%d comp=%d\n", params->maxrank, params->genmaxrank, params->compmaxrank);
@@ -1686,6 +1703,7 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
 
     // Validate lookahead parameter (must be >= -1, where -1 means auto-tune)
     assert(params->lookahead >= -1);
+    assert(params->trmm_window >= -1);
 
     /* ===========================================
      * Compile-time configuration adjustments
