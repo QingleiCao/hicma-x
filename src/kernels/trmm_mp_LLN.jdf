@@ -111,15 +111,6 @@ read_B(n, k) [profile = off]
   READ  B    <- descB(k,n)
              -> B dgemm(0..(descB->mt-k-2), n, k)  [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ] 
 
-  /* read_B is otherwise a source task for every k.  Advance it from the
-   * bottom output row (m=0), whose C chain depends only on B panels up to
-   * k.  Later rows wait for future B panels through ctl0/dtrmm, so using
-   * them here would create a control-flow cycle. */
-  CTL   window_B <- (params_tlr->trmm_window > 0 &&
-                     k >= params_tlr->trmm_window) ?
-                    window_B dgemm(0, n,
-                                   k-params_tlr->trmm_window)
-
 BODY
 {
     /* nothing */
@@ -240,12 +231,6 @@ dgemm(m, n, k) [ flops = inline_c %{ return FLOPS_DGEMM(CLEAN_MB(descB, m), CLEA
   CTL   window_A -> (params_tlr->trmm_window > 0 &&
                      k + params_tlr->trmm_window < descB->mt-1-m) ?
                     window_A read_A(m, k+params_tlr->trmm_window)
-
-  CTL   window_B -> (params_tlr->trmm_window > 0 &&
-                     m == 0 &&
-                     k + params_tlr->trmm_window <= descB->mt-2) ?
-                    window_B read_B(n, k+params_tlr->trmm_window)
-
 
 BODY [type=CUDA]
 {

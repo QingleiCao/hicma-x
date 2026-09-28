@@ -313,7 +313,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"compmaxrank", "Maxrank limit used in allocation of buffers for HiCMA_dpotrf operation", 0, &params->compmaxrank},
         {"adddiag", "Add this number to diagonal elements to make the matrix positive definite", 1, &params->add_diag},
         {"lookahead", "Set lookahead, from -1 to NT-1; default -1, will set to auto_tuned band_size_dense", 0, &params->lookahead},
-        {"trmm_window", "TRMM input-panel window: -1=2*max(P,Q), 0=unbounded, positive=explicit window", 0, &params->trmm_window},
+        {"trmm_window", "TRMM A-panel window: -1=auto (default: unbounded on one process, 4*max(P,Q) distributed), 0=unbounded, positive=explicit window", 0, &params->trmm_window},
         {"kind_of_problem", "Problem type", 0, &params->kind_of_problem},
         {"send_full_tile", "Send full tile instead of compressed", 0, &params->send_full_tile},
         {"auto_band", "Auto select the most suitable band size", 0, &params->auto_band},
@@ -565,7 +565,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // TODO: Need to test the overhead and restructure memory allocation strategy
     params->adaptive_memory = 0;            // Enable adaptive memory allocation per tile (1=enabled, 0=disabled)
     params->lookahead = -1;                 // Lookahead depth (auto-tuned based on band_size_dense)
-    params->trmm_window = -1;               // TRMM input-panel window (-1 = 2 * max(P, Q))
+    params->trmm_window = -1;               // TRMM A-panel window (-1 = topology-aware automatic value)
     
     // Problem configuration - define the computational problem
     params->kind_of_problem = 2;            // Default: statistics-2d-sqexp problem (see str_problem array)
@@ -1082,16 +1082,24 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     params->NT = (params->N % params->NB == 0) ? (params->N/params->NB) : (params->N/params->NB + 1);
     params->KT = (params->K % params->KB == 0) ? (params->K/params->KB) : (params->K/params->KB + 1);    
 
-    /* A full process-grid cycle exposes every A/B panel owner.  Keep two
-     * ownership cycles ready so communication can overlap with computation,
-     * while avoiding the all-panels-at-once startup of the unbounded DAG. */
+    /* There is no inter-process panel traffic in shared memory, so retain the
+     * fully concurrent DAG.  For distributed runs, keep four process-grid
+     * ownership cycles ready to overlap communication with computation. */
     if (params->trmm_window == -1) {
-        const int grid_span = hicma_parsec_max(params->P, params->Q);
-        params->trmm_window = hicma_parsec_min(params->NT, 2 * grid_span);
-        if (params->rank == 0) {
-            fprintf(stderr,
-                    RED "Set TRMM window to %d = min(NT=%d, 2 * max(P=%d, Q=%d))\n" RESET,
-                    params->trmm_window, params->NT, params->P, params->Q);
+        if (params->nodes == 1) {
+            params->trmm_window = 0;
+            if (params->rank == 0) {
+                fprintf(stderr,
+                        RED "Set TRMM window to 0 (unbounded shared-memory default)\n" RESET);
+            }
+        } else {
+            const int grid_span = hicma_parsec_max(params->P, params->Q);
+            params->trmm_window = hicma_parsec_min(params->NT, 4 * grid_span);
+            if (params->rank == 0) {
+                fprintf(stderr,
+                        RED "Set TRMM window to %d = min(NT=%d, 4 * max(P=%d, Q=%d))\n" RESET,
+                        params->trmm_window, params->NT, params->P, params->Q);
+            }
         }
     } else if (params->trmm_window > params->NT) {
         params->trmm_window = params->NT;
