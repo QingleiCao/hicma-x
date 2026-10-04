@@ -1199,6 +1199,7 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
     
     // Precision decision arrays for different matrices
     params->decisions = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));      // Main matrix decisions
+    params->decisions_gemm_last = (uint16_t *)calloc(params->MT * params->NT, sizeof(uint16_t));
 
     // Data type conversion decisions
     params->decisions_send = (uint16_t *)calloc(params->NT * params->NT, sizeof(uint16_t));
@@ -2805,6 +2806,7 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     hicma_parsec_free_kernel_time_intervals(params->kernel_time_cpu_intervals, params->kernel_time_cpu_count);
     hicma_parsec_free_kernel_time_intervals(params->kernel_time_gpu_intervals, params->kernel_time_gpu_count);
     free( params->decisions );
+    free( params->decisions_gemm_last );
     free( params->decisions_send);
     free( params->decisions_gemm_gpu);
     free( params->norm_tile );

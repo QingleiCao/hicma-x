@@ -584,7 +584,12 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
         }
         get_decisions(params->decisions, (size_t)params->MT * params->NT,
                 decision_desc);
-        print_decisions(params);
+        //print_decisions(params);
+        if(params->adaptive_decision_runtime) {
+            get_decisions(params->decisions_gemm_last,
+                    (size_t)params->MT * params->NT, decision_desc);
+            print_last_local_gemm_decisions(params);
+        }
     }
 
 #if 0

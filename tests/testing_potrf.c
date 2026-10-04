@@ -74,6 +74,9 @@ int main(int argc, char **argv)
             memset(params.nb_gemms, 0, (NB_DECISIONS+1)*params.counter_stride*sizeof(uint64_t));
             memset(params.nb_datatype_conversions, 0, params.counter_stride*sizeof(uint64_t));
         }
+        if(params.adaptive_decision_runtime) {
+            memset(params.decisions_gemm_last, 0, (size_t)params.MT * params.NT * sizeof(uint16_t));
+        }
         //if(0 == i) params.adaptive_decision_runtime = 0;
         
         /* Perform Cholesky decomposition */

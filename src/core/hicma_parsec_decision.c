@@ -57,8 +57,8 @@ void  hicma_parsec_decisions_update( parsec_context_t *parsec,
 
     if( params->verbose > 9 ) {
         print_decisions( params );
-        print_decisions_send( params );
-        print_decisions_gemm_gpu( params );
+        //print_decisions_send( params );
+        //print_decisions_gemm_gpu( params );
     }
 }
 
@@ -119,7 +119,7 @@ int hicma_parsec_decision_init( hicma_parsec_params_t *params )
         }
     }
 
-    if( params->verbose > 9 ) {
+    if( 0 && params->verbose > 9 ) {
         print_decisions( params );
     }
 
@@ -172,6 +172,40 @@ void print_decisions( hicma_parsec_params_t *params ) {
 
         fflush(stdout);
         sleep(1);
+}
+
+void print_last_local_gemm_decisions(const hicma_parsec_params_t *params)
+{
+    if(params->rank != 0) return;
+
+    fprintf(stderr, "\nlast_local_gemm_precision (A*B, k=n-1): DP=%d SP=%d LR_DP=%d LR_SP=%d HP=%d FP8=%d\n",
+            DENSE_DP, DENSE_SP, LOW_RANK_DP, LOW_RANK_SP, DENSE_HP, DENSE_FP8);
+    for(int m = 0; m < params->MT; m++) {
+        for(int n = 0; n <= m && n < params->NT; n++) {
+            size_t index = (size_t)n * params->MT + m;
+            uint16_t precision = (n == 0) ? params->decisions[index] :
+                params->decisions_gemm_last[index];
+            if(m == n) {
+                fprintf(stderr, RED "%2d " RESET, DENSE_DP);
+            } else if(precision == DENSE_DP) {
+                fprintf(stderr, RED "%2u " RESET, (unsigned)precision);
+            } else if(precision == DENSE_SP) {
+                fprintf(stderr, BLU "%2u " RESET, (unsigned)precision);
+            } else if(precision == LOW_RANK_DP) {
+                fprintf(stderr, PUR "%2u " RESET, (unsigned)precision);
+            } else if(precision == LOW_RANK_SP) {
+                fprintf(stderr, YEL "%2u " RESET, (unsigned)precision);
+            } else if(precision == DENSE_HP) {
+                fprintf(stderr, GRN "%2u " RESET, (unsigned)precision);
+            } else if(precision == DENSE_FP8) {
+                fprintf(stderr, CYN "%2u " RESET, (unsigned)precision);
+            } else {
+                fprintf(stderr, "  -- ");
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "\n");
 }
 
 void get_decisions(uint16_t *decisions, size_t size,
@@ -736,5 +770,4 @@ void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
     }
 
 }
-
 

@@ -1985,6 +1985,10 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     }
 #endif
 
+    if( k + 1 == n ) {
+        params_tlr->decisions_gemm_last[n*descA->lmt+m] = new_decision;
+    }
+
     /* Operation count */
     unsigned long int cnt = hicma_parsec_op_counts('m', tempmm, tempmm, tempmm, 0);
     params_tlr->op_band[es->th_id] += cnt;
@@ -4199,6 +4203,11 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 #undef HICMA_GPU_TIME_RETURN
 
 // trsm handles the first column
+    if( k + 1 == n && (DENSE_DP == new_decision || DENSE_SP == new_decision ||
+                      DENSE_HP == new_decision || DENSE_FP8 == new_decision) ) {
+        params_tlr->decisions_gemm_last[idx_C] = new_decision;
+    }
+
 #if 1
     /* After the last GEMM that writes C, optionally store C in SP.
      * handle_cublas is HOST pointer mode (synchronous nrm2 result).
