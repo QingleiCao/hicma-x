@@ -3445,7 +3445,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             params_tlr->nb_gemms[DENSE_SP*counter_stride+tid] += 1;
         } else if( DENSE_HP == new_decision ) {
             params_tlr->nb_gemms[DENSE_HP*counter_stride+tid] += 1;
-            params_tlr->nb_gemms[DENSE_HP*counter_stride+tid] += 1;
         } else if( DENSE_FP8 == new_decision ) {
             params_tlr->nb_gemms[DENSE_FP8*counter_stride+tid] += 1;
         } else if(LOW_RANK_DP == new_decision ) {
