@@ -86,17 +86,19 @@ read_A(m, k) [profile = off]
              -> (k == (descB->mt-1-m)) ? A dtrmm(m, 0..(descB->nt-1))    [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
              -> (k != (descB->mt-1-m)) ? A dgemm(m, 0..(descB->nt-1), k) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
 
-  /* The in-place C flow already orders every (m,n) reduction chain.  Use one
+  /* Each C chain visits k = i-1, ..., 0, where i = descB->mt-1-m.
+   * Leave the diagonal and the first trmm_window off-diagonal tiles ready;
+   * a later tile k receives its credit from the earlier GEMM at k+window.
+   * The in-place C flow already orders every (m,n) reduction chain.  Use one
    * rotating chain as a soft credit for the next A broadcast instead of
    * gathering completion from every n.  Choosing n from the future panel
    * index normally places the credit on that panel's A-owner process column,
    * avoiding a remote control message as well as the distributed fan-in. */
   CTL   window_A <- (params_tlr->trmm_window > 0 &&
-                   k >= params_tlr->trmm_window &&
-                   k < descB->mt-1-m) ?
+                   k + params_tlr->trmm_window < descB->mt-1-m) ?
                   window_A dgemm(m,
                                  k % (Q < descB->nt ? Q : descB->nt),
-                                 k-params_tlr->trmm_window)
+                                 k+params_tlr->trmm_window)
 
 BODY
 {
@@ -136,9 +138,10 @@ dtrmm(m, n) [ flops = inline_c %{ return FLOPS_DTRMM(side, CLEAN_MB(descB, m), C
 
   READ  A    <- A read_A(m, descB->mt-1-m)                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, (descB->mt-1)-m, descA->lmt)]; %} ]
   RW    B    <- descB((descB->mt-1)-m,n)                        
-             -> (m <  (descB->mt-1)) ? C dgemm(m, n, 0)         [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ] 
+             -> (m <  (descB->mt-1)) ? C dgemm(m, n, descB->mt-m-2) [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
              -> (m == (descB->mt-1)) ? descB((descB->mt-1)-m,n) 
 
+  /* Preserve the original B(i,n) until every lower row has consumed it. */
   CTL   ctl0 <- ctl0 dgemm(0..(m-1), n, descB->mt-m-1)
 
 
@@ -227,18 +230,21 @@ dgemm(m, n, k) [ flops = inline_c %{ return FLOPS_DGEMM(CLEAN_MB(descB, m), CLEA
 
   READ  A    <- A read_A(m, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisions, (descB->mt-1)-m, k, descA->lmt)]; %} ]
   READ  B    <- B read_B(n, k)                                      [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, k, n, descB->lmt)]; %} ] 
-  RW    C    <- (k == 0) ? B dtrmm(m, n)                            [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ] 
-             <- (k >  0) ? C dgemm(m, n, k-1)                       
-             -> ((k+m) <  (descB->mt-2)) ? C dgemm(m, n, k+1)       
-             -> ((k+m) == (descB->mt-2)) ? descB((descB->mt-1)-m,n)
+  /* Consume the nearest preceding B row first, releasing its overwrite
+   * dependency early so different output rows can progress concurrently.
+   * Keep a single writer for C; descending k changes the summation order. */
+  RW    C    <- ((k+m) == (descB->mt-2)) ? B dtrmm(m, n)             [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_trmm_mp_LLN(params_tlr->decisionsB, (descB->mt-1)-m, n, descB->lmt)]; %} ]
+             <- ((k+m) <  (descB->mt-2)) ? C dgemm(m, n, k+1)
+             -> (k >  0) ? C dgemm(m, n, k-1)
+             -> (k == 0) ? descB((descB->mt-1)-m,n)
 
   CTL   ctl0 -> ctl0 dtrmm(descB->mt-k-1, n)
 
   CTL   window_A -> (params_tlr->trmm_window > 0 &&
-                     k + params_tlr->trmm_window < descB->mt-1-m &&
-                     n == ((k + params_tlr->trmm_window) %
+                     k >= params_tlr->trmm_window &&
+                     n == ((k - params_tlr->trmm_window) %
                            (Q < descB->nt ? Q : descB->nt))) ?
-                    window_A read_A(m, k+params_tlr->trmm_window)
+                    window_A read_A(m, k-params_tlr->trmm_window)
 
 BODY [type=CUDA]
 {
