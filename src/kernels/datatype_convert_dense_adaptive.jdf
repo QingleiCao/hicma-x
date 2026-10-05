@@ -64,13 +64,13 @@ BODY [ type = CUDA ]
 {
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
-    //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
+    //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->span);
     uint16_t current_decision = decisions[n*descA->lmt+m];
     if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
         current_decision = DENSE_SP;
     }
-    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
-    //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->span);
+    //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->span);
 }
 END
 
@@ -78,13 +78,13 @@ BODY [ type = HIP ]
 {
     // Perform the datatype conversion on the tile
     // This function handles the actual conversion logic based on decisions
-    //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
+    //printf("111111 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->span);
     uint16_t current_decision = decisions[n*descA->lmt+m];
     if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
         current_decision = DENSE_SP;
     }
-    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
-    //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->nb_elts);
+    convert_datatype_adaptive_unary_GPU(ws_gpu, cuda_device, gpu_task, cuda_stream, A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->span);
+    //printf("222222 %d %d: %d\n", m, n, this_task->data._f_A.data_out->original->span);
 }
 END
 
@@ -96,7 +96,7 @@ BODY
     if(params_tlr->accumulation_fp32 && DENSE_HP == decisions[n*descA->lmt+m]) {
         current_decision = DENSE_SP;
     }
-    convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->nb_elts);
+    convert_datatype_adaptive_unary_CPU(A, descA->mb, descA->nb, descA->mb, current_decision, convert_direction, enable_stochastic_rounding, &this_task->data._f_A.data_out->original->span);
 }
 END
 
