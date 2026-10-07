@@ -174,17 +174,20 @@ void print_decisions( hicma_parsec_params_t *params ) {
         sleep(1);
 }
 
-void print_last_local_gemm_decisions(const hicma_parsec_params_t *params)
+static void print_local_gemm_decisions(const hicma_parsec_params_t *params,
+        const uint16_t *decisions, const char *label)
 {
     if(params->rank != 0) return;
 
-    fprintf(stderr, "\nlast_local_gemm_precision (A*B, k=n-1): DP=%d SP=%d LR_DP=%d LR_SP=%d HP=%d FP8=%d\n",
+    fflush(stdout);
+    sleep(1);
+    fprintf(stderr, "\n%s: DP=%d SP=%d LR_DP=%d LR_SP=%d HP=%d FP8=%d\n", label,
             DENSE_DP, DENSE_SP, LOW_RANK_DP, LOW_RANK_SP, DENSE_HP, DENSE_FP8);
     for(int m = 0; m < params->MT; m++) {
         for(int n = 0; n <= m && n < params->NT; n++) {
             size_t index = (size_t)n * params->MT + m;
             uint16_t precision = (n == 0) ? params->decisions[index] :
-                params->decisions_gemm_last[index];
+                decisions[index];
             if(m == n) {
                 fprintf(stderr, RED "%2d " RESET, DENSE_DP);
             } else if(precision == DENSE_DP) {
@@ -206,6 +209,18 @@ void print_last_local_gemm_decisions(const hicma_parsec_params_t *params)
         fprintf(stderr, "\n");
     }
     fprintf(stderr, "\n");
+}
+
+void print_first_local_gemm_decisions(const hicma_parsec_params_t *params)
+{
+    print_local_gemm_decisions(params, params->decisions_gemm_first,
+            "first_local_gemm_precision (A*B, k=0)");
+}
+
+void print_last_local_gemm_decisions(const hicma_parsec_params_t *params)
+{
+    print_local_gemm_decisions(params, params->decisions_gemm_last,
+            "last_local_gemm_precision (A*B, k=n-1)");
 }
 
 void get_decisions(uint16_t *decisions, size_t size,
@@ -770,4 +785,3 @@ void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
     }
 
 }
-

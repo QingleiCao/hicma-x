@@ -338,6 +338,7 @@ void hicma_parsec_decisions_gemm_gpu_init(hicma_parsec_params_t *params);
  * @param[in] params HICMA PaRSEC parameters
  */
 void print_decisions(hicma_parsec_params_t *params);
+void print_first_local_gemm_decisions(const hicma_parsec_params_t *params);
 void print_last_local_gemm_decisions(const hicma_parsec_params_t *params);
 
 

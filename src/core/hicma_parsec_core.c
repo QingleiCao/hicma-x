@@ -1985,6 +1985,9 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     }
 #endif
 
+    if( 0 == k ) {
+        params_tlr->decisions_gemm_first[n*descA->lmt+m] = new_decision;
+    }
     if( k + 1 == n ) {
         params_tlr->decisions_gemm_last[n*descA->lmt+m] = new_decision;
     }
@@ -4200,6 +4203,11 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     }
 #endif
 #undef HICMA_GPU_TIME_RETURN
+
+    if( 0 == k && (DENSE_DP == new_decision || DENSE_SP == new_decision ||
+                   DENSE_HP == new_decision || DENSE_FP8 == new_decision) ) {
+        params_tlr->decisions_gemm_first[idx_C] = new_decision;
+    }
 
 // trsm handles the first column
     if( k + 1 == n && (DENSE_DP == new_decision || DENSE_SP == new_decision ||
