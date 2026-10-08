@@ -364,6 +364,11 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
     gettimeofday(&tstart, NULL);
     params->start_time_potrf = tstart.tv_sec + tstart.tv_usec / 1.0e6;
 
+    /* Seed skipped/zero-rank tiles; POTRF and TRSM overwrite executed tiles
+     * with the precision of their final physical representation. */
+    memcpy(params->decisions_storage_final, params->decisions,
+            (size_t)params->MT * params->NT * sizeof(uint16_t));
+
     /* Execute the appropriate Cholesky factorization algorithm based on configuration */
     switch( params->kind_of_cholesky ) {
         case DENSE_TLR_MP:
@@ -593,6 +598,9 @@ int hicma_parsec_matrix_post_analysis( parsec_context_t *parsec,
             print_first_local_gemm_decisions(params);
             print_last_local_gemm_decisions(params);
         }
+        get_decisions(params->decisions_storage_final,
+                (size_t)params->MT * params->NT, decision_desc);
+        print_final_storage_decisions(params);
     }
 
 #if 0

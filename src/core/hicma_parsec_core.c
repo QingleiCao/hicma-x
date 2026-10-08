@@ -787,6 +787,10 @@ void hicma_parsec_core_potrf_cpu( parsec_tiled_matrix_t* descA,
     int iinfo = 0;  // Error code from LAPACK
     int ld_Ag_k = BLKLDD( descA, k );  // Leading dimension of the tile
 
+    /* POTRF stores diagonal tiles in the precision used by the kernel. */
+    params_tlr->decisions_storage_final[k*descA->lmt+k] =
+        (DENSE_SP == params_tlr->decisions[k*descA->lmt+k]) ? DENSE_SP : DENSE_DP;
+
     if(DEBUG_INFO) printf("POTRF: %d\n", k);
 
     /* Print progress information for monitoring factorization progress */
@@ -857,6 +861,13 @@ void hicma_parsec_core_trsm_cpu( parsec_tiled_matrix_t* descA,
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
     int ldak = BLKLDD( descA, k );  // Leading dimension of triangular matrix T
     int ldam = BLKLDD( descA, m );  // Leading dimension of matrix C
+    uint16_t storage_precision = params_tlr->decisions[k*descA->lmt+m];
+    if( DENSE_DP != storage_precision && LOW_RANK_DP != storage_precision &&
+            LOW_RANK_SP != storage_precision ) {
+        /* Dense HP/FP8 decisions are materialized as SP by TRSM. */
+        storage_precision = DENSE_SP;
+    }
+    params_tlr->decisions_storage_final[k*descA->lmt+m] = storage_precision;
     if(DEBUG_INFO) printf("TRSM (%d, %d): %d\n", m, k, Crank);
 
     /* Handle different data types and matrix structures */
@@ -2936,6 +2947,10 @@ void hicma_parsec_core_potrf_gpu( parsec_tiled_matrix_t* descA,
     int tempkn = k == descA->nt-1 ? descA->n - k*descA->nb : descA->nb;
     int ldak = BLKLDD( descA, k );
 
+    /* POTRF stores diagonal tiles in the precision used by the kernel. */
+    params_tlr->decisions_storage_final[k*descA->lmt+k] =
+        (DENSE_SP == params_tlr->decisions[k*descA->lmt+k]) ? DENSE_SP : DENSE_DP;
+
     /* Print the progress */
     hicma_parsec_print_process( descA->mt, k, params_tlr->start_time_potrf );
 
@@ -3037,6 +3052,8 @@ void hicma_parsec_core_trsm_gpu( parsec_tiled_matrix_t* descA,
     int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
     int ldak = BLKLDD( descA, k );
     int ldam = BLKLDD( descA, m );
+    params_tlr->decisions_storage_final[k*descA->lmt+m] =
+        (DENSE_DP == params_tlr->decisions[k*descA->lmt+m]) ? DENSE_DP : DENSE_SP;
     const double alpha_double = (double)1.0;
     const float alpha_float = (float)1.0;
 
@@ -4219,7 +4236,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
     /* After the last GEMM that writes C, optionally store C in SP.
      * handle_cublas is HOST pointer mode (synchronous nrm2 result).
      * handle_cublas_deviceptr cannot write into a host stack address. */
-    if( k+1 == n && 0 == params_tlr->adaptive_decision
+    if( k+1 == n && 0 != params_tlr->adaptive_decision_runtime
             && DENSE_DP == params_tlr->decisions[idx_C] ) {
         double C_norm = 0.0;
         const size_t tile_elems = descA->mb * descA->nb;

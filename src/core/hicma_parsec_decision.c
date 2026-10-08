@@ -174,8 +174,8 @@ void print_decisions( hicma_parsec_params_t *params ) {
         sleep(1);
 }
 
-static void print_local_gemm_decisions(const hicma_parsec_params_t *params,
-        const uint16_t *decisions, const char *label)
+static void print_runtime_decisions(const hicma_parsec_params_t *params,
+        const uint16_t *decisions, const char *label, int fill_gemm_boundaries)
 {
     if(params->rank != 0) return;
 
@@ -186,9 +186,9 @@ static void print_local_gemm_decisions(const hicma_parsec_params_t *params,
     for(int m = 0; m < params->MT; m++) {
         for(int n = 0; n <= m && n < params->NT; n++) {
             size_t index = (size_t)n * params->MT + m;
-            uint16_t precision = (n == 0) ? params->decisions[index] :
-                decisions[index];
-            if(m == n) {
+            uint16_t precision = (fill_gemm_boundaries && n == 0) ?
+                params->decisions[index] : decisions[index];
+            if(fill_gemm_boundaries && m == n) {
                 fprintf(stderr, RED "%2d " RESET, DENSE_DP);
             } else if(precision == DENSE_DP) {
                 fprintf(stderr, RED "%2u " RESET, (unsigned)precision);
@@ -213,14 +213,20 @@ static void print_local_gemm_decisions(const hicma_parsec_params_t *params,
 
 void print_first_local_gemm_decisions(const hicma_parsec_params_t *params)
 {
-    print_local_gemm_decisions(params, params->decisions_gemm_first,
-            "first_local_gemm_precision (A*B, k=0)");
+    print_runtime_decisions(params, params->decisions_gemm_first,
+            "first_local_gemm_precision (A*B, k=0)", 1);
 }
 
 void print_last_local_gemm_decisions(const hicma_parsec_params_t *params)
 {
-    print_local_gemm_decisions(params, params->decisions_gemm_last,
-            "last_local_gemm_precision (A*B, k=n-1)");
+    print_runtime_decisions(params, params->decisions_gemm_last,
+            "last_local_gemm_precision (A*B, k=n-1)", 1);
+}
+
+void print_final_storage_decisions(const hicma_parsec_params_t *params)
+{
+    print_runtime_decisions(params, params->decisions_storage_final,
+            "final_storage_precision (POTRF diagonal, TRSM off-diagonal)", 0);
 }
 
 void get_decisions(uint16_t *decisions, size_t size,
