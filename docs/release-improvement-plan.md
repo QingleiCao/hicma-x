@@ -151,4 +151,6 @@ after the library changes.
   fields removed, local and climate switches settable with -D, two climate
   debug paths fixed; matrix identical to the third pass. See
   `release-readiness.md` section 5.9.
+- 2026-11-08 (on request): the 28 unnamed `#if 0`/`#if 1` blocks unwrapped,
+  deleted or named (`GENOMICS_SYRK_ISYRK`); matrix again identical.
 

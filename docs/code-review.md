@@ -1353,10 +1353,33 @@ each of its values compiles (and runs, where a test reaches it).
    - `dcRank` is a descriptor whose tiles exist only with `PRINT_RANK`.
    - `time_init`, `time_regenerate` and `gflops` are results that are printed
      or readable by an application.
-8. **Not changed**: 28 unnamed `#if 0` / `#if 1` blocks remain, mostly in the
-   genomics, climate and TRMM kernels: debug prints, earlier implementations
-   (cuBLASLt integer SYRK, `cublasSgemmex`), and alternative TRMM calls behind
-   `#if 1 ... #else`. They do not change the compiled code. Naming or deleting
-   them needs a decision per block, and most of those kernels have no test.
-   `hicma_parsec_params_t` holds 196 fields in one struct; splitting it would
-   change the API.
+8. **Unnamed `#if 0` / `#if 1` blocks** (28, cleaned on request after this
+   review):
+   - *Unwrapped*, `#if 1` around live code with no alternative: the two
+     integer GEMM bodies of `gemm_TN.jdf`, the two of `isyrk_LT.jdf`, and the
+     SP storage step of the runtime-decision GPU GEMM.
+   - *Deleted, debug output*: three in the Hamming kernel, one in
+     `matrix_sum_vec.jdf`, one vector print and two comparisons with a
+     `vec1` that is declared nowhere in the genomics drivers.
+   - *Deleted, would not compile or would be wrong*: `cublasSgemmex` and
+     `cublasDgemmex` (not cuBLAS functions); the GPU alternatives of the TRMM
+     (cuBLAS v1 calls and names the bodies do not define); the cuBLASLt
+     integer SYRK (it used the FP8 GEMM descriptors).
+   - *Deleted, superseded*:
+     - the FP64 `CORE_dtrmm`/`CORE_dgemm` bodies of the mixed-precision TRMM
+       (DPLASMA's `dtrmm` is the FP64 reference the tests compare with);
+     - an auto-band termination model whose result the next line overwrote;
+     - a compression retry loop with a growing rank cap;
+     - a line-by-line parser of the complex CSV reader;
+     - a warm-up disabled in one genomics driver;
+     - two FP16 conversions of C in the FP8 GEMM.
+   - *Named*: the genomics SYRK alternative is `GENOMICS_SYRK_ISYRK`
+     (0: `hicma_parsec_syrk`, 1: `dplasma_isyrk`); both values compile.
+   - *Found along the way*:
+     - Every compression task scanned its whole tile for non-zeros, only to
+       feed a `1 || flag` test. The scan is removed.
+     - The auto-band print read `avg_Brank` uninitialized when no rank had
+       been sampled. It is now initialized.
+
+   Not changed: `hicma_parsec_params_t` holds 196 fields in one struct;
+   splitting it would change the API.

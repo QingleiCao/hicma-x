@@ -22,6 +22,9 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `7d21454` Resolve the 28 unnamed #if 0 / #if 1 blocks
+- `f4e8512` code-review.md: number the macro review as the fifth pass
+- `00afd86` Documentation for the macro and data-structure review
 - `491b44c` Climate emulator: one name per switch, settable with -D
 - `a0a8d8e` Make the local compile-time switches settable with -D
 - `d28c2e0` Remove unused macros and parameter fields; one SYNC_TIME_PRINT
@@ -531,8 +534,17 @@ necessary; guyot not used. `code-review.md`, section 9, has the findings.
 
 Left as they are, with the reasons in section 9 of the review: the
 implicit-capture macros `IS_DENSE`/`IS_ALLOCATE_DP`, the generic object-like
-names of the installed header, 28 unnamed `#if 0`/`#if 1` blocks, and the
-196-field parameter struct.
+names of the installed header, and the 196-field parameter struct.
+
+**Unnamed `#if 0`/`#if 1` blocks (cleaned on request).** All 28 are gone.
+Blocks around live code were unwrapped. Debug dumps, code that could not
+compile and superseded alternatives were deleted. The genomics SYRK
+alternative is now the switch `GENOMICS_SYRK_ISYRK` (review, section 9,
+item 8, lists each block). The compression tasks also lost a scan of every
+tile that only fed a dead `1 || flag` test. After the cleanup, the CPU, CUDA
+and HIP trees build, both values of `GENOMICS_SYRK_ISYRK` compile, CTest
+passes (25 / 25 CPU, 39 / 39 CUDA), and the 31 CPU and 50 GPU-tree matrix
+cases are again identical to the third pass.
 
 ## 6. Release checklist
 
