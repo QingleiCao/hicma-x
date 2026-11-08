@@ -8,9 +8,13 @@ Every Cholesky driver accepts `--check 1`. It factorizes the matrix, then
    (compressed) matrix, and
 2. forms L·Lᵀ and compares it with the generated matrix.
 
-Both relative Frobenius residuals must stay below the bound, otherwise the
-driver prints the residuals and exits with a non-zero status. The bound is
-`--fixedacc`, the compression tolerance, unless `--check_tol` is given.
+The residual of step 2, ||LL^T-A||_F/||A||_F, must stay below the bound,
+otherwise the driver prints it and exits with a non-zero status. Step 1, the
+forward error ||L-L0||_F/||L||_F, is printed with `--verbose` but does not
+decide: for a mixed-precision run it exceeds the residual by up to the
+condition number of the matrix (10 to 30 times on the test problems). The
+bound is `--fixedacc`, the compression tolerance, unless `--check_tol` is
+given.
 Configurations that compute whole bands in single or half precision (kinds 3,
 4, 9, and `--adaptive_decision` runs at a tolerance of 1e-8 or tighter) reach
 the accuracy of that precision, not an FP64-level `fixedacc`; pass the bound
@@ -38,6 +42,11 @@ ctest --output-on-failure -L hicma
 ```bash
 ctest --output-on-failure -L hicma -LE gpu
 ```
+
+Besides the factorization and TRMM cases, `lapack_tile_convert` and
+`lapack_tile_convert_np2` run `testing_lapack_tile`, the round-trip check of
+the tile/LAPACK-layout conversion (`hicma_parsec_lapack_tile_convert`) over
+every element type, both directions and every process grid of the run.
 
 The stand-alone script runs the same cases plus the data-dependent ones:
 

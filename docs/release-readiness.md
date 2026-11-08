@@ -22,6 +22,17 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `5b80e98` Pass half-precision alpha and beta to FP16-compute GEMMs
+- `53edbb3` Accept hex integer options; const-correct GPU evaluate hooks
+- `6493db1` Fix kind 3 (DENSE_MP_BAND) on GPUs and its sender-conversion mode
+- `22ff7b5` Report the forward error of --check; the residual decides
+- `88c67e4` Fix corner cases found by the parameter sweep
+- `719bd2c` Record the BLAS/LAPACKE directories in the run-time paths
+- `5022f9f` Make the library safe to embed: argument vector and symbol binding
+- `9ffb772` Merge the tile/LAPACK conversion JDFs into one
+- `944ba0a` Release readiness: CI passes on the final commit
+- `87f0c23` Give the installed library and drivers a runtime search path
+- `1d9b7ad` Release readiness: results after the CI fixes
 - `be50c60` State the FP32 residual bound of the dense adaptive cases; print the residual of a failed check
 - `f07913f` CI: the CUDA job needs python3, flex and bison
 - `d6cb516` Link one BLAS/LAPACKE stack and give hcore and stars-h their dependencies
@@ -41,7 +52,8 @@ SONAME `libhicma_parsec.so.0`.
 
 (This documentation commit follows.) Each commit is self-contained in intent;
 the trees that were built and tested are the one after the documentation
-commit `8f7cb5e` (sections 4, 5.1 to 5.3) and the final one (section 5.5).
+commit `8f7cb5e` (section 5.3), the one after the CI fixes (section 5.5) and
+the final one (sections 4, 5.1, 5.2 and 5.6).
 Intermediate commits were not built individually.
 
 ## 3. Validation environment
@@ -64,126 +76,135 @@ any source change (CPU tree), with the same submodule commits.
 
 | Configuration | Result |
 |---|---|
-| CPU | builds; the only compiler diagnostics are PaRSEC's deprecation notes for `parsec_add2arena`/`parsec_del2arena` (pre-existing, 265 uses in the wrappers and generated JDF code) and linker notes about the MKL run-time path (environment, not code) |
-| CUDA (sm_80) | builds, same diagnostics plus the pre-existing nvcc notes in the `.cu` kernels |
+| CPU | builds; the only compiler diagnostics are PaRSEC's deprecation notes for `parsec_add2arena`/`parsec_del2arena` (pre-existing, in the wrappers and generated JDF code) |
+| CUDA (sm_80) | builds, same diagnostics plus the pre-existing nvcc notes in the `.cu` kernels (the 28 incompatible-pointer warnings of the GPU evaluate hooks are gone) |
 | HIP (gfx90a) | builds; not executed (no AMD GPU) |
 | CUDA + `-DHICMA_PARSEC_GENOMICS=ON` | compiles (`-DHICMA_PARSEC_GENOMICS=ON` with CUDA, same flags as the CUDA tree); the drivers `testing_syrk`, `testing_KRR`, `testing_KRR_file`, `testing_Kmatrix`, `testing_igemm_summa` are built. Not run: they need the genomics data files. |
-| Installed package | `cmake --install` of the CPU and CUDA trees, then `tests/install_consumer` (`find_package(HICMAParsec)`, links `HICMAParsec::hicma_parsec` only) configures, builds and runs `--N 2048 --NB 512 --check 1` with residual 2.69e-16 from both prefixes |
+| Installed package | `cmake --install` of the CPU and CUDA trees, then `tests/install_consumer` (`find_package(HICMAParsec)`, links `HICMAParsec::hicma_parsec` only) configures, builds and runs `--N 2048 --NB 512 --check 1` (residual 2.69e-16) and the conversion test from both prefixes, with `LD_LIBRARY_PATH` unset |
 
 ## 5. Test results
 
-All numbers below come from runs executed on 2026-11-07 against the final tree
-of the branch (logs are in the session's scratch directory; the matrix is
+All numbers below come from runs executed on 2026-11-07 and 2026-11-08 against
+the final tree of the branch, with `LD_LIBRARY_PATH` unset (logs are in the session's scratch directory; the matrix is
 reproducible with `scripts/validation_matrix.sh`).
 
 ### 5.1 CTest
 
 | Tree | Command | Result |
 |---|---|---|
-| CPU | `ctest -L hicma -LE gpu --output-on-failure` | 20 / 20 passed (15 single-rank, 5 two-rank) |
-| CUDA | `ctest -L hicma --output-on-failure` | 30 / 30 passed (the 20 CPU cases plus `gpu_dense_fp64`, `gpu_dense_adaptive`, `gpu_dense_band2`, `gpu_fp8_static`, `gpu_fp8_sp`, `gpu_runtime_decision`, `gpu_runtime_admem`, `gpu_trmm_adaptive`, `gpu_tlr_mp`, `gpu_tlr_dp_band2`) |
+| CPU | `ctest -L hicma -LE gpu --output-on-failure` | 23 / 23 passed (17 single-rank, 6 two-rank) on methane |
+| CUDA | `ctest -L hicma --output-on-failure` | 37 / 37 passed on methane (one A100) and on guyot (A100-SXM4): the 23 CPU cases plus `gpu_dense_fp64`, `gpu_dense_adaptive`, `gpu_dense_band2`, `gpu_fp8_static`, `gpu_fp8_sp`, `gpu_runtime_decision`, `gpu_runtime_admem`, `gpu_trmm_adaptive`, `gpu_tlr_mp`, `gpu_tlr_dp_band2`, `gpu_band_dp_sp_hp`, `gpu_band_dp_sp_hp_sender`, `gpu_band_sp_hp`, `gpu_band_hp_fp16acc` |
 
 Every registered case runs with `--check 1`; the mixed-precision cases state
-their accepted bound with `--check_tol` (1e-6 for the SP/HP band kinds, 1e-7
-for the adaptive and runtime-decision kinds). The two-rank GPU cases share the
+their accepted bound with `--check_tol` (1e-6 for the SP band on CPU, 1e-5
+with a half-precision band on GPU, 1e-4 with FP16 accumulation, 1e-7 for the
+adaptive and runtime-decision kinds). The two-rank GPU cases share the
 single A100 and pass `--mca device_cuda_memory_use 30`.
 
 ### 5.2 Validation matrix
 
-`scripts/validation_matrix.sh` runs 30 cases on a CPU build and 45 on a GPU
-build (the 30 CPU cases against the GPU-enabled library, plus 15 GPU cases).
+`scripts/validation_matrix.sh` runs 31 cases on a CPU build and 50 on a GPU
+build (the 31 CPU cases against the GPU-enabled library, plus 19 GPU cases).
 Every case exited 0 before and after. The residuals are identical to the
 baseline except for the virus-mesh cases, whose residual was the doubled
 diagonal shift (review finding E1); the GEMM precision counts of every case
-are identical. Six cases were added during the work (kind 2 with a dense band,
-which exposed the sink-task crash) and have no baseline column. The tables
-are from the final run (after the CI fixes of section 5.5); the run before
-those fixes gave the same residuals and GEMM counts.
+are identical. Cases added during the work have no baseline column: kind 2 with a dense band
+(which exposed the sink-task crash), and kind 3 on GPU, kind 3 with sender-side
+conversion, kind 4 with a half band and kind 3 with FP16 accumulation (which
+would have exposed the bugs of section 5.6). The tables are from the final
+tree; every earlier run of the release gave the same residuals and GEMM counts
+for the cases they share.
 
 CPU tree:
 
 | Case | Ranks | Residual before | Residual after | Factorization time after (s) |
 |---|---|---|---|---|
-| `tlr_dp_k2_p2` | 1 | 1.157838e-16 | 1.157838e-16 | 0.02215 |
-| `tlr_mp_k1_band1_adapt` | 1 | 1.736223e-08 | 1.736223e-08 | 0.05274 |
-| `tlr_mp_k1_band1_noadapt` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05097 |
-| `tlr_mp_k1_dense_adapt` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02820 |
-| `tlr_mp_k1_dense_admem` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02846 |
-| `tlr_kind2_band1` | 1 | not in the baseline matrix | 5.014459e-09 | 0.05299 |
-| `tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.03791 |
-| `tlr_kind2_band2_np2` | 2 | not in the baseline matrix | 2.741820e-09 | 0.07394 |
-| `tlr_kind1_band2_np2` | 2 | not in the baseline matrix | 1.740042e-08 | 0.08373 |
-| `tlr_dp_k2_p4_autoband` | 1 | 1.328506e-10 | 1.328506e-10 | 0.10997 |
-| `dense_k5_fp64_cpu` | 1 | 1.856962e-16 | 1.856962e-16 | 0.06384 |
-| `dense_k5_band2_cpu` | 1 | 3.099008e-09 | 3.099008e-09 | 0.06809 |
-| `dense_k5_adapt_cpu` | 1 | 4.028860e-10 | 4.028860e-10 | 0.09336 |
-| `band_k3_cpu` | 1 | 5.377707e-08 | 5.377707e-08 | 0.11159 |
-| `band_k4_cpu` | 1 | 1.692654e-07 | 1.692654e-07 | 0.10184 |
-| `runtime_k10_cpu` | 1 | 3.754839e-09 | 3.754839e-09 | 0.12166 |
-| `runtime_k10_cpu_adapt1` | 1 | 3.776331e-09 | 3.776331e-09 | 0.11671 |
-| `sparse_k6_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05457 |
-| `sparse_k7_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05183 |
-| `sparse_k6_np2` | 2 | 5.014459e-09 | 5.014459e-09 | 0.08500 |
-| `sparse_k6_mesh` | 1 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.47155 |
-| `sparse_k7_mesh_np2` | 2 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.57200 |
+| `tlr_dp_k2_p2` | 1 | 1.157838e-16 | 1.157838e-16 | 0.01968 |
+| `tlr_mp_k1_band1_adapt` | 1 | 1.736223e-08 | 1.736223e-08 | 0.05574 |
+| `tlr_mp_k1_band1_noadapt` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05596 |
+| `tlr_mp_k1_dense_adapt` | 1 | 6.605555e-09 | 6.605555e-09 | 0.03023 |
+| `tlr_mp_k1_dense_admem` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02852 |
+| `tlr_kind2_band1` | 1 | not in the baseline matrix | 5.014459e-09 | 0.05086 |
+| `tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.03936 |
+| `tlr_kind2_band2_np2` | 2 | not in the baseline matrix | 2.741820e-09 | 0.08401 |
+| `tlr_kind1_band2_np2` | 2 | not in the baseline matrix | 1.740042e-08 | 0.08878 |
+| `tlr_dp_k2_p4_autoband` | 1 | 1.328506e-10 | 1.328506e-10 | 0.10783 |
+| `dense_k5_fp64_cpu` | 1 | 1.856962e-16 | 1.856962e-16 | 0.06393 |
+| `dense_k5_band2_cpu` | 1 | 3.099008e-09 | 3.099008e-09 | 0.06403 |
+| `dense_k5_adapt_cpu` | 1 | 4.028860e-10 | 4.028860e-10 | 0.09451 |
+| `band_k3_cpu` | 1 | 5.377707e-08 | 5.377707e-08 | 0.11429 |
+| `band_k3_sender_cpu` | 1 | not in the baseline matrix | 5.377707e-08 | 0.11135 |
+| `band_k4_cpu` | 1 | 1.692654e-07 | 1.692654e-07 | 0.10130 |
+| `runtime_k10_cpu` | 1 | 3.754839e-09 | 3.754839e-09 | 0.12459 |
+| `runtime_k10_cpu_adapt1` | 1 | 3.776331e-09 | 3.776331e-09 | 0.11826 |
+| `sparse_k6_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05310 |
+| `sparse_k7_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05225 |
+| `sparse_k6_np2` | 2 | 5.014459e-09 | 5.014459e-09 | 0.09400 |
+| `sparse_k6_mesh` | 1 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.46801 |
+| `sparse_k7_mesh_np2` | 2 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.58500 |
 | `trmm_fp64` | 1 | PASSED | PASSED | NA |
 | `trmm_adapt` | 1 | PASSED | PASSED | NA |
 | `trmm_adapt_sr` | 1 | PASSED | PASSED | NA |
-| `tlr_dp_k2_np2` | 2 | 1.157838e-16 | 1.157838e-16 | 0.06302 |
+| `tlr_dp_k2_np2` | 2 | 1.157838e-16 | 1.157838e-16 | 0.06400 |
 | `dense_k5_fp64_np2` | 2 | 1.856962e-16 | 1.856962e-16 | 0.12500 |
-| `dense_k5_band2_np2` | 2 | 3.099008e-09 | 3.099008e-09 | 0.13400 |
-| `runtime_k10_np2` | 2 | 3.754839e-09 | 3.754839e-09 | 0.18000 |
+| `dense_k5_band2_np2` | 2 | 3.099008e-09 | 3.099008e-09 | 0.12800 |
+| `runtime_k10_np2` | 2 | 3.754839e-09 | 3.754839e-09 | 0.15600 |
 | `trmm_adapt_np2` | 2 | PASSED | PASSED | NA |
 
 CUDA tree (same library built with CUDA; `gpu_*` cases use the A100):
 
 | Case | Ranks | Residual before | Residual after | Factorization time after (s) |
 |---|---|---|---|---|
-| `tlr_dp_k2_p2` | 1 | 1.157838e-16 | 1.157838e-16 | 0.01989 |
-| `tlr_mp_k1_band1_adapt` | 1 | 1.736223e-08 | 1.736223e-08 | 0.05263 |
-| `tlr_mp_k1_band1_noadapt` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05334 |
-| `tlr_mp_k1_dense_adapt` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02810 |
-| `tlr_mp_k1_dense_admem` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02851 |
-| `tlr_kind2_band1` | 1 | not in the baseline matrix | 5.014459e-09 | 0.05471 |
-| `tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.03740 |
-| `tlr_kind2_band2_np2` | 2 | not in the baseline matrix | 2.741820e-09 | 0.08977 |
-| `tlr_kind1_band2_np2` | 2 | not in the baseline matrix | 1.740042e-08 | 0.08474 |
-| `tlr_dp_k2_p4_autoband` | 1 | 1.328506e-10 | 1.328506e-10 | 0.11658 |
-| `dense_k5_fp64_cpu` | 1 | 1.856962e-16 | 1.856962e-16 | 0.06102 |
-| `dense_k5_band2_cpu` | 1 | 3.099008e-09 | 3.099008e-09 | 0.06646 |
-| `dense_k5_adapt_cpu` | 1 | 4.028860e-10 | 4.028860e-10 | 0.09376 |
-| `band_k3_cpu` | 1 | 5.377707e-08 | 5.377707e-08 | 0.11434 |
-| `band_k4_cpu` | 1 | 1.692654e-07 | 1.692654e-07 | 0.10238 |
-| `runtime_k10_cpu` | 1 | 3.754839e-09 | 3.754839e-09 | 0.12483 |
-| `runtime_k10_cpu_adapt1` | 1 | 3.776331e-09 | 3.776331e-09 | 0.11683 |
-| `sparse_k6_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05264 |
-| `sparse_k7_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05460 |
-| `sparse_k6_np2` | 2 | 5.014459e-09 | 5.014459e-09 | 0.08800 |
-| `sparse_k6_mesh` | 1 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.46712 |
-| `sparse_k7_mesh_np2` | 2 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.55999 |
+| `tlr_dp_k2_p2` | 1 | 1.157838e-16 | 1.157838e-16 | 0.02263 |
+| `tlr_mp_k1_band1_adapt` | 1 | 1.736223e-08 | 1.736223e-08 | 0.05222 |
+| `tlr_mp_k1_band1_noadapt` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05298 |
+| `tlr_mp_k1_dense_adapt` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02823 |
+| `tlr_mp_k1_dense_admem` | 1 | 6.605555e-09 | 6.605555e-09 | 0.02801 |
+| `tlr_kind2_band1` | 1 | not in the baseline matrix | 5.014459e-09 | 0.05144 |
+| `tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.03985 |
+| `tlr_kind2_band2_np2` | 2 | not in the baseline matrix | 2.741820e-09 | 0.07000 |
+| `tlr_kind1_band2_np2` | 2 | not in the baseline matrix | 1.740042e-08 | 0.08974 |
+| `tlr_dp_k2_p4_autoband` | 1 | 1.328506e-10 | 1.328506e-10 | 0.10921 |
+| `dense_k5_fp64_cpu` | 1 | 1.856962e-16 | 1.856962e-16 | 0.06234 |
+| `dense_k5_band2_cpu` | 1 | 3.099008e-09 | 3.099008e-09 | 0.06970 |
+| `dense_k5_adapt_cpu` | 1 | 4.028860e-10 | 4.028860e-10 | 0.09461 |
+| `band_k3_cpu` | 1 | 5.377707e-08 | 5.377707e-08 | 0.11190 |
+| `band_k3_sender_cpu` | 1 | not in the baseline matrix | 5.377707e-08 | 0.11130 |
+| `band_k4_cpu` | 1 | 1.692654e-07 | 1.692654e-07 | 0.10134 |
+| `runtime_k10_cpu` | 1 | 3.754839e-09 | 3.754839e-09 | 0.12299 |
+| `runtime_k10_cpu_adapt1` | 1 | 3.776331e-09 | 3.776331e-09 | 0.11988 |
+| `sparse_k6_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05437 |
+| `sparse_k7_cpu` | 1 | 5.014459e-09 | 5.014459e-09 | 0.05349 |
+| `sparse_k6_np2` | 2 | 5.014459e-09 | 5.014459e-09 | 0.09500 |
+| `sparse_k6_mesh` | 1 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.47127 |
+| `sparse_k7_mesh_np2` | 2 | 9.090908e-02 | 2.989478e-06 **(fixed)** | 0.56000 |
 | `trmm_fp64` | 1 | PASSED | PASSED | NA |
 | `trmm_adapt` | 1 | PASSED | PASSED | NA |
 | `trmm_adapt_sr` | 1 | PASSED | PASSED | NA |
-| `tlr_dp_k2_np2` | 2 | 1.157838e-16 | 1.157838e-16 | 0.06900 |
-| `dense_k5_fp64_np2` | 2 | 1.856962e-16 | 1.856962e-16 | 0.14000 |
-| `dense_k5_band2_np2` | 2 | 3.099008e-09 | 3.099008e-09 | 0.11800 |
-| `runtime_k10_np2` | 2 | 3.754839e-09 | 3.754839e-09 | 0.19200 |
+| `tlr_dp_k2_np2` | 2 | 1.157838e-16 | 1.157838e-16 | 0.05600 |
+| `dense_k5_fp64_np2` | 2 | 1.856962e-16 | 1.856962e-16 | 0.13470 |
+| `dense_k5_band2_np2` | 2 | 3.099008e-09 | 3.099008e-09 | 0.11880 |
+| `runtime_k10_np2` | 2 | 3.754839e-09 | 3.754839e-09 | 0.20300 |
 | `trmm_adapt_np2` | 2 | PASSED | PASSED | NA |
-| `gpu_dense_k5_fp64` | 1 | 3.602581e-16 | 3.602581e-16 | 0.11584 |
-| `gpu_dense_k5_adapt` | 1 | 2.176706e-09 | 2.176706e-09 | 0.23197 |
-| `gpu_dense_k5_band2` | 1 | 2.804213e-09 | 2.804213e-09 | 0.21073 |
-| `gpu_dense_k8_adapt` | 1 | 2.176706e-09 | 2.176706e-09 | 0.22955 |
-| `gpu_dense_k9_adapt` | 1 | 3.313729e-07 | 3.313729e-07 | 0.12063 |
-| `gpu_runtime_k10` | 1 | 1.041065e-08 | 1.041065e-08 | 0.26862 |
-| `gpu_runtime_k10_admem` | 1 | 1.041065e-08 | 1.041065e-08 | 0.26798 |
-| `gpu_tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.08998 |
-| `gpu_tlr_kind1_band2` | 1 | not in the baseline matrix | 1.725825e-08 | 0.09983 |
-| `gpu_tlr_mp_k1` | 1 | 5.551907e-09 | 5.551907e-09 | 0.20121 |
-| `gpu_dense_k5_dtconv2` | 1 | 2.176706e-09 | 2.176706e-09 | 0.17968 |
+| `gpu_dense_k5_fp64` | 1 | 3.602581e-16 | 3.602581e-16 | 0.13402 |
+| `gpu_dense_k5_adapt` | 1 | 2.176706e-09 | 2.176706e-09 | 0.17915 |
+| `gpu_dense_k5_band2` | 1 | 2.804213e-09 | 2.804213e-09 | 0.20102 |
+| `gpu_dense_k8_adapt` | 1 | 2.176706e-09 | 2.176706e-09 | 0.18067 |
+| `gpu_dense_k9_adapt` | 1 | 3.313729e-07 | 3.313729e-07 | 0.15448 |
+| `gpu_runtime_k10` | 1 | 1.041065e-08 | 1.041065e-08 | 0.28366 |
+| `gpu_runtime_k10_admem` | 1 | 1.041065e-08 | 1.041065e-08 | 0.24876 |
+| `gpu_tlr_kind2_band2` | 1 | not in the baseline matrix | 2.741820e-09 | 0.09078 |
+| `gpu_tlr_kind1_band2` | 1 | not in the baseline matrix | 1.725825e-08 | 0.09851 |
+| `gpu_tlr_mp_k1` | 1 | 5.551907e-09 | 5.551907e-09 | 0.22843 |
+| `gpu_dense_k5_dtconv2` | 1 | 2.176706e-09 | 2.176706e-09 | 0.18273 |
 | `gpu_trmm_adapt` | 1 | PASSED | PASSED | NA |
-| `gpu_dense_k5_fp64_np2` | 2 | 3.602581e-16 | 3.602581e-16 | 0.34400 |
-| `gpu_runtime_k10_np2` | 2 | 1.041065e-08 | 1.041065e-08 | 0.47139 |
-| `gpu_dense_k8_np2` | 2 | 2.176706e-09 | 2.176706e-09 | 0.41567 |
+| `gpu_band_k3_hp` | 1 | not in the baseline matrix | 8.462557e-07 | 0.24778 |
+| `gpu_band_k3_hp_sender` | 1 | not in the baseline matrix | 8.480405e-07 | 0.26568 |
+| `gpu_band_k4_hp` | 1 | not in the baseline matrix | 9.075389e-07 | 0.27196 |
+| `gpu_band_k3_fp16acc` | 1 | not in the baseline matrix | 2.337890e-05 | 0.28367 |
+| `gpu_dense_k5_fp64_np2` | 2 | 3.602581e-16 | 3.602581e-16 | 0.31146 |
+| `gpu_runtime_k10_np2` | 2 | 1.041065e-08 | 1.041065e-08 | 0.48400 |
+| `gpu_dense_k8_np2` | 2 | 2.176706e-09 | 2.176706e-09 | 0.39605 |
 
 The kind 8 and 9 cases ran on an A100 (compute capability 8.0), where the FP8
 GEMMs fall back to FP16/FP32 (`DENSE_FP8= 0` in their GEMM counts): the FP8
@@ -276,6 +297,86 @@ intended mesh change (tables in 5.2). Both CI jobs of pull request
 ecrc/hicma-x#13 pass on the final commit (CPU: build, CTest, regression
 script, install and consumer; CUDA: compile).
 
+### 5.6 Second pass: external user and corner cases (guyot)
+
+Requested after the first review: merge the tile/LAPACK conversion JDFs (item
+1 of `TODOs`), look at the project as an external user, and test on guyot (8 x
+A100-SXM4-80GB, 256 cores) looking for corner cases.
+
+**Conversion JDFs.** The eight JDFs are one (`lapack_tile_convert.jdf`, 1433
+lines became 280) with `hicma_parsec_lapack_tile_convert` as the entry point
+and the named functions as wrappers. A new round-trip test
+(`testing_lapack_tile`) passed on 1 to 6 processes on methane and 8 on guyot,
+and from the installed package.
+
+**External user.** A fresh HTTPS clone with `--recursive` fetched every
+pinned submodule commit (all are public), and BUILD.md followed verbatim built
+the default configuration. Then:
+
+- every test failed to start: "libmkl_gf_lp64.so.2: cannot open shared object
+  file" (the MKL module sets `LIBRARY_PATH` only, whose directories CMake never
+  records in a run-time path; the validation scripts had exported
+  `LD_LIBRARY_PATH`). Fixed: the BLAS directories are recorded in the built,
+  installed and consumer binaries; every run of this section had
+  `LD_LIBRARY_PATH` unset;
+- an application linked against the installed package crashed in
+  `hicma_parsec_init` with `argc = 0, argv = NULL` and with read-only argument
+  strings, and an application function named `parse_arguments` replaced the
+  library's (it then died on a division by zero). Fixed (argv handling,
+  `-Bsymbolic-functions`);
+- the CMake test presets ran DPLASMA's and PaRSEC's suites too; BUILD.md
+  pointed at nonexistent `HCORE_DIR`/`STARSH_DIR` variables and had no word on
+  calling the library from an application. Fixed.
+
+**Corner-case sweeps.** Each case was classified as passed, refused cleanly
+(non-zero exit with a message), crashed or hung (timeout):
+
+| Sweep | Machine | Cases | Passed | Refused as expected | Unexpected |
+|---|---|---|---|---|---|
+| Sizes, options, kinds, grids, 1 to 6 ranks | methane (CPU) | 61 | 44 | 17 | 0 (7 before the fixes) |
+| One process, 8 GPUs | guyot | 33 | 28 | 0 | 5: the kind-3 crash, 4 accuracy-envelope cases |
+| 8 ranks x 1 GPU | guyot | 20 | 18 | 0 | 2 accuracy-envelope cases |
+| 4 and 3 ranks x 2 GPUs | guyot | 6 | 6 | 0 | 0 |
+| Round 2 (kinds 3, 4, envelope cases with bounds), 8 GPUs / 8 ranks / 4 x 2 | guyot | 20 | 19 | 0 | 1: FP16 accumulation, fixed |
+| Round 3 (FP16 accumulation), 8 GPUs / 8 ranks | guyot | 4 | 1 | 0 | 3: residual 1.6e-4 against a 1e-4 bound, the FP16-accumulation envelope at N=16384 |
+
+The cases covered every kind, fewer tiles than GPUs or ranks (NT = 1, 2, 3
+with 8 GPUs or 8 ranks), more GPUs requested than present, 1 and 2 cores with
+8 GPUs, recursive kernels (HNB < NB), repeated runs, GPU memory pressure
+(`device_cuda_memory_use` 2 to 5 % with evictions), N = 65536 (kind 10 in
+0.91 s, kind 5 in 1.07 s on 8 A100s, one run each), and grids 1 x 8, 8 x 1,
+2 x 4, 4 x 2. Results are reproducible across layouts: the same case gives the
+same residual on 1 process with 8 GPUs and on 8 ranks.
+
+**Bugs found and fixed** (all present before this release cycle; the
+evaluate-hook warnings were 14 then and doubled with the wrapper
+consolidation):
+
+| Found by | Problem | Effect before |
+|---|---|---|
+| guyot | kind 3 with a half-precision band on any GPU: `[type = HALF]` input made PaRSEC reshape the FP32 tile into half its size | `MPI_ERR_TRUNCATE` abort |
+| guyot | `--tensor_gemm 0x10`: FP16-compute GEMMs given float alpha/beta (kind 3, low-rank GEMMs of kinds 1, 2, 5, 8 to 10) | wrong results (residual 5e+1) |
+| methane | kind 3 `--datatype_convert 1`: rewritten to 2 by the send-decision step, mixed tests in the graph | segmentation fault; after the first fix, wrong results on GPU |
+| CPU sweep | sparse kinds with the band covering the matrix (e.g. one tile row) | segmentation fault |
+| CPU sweep | invalid `--kind_of_cholesky` | error printed, exit 0 |
+| CPU sweep | negative `--N`/`--NB` | silently replaced by defaults |
+| embedding | `hicma_parsec_init(0, NULL, ...)`, read-only argv, interposed `parse_arguments` | segmentation faults |
+| fresh clone | binaries without the BLAS run-time path | tests could not start |
+| check review | the forward-error comparison of `--check` was never part of the verdict (its result was overwritten) | now reported as informational, see `TESTS.md` |
+| user | hex option values (`--tensor_gemm 0x10`) | rejected |
+| build | 28 incompatible-pointer warnings from the consolidated wrappers' evaluate hooks | warnings |
+
+**Accuracy envelope.** Static mixed precision at N = 16384 gives a residual of
+2.3e-8 (above `--fixedacc 1e-8`, inside 1e-7), the half band of kinds 3 and 4
+3.6e-6 at N = 16384 (8.5e-7 at N = 8192), FP16 accumulation 1.6e-4 at
+N = 16384 (2.3e-5 at N = 8192). These grow with N; the registered cases use
+bounds measured at their own sizes.
+
+**Harness note.** Inside a `srun --overlap` step, an Open MPI 5 singleton (a
+one-rank test started without `mpirun`, as CTest does) waits forever on the
+step's PMIx server; the guyot runs clear the `SLURM_*`/`PMIX_*` variables. Not
+a HiCMA-X issue, but worth knowing when running CTest inside an allocation.
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -290,8 +391,8 @@ script, install and consumer; CUDA: compile).
 | P0 items of the plan | all done and validated |
 | P1 items | done except: per-call status checks in the non-FP8 GPU kernels (P1-6, partial), warning-flags option (P1-11) |
 | P2 items | done except P2-6, P2-9, P2-12 (deferred) and the remaining parts of P2-5, P2-7, P2-8 |
+| Second pass: conversion merge, external-user walkthrough, guyot sweeps (section 5.6) | done; 11 problems fixed |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
-| CI run on GitHub | **open** (push required) |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
 ## 7. Unresolved blockers and decisions for the maintainer
@@ -301,10 +402,14 @@ script, install and consumer; CUDA: compile).
    Cholesky drivers reject `N % NB != 0`; the genomics drivers need
    `-DHICMA_PARSEC_GENOMICS=ON`. Each is documented in `RELEASE.md`.
 2. **Mixed-precision residual bounds**: the registered CTest cases use
-   `--check_tol` values measured on this machine (1e-6, 1e-7). Other BLAS
-   libraries or GPUs may need looser bounds; the cases print the residual.
-3. **CI**: passes on the final commit after the fixes of section 5.5.
-4. **Hardware not available here**: AMD GPUs, H100 (FP8), multi-node. A run of
+   `--check_tol` values measured on methane and guyot (1e-7 to 1e-4 by
+   precision mix). They grow with N (section 5.6), and other BLAS libraries or
+   GPUs may need looser bounds; the cases print the residual.
+3. **What `--check` decides**: the residual ||LL^T-A||/||A||. The forward error
+   against the dense reference factor is printed but not checked (it was never
+   effectively checked; binding it would need a second, looser bound).
+4. **CI**: passed after the fixes of section 5.5; rerun on the commits of section 5.6.
+5. **Hardware not available here**: AMD GPUs, H100 (FP8), multi-node. A run of
    `scripts/validation_matrix.sh <build> <label> gpu` on those systems before
    tagging is recommended.
 
@@ -315,4 +420,18 @@ matrices, `matrix_uncompress` flows), P2-9 (one JDF for the integer
 conversions), P2-12 (statistics communicator hygiene), P3-1 to P3-3, the
 remaining parts of P1-6, P1-11, P2-5, P2-7, P2-8. The project's own `TODOs`
 backlog (API, Python/Julia bindings, merging the potrf JDFs, hcore removal,
-tensor_gemm redesign) was out of scope by request and is untouched.
+tensor_gemm redesign) was out of scope by request; item 1 (merge the
+tile/LAPACK conversions) was done on request in the second pass, and item 10
+(external users) partly (section 5.6).
+
+Found in the second pass and left for later:
+
+- Parameters can only be set through an argument vector, and invalid
+  parameters terminate the process (`TODOs` items 5 and 10).
+- The public headers include STARS-H declarations with generic names (`diff`,
+  `cube`, `Gaussian`), which an application cannot reuse in files that include
+  `hicma_parsec.h` (third-party submodule, unchanged).
+- The FP16-compute branch of the two low-rank GPU GEMMs is fixed but no test
+  reaches it: the decisions of the test problems never route an update there.
+- Kind 3 has no CPU half-precision path; without GPUs the single-precision
+  band is widened to the whole matrix.

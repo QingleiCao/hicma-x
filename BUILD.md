@@ -62,16 +62,15 @@ git submodule update --init --recursive
 #### Basic Build
 
 ```bash
-# Create build directory
-mkdir build && cd build
-
-# Configure
-cmake .. (-G Ninja)
-
-# Build
-make -j$(nproc) or ninja
-
+cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX=/opt/hicma-x   # or leave out -G Ninja for make
+cmake --build build                                               # all cores by default with Ninja
+ctest --test-dir build -L hicma -LE gpu --output-on-failure        # the CPU test cases
 ```
+
+The configure step finds MPI and the BLAS/LAPACKE stack (DPLASMA's
+`FindLAPACKE`: set `LAPACKE_ROOT` or `BLA_VENDOR` to choose one) and records
+their directories in the binaries, so the drivers start without
+`LD_LIBRARY_PATH` changes.
 If LAPACKE is not available, use the example script:
 ```bash
 ./scripts/build_hicma_with_lapack.sh
@@ -146,7 +145,28 @@ cmake -S app -B build-app -DCMAKE_PREFIX_PATH=/opt/hicma-x
 ```
 
 `tests/install_consumer/` is such a project (it builds the Cholesky driver
-against the installed package) and CI runs it.
+and the tile/LAPACK conversion test against the installed package) and CI
+runs it.
+
+#### Calling HiCMA-X from an application
+
+`tests/testing_potrf.c` is the reference sequence: `hicma_parsec_init`,
+`hicma_parsec_matrix_generation`, `hicma_parsec_matrix_pre_analysis`,
+`hicma_parsec_potrf`, `hicma_parsec_matrix_post_analysis`, `hicma_parsec_fini`.
+Points to know when embedding it:
+
+- `hicma_parsec_init(argc, argv, ...)` takes its parameters from the argument
+  vector (the options of `TESTS.md`); pass `0, NULL` for the defaults. The
+  vector is only read. Every option it does not know is an error, so strip the
+  application's own options first; arguments after `--` go to PaRSEC.
+- If the application initialized MPI, HiCMA-X leaves it initialized at
+  `hicma_parsec_fini`; otherwise it initializes and finalizes MPI itself.
+- Invalid parameters terminate the process with a message (`exit(1)` on every
+  rank), as in the drivers.
+- The matrices are PaRSEC tiled descriptors. `hicma_parsec_lapack_tile_convert`
+  (`hicma_parsec_datatype_convert.h`) copies between a descriptor and the
+  process's local column-major buffer in either direction, for any element
+  type; `tests/testing_lapack_tile.c` shows its use.
 
 #### Example Configurations
 
@@ -182,10 +202,9 @@ git submodule update --init --recursive
 #### 2. Dependency Not Found
 
 ```bash
-# Set environment variables for dependencies
-export HCORE_DIR=/path/to/hcore
-export STARSH_DIR=/path/to/starsh
-export LAPACKE_ROOT=/path/to/lapacke   # BLAS/LAPACKE stack, found by DPLASMA's FindLAPACKE (or -DBLA_VENDOR=...)
+# HCORE, STARS-H, DPLASMA and PaRSEC are built from the submodules; only
+# MPI and BLAS/LAPACKE come from the system. Choose the BLAS/LAPACKE stack:
+export LAPACKE_ROOT=/path/to/lapacke   # found by DPLASMA's FindLAPACKE (or cmake -DBLA_VENDOR=...)
 ```
 
 #### 3. CUDA Issues

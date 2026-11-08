@@ -120,4 +120,14 @@ after the library changes.
   time (no runtime search path in the installed library under RUNPATH
   semantics); fixed with CMAKE_INSTALL_RPATH ($ORIGIN, prefix lib dir, link
   path). Both CI jobs pass on the final commit of ecrc/hicma-x#13.
+- 2026-11-08: second pass on request: tile/LAPACK conversion JDFs merged
+  (`TODOs` item 1); external-user walkthrough (fresh clone, BUILD.md verbatim,
+  an embedding application) and corner-case sweeps (61 CPU cases on methane,
+  93 GPU cases on guyot with 1 process x 8 A100s, 8 ranks x 1 and 4 ranks x 2).
+  Eleven problems fixed, among them kind 3 on GPUs (reshape abort, sender
+  conversion), FP16-accumulation GEMM scalars, sparse kinds with a single tile
+  row, embedding crashes and the BLAS run-time path; see
+  `release-readiness.md` section 5.6. Final tree: CTest 23/23 (CPU) and 37/37
+  (CUDA, methane and guyot), matrix 31 + 50 cases identical to the baseline
+  except the mesh fix, HIP compiles.
 

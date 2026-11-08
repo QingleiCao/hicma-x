@@ -38,6 +38,8 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
 - The Cholesky drivers require `N` to be a multiple of `NB` (rejected at
   start-up). The TRMM supports partial tiles.
 - Cholesky kinds 1 to 4 have CUDA bodies only; on HIP they run on the CPU.
+  Kind 3 with a half-precision band runs on GPUs only (the CPU bodies have no
+  half path; without GPUs the single-precision band is widened to the matrix).
 - `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the TRMM,
   not for kinds 8 to 10 and not together with FP8 GEMMs.
 - `--tensor_gemm 0x80` is a TRMM-only mode; `--datatype_convert 2` needs GPUs.
@@ -58,6 +60,12 @@ validation matrix (`scripts/validation_matrix.sh`), the install consumer and a
 before/after timing comparison.
 
 ### Upgrading from 0.1.0
+
+- `hicma_parsec_lapack_tile_convert` replaces the eight tile/LAPACK
+  conversion taskpools; the named `hicma_parsec_{Tile_to_Lapack,Lapack_to_Tile}*`
+  functions remain and now return -1 (on every rank, nothing copied) when the
+  descriptor is not 2D block-cyclic over the given grid. Their
+  `*_New`/`*_Destruct` constructors, never declared in a header, are gone.
 
 - `libhicma_parsec` has SOVERSION 0 (it was 2, from a stale fallback version).
 - BLAS/LAPACKE come from DPLASMA's `find_package(LAPACKE)` for the whole build

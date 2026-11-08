@@ -24,7 +24,11 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - The correctness check is binding: `check_dpotrf2` and `check_diff` returned
   0 whatever they measured, so `--check 1` could not fail. They now return their
   verdict, the reference dense Cholesky's `info` is inspected, and every driver
-  exits non-zero on a failed check or a failed factorization.
+  exits non-zero on a failed check or a failed factorization. The verdict is
+  the residual ||LL^T-A||_F/||A||_F; the forward error against the dense
+  reference factor, ||L-L0||_F/||L||_F, is printed but does not decide (an
+  overwrite of `params->info` had always discarded it, and for mixed-precision
+  runs it exceeds the residual 10 to 30 times, so one bound cannot serve both).
 - `--check_tol` sets the residual bound of `--check` (default: `--fixedacc`);
   a failed check prints the measured residual and the accepted bound.
 - `--adddiag` was applied twice for problem kinds 0, 1, 5, 6 and 7 (by the
@@ -49,6 +53,23 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   (it is a TRMM-only mode).
 - CPU low-rank TRSM solves with the size of the diagonal block, not the row
   count of the C tile; CPU TRSM treats FP8-decided tiles like SP/HP ones.
+- Kind 3 (DENSE_MP_BAND) on GPUs: every run with a half-precision band died
+  with `MPI_ERR_TRUNCATE` (a `[type = HALF]` dependency made PaRSEC reshape the
+  FP32 tile into a buffer half its size), and `--datatype_convert 1`, a
+  kind-3-only mode, crashed on CPU and GPU (the send-decision step rewrote it
+  to 2, which the kind-3 graph does not implement consistently). Both work;
+  kinds 3 and 4 with a half band and the sender mode have GPU tests now.
+- `--tensor_gemm 0x10` (FP16 accumulation) computed garbage on GPUs in kind 3
+  and in the low-rank GEMMs of kinds 1, 2, 5, 8, 9 and 10: cuBLAS reads alpha
+  and beta in the compute precision, and the float values read as half are 0,
+  so every update vanished (kind 3 residual 5e+1, now 2.3e-5). The dense GEMM
+  and the TRMM already converted them.
+- The sparse kinds (6, 7) crashed when the dense band covers the matrix (for
+  example a single tile row): the data is then stored in the contiguous
+  descriptor, which they did not use. They select it as kind 2 does.
+- An invalid `--kind_of_cholesky` printed an error and exited 0; it exits 1.
+  Negative sizes are refused; a `--P`/`--Q` that does not cover the
+  processes is reported before the grid is chosen.
 - Refused instead of silently miscomputed: `--enable_stochastic_rounding` with
   kinds 8, 9, 10; `--datatype_convert 2` without GPUs; kinds 1 to 4 with GPUs
   on HIP; a half-precision band on CPU-only runs of kind 3.
@@ -63,6 +84,18 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 
 ### Architecture and maintenance
 
+- The eight tile/LAPACK conversion JDFs (`Lapack_to_Tile{,_Single}`,
+  `Tile_to_Lapack{,_single,_sym,_sym_single,_int,_int8}`), which differed
+  only in element type, direction and lower-triangle-only, are one JDF with
+  one entry point, `hicma_parsec_lapack_tile_convert(parsec, dcA, buffer, P,
+  Q, type, lower, into_tiles)`. The named functions remain as one-line
+  wrappers; `hicma_parsec_Lapack_to_Tile_sym`, declared in 0.1.0 without a
+  definition, now exists. The buffer offset uses the buffer's element size
+  (it used the descriptor's), and a P x Q that does not match the
+  descriptor's distribution (P and Q swapped, a band distribution) is refused
+  on every rank instead of overwriting memory. `tests/testing_lapack_tile.c`
+  covers every type, both directions, partial tiles and every grid of the
+  run (CTest `lapack_tile_convert`, `lapack_tile_convert_np2`).
 - The ten Cholesky wrappers share `src/kernels/potrf_common.{c,h}` (timing
   hooks, chore selection by device type, memory pools, GPU discovery, driver);
   7250 lines of wrapper code became 2500. The JDF bodies are untouched.
@@ -80,6 +113,24 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 
 ### Build, install, tests
 
+- Embedding: `hicma_parsec_init` crashed when given `argc = 0, argv = NULL`
+  and when the argument strings were read-only (`--opt=value` was cut in
+  place); both work now and `argv` is only read. `libhicma_parsec.so` is
+  linked with `-Bsymbolic-functions`: it exports generic names
+  (`parse_arguments`, and from STARS-H `diff`, `cube`, ...), and an
+  application function of the same name replaced the one the library called
+  (`hicma_parsec_init` ran the application's `parse_arguments` and crashed).
+  Six file-local JDF helpers with generic names are `static`.
+- The BLAS/LAPACKE directories are recorded in the run-time path of the
+  built and installed binaries and of executables linking the installed
+  package; with an MKL module that sets `LIBRARY_PATH` only, every test of a
+  fresh build failed to start ("libmkl_gf_lp64.so.2: cannot open shared
+  object file") unless `LD_LIBRARY_PATH` was set.
+- Integer options accept hex with a `0x` prefix (`--tensor_gemm 0x10`, as the
+  masks are documented); they were rejected as invalid values.
+- The CMake test presets run the HiCMA cases only (they ran DPLASMA's and
+  PaRSEC's suites as well); the install consumer also builds and runs the
+  conversion test.
 - `find_package(HICMAParsec)` works: the package config is generated with
   `configure_package_config_file`, finds PaRSEC, DPLASMA, MPI and CUDA/HIP,
   and the library carries its own link interface. `cmake --install` is
