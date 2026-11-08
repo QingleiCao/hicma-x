@@ -2692,6 +2692,53 @@ int hicma_parsec_band_size_dense_auto_tuning( parsec_context_t *parsec,
 
 
 /**
+ * @brief Order the GEMM updates of each off-band tile by operand ranks
+ *
+ * Kept for future use, not called (see reorder_gemm.jdf). Sets up
+ * data->dcReorder (one int tile of 2*n entries per tile (m, n), allocated by
+ * the taskpool) and runs reorder_gemm.jdf on the gathered params->rank_array.
+ */
+int hicma_parsec_reorder_gemm( parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params )
+{
+    int rank = params->rank;
+    int nodes = params->nodes;
+    int NT = params->NT;
+    int band_p = params->band_p;
+    int band_size_dense = params->band_size_dense;
+    int band_size_dist = params->band_size_dist;
+    int uplo = params->uplo;
+    int P = params->P;
+    int reorder_gemm = params->reorder_gemm;
+
+    if( 0 == reorder_gemm ) return 0;
+
+    parsec_matrix_sym_block_cyclic_init(&data->dcReorder.off_band, PARSEC_MATRIX_INTEGER,
+            rank, 1, NT, NT, NT*NT, 0, 0,
+            NT, NT*NT, P, nodes/P, uplo);
+    parsec_matrix_block_cyclic_init(&data->dcReorder.band, PARSEC_MATRIX_INTEGER, PARSEC_MATRIX_TILE,
+            rank, 1, NT, band_size_dense, NT*NT, 0, 0,
+            band_size_dist, NT*NT, band_p, nodes/band_p,
+            1, 1, 0, 0);
+    if( (params->auto_band || band_size_dense > 1) && 0 == params->sparse )
+        hicma_parsec_parsec_matrix_sym_block_cyclic_band_init( &data->dcReorder, nodes, rank, band_size_dense );
+    else
+        parsec_matrix_sym_block_cyclic_band_init( &data->dcReorder, nodes, rank, band_size_dense );
+    parsec_data_collection_set_key((parsec_data_collection_t*)&data->dcReorder, "dcReorder_super");
+    parsec_data_collection_set_key(&data->dcReorder.band.super.super, "dcReorder_band");
+
+    SYNC_TIME_START();
+    parsec_reorder_gemm(parsec, (parsec_tiled_matrix_t*)&data->dcAr,
+                        (parsec_tiled_matrix_t*)&data->dcReorder,
+                        params->rank_array, band_size_dense, reorder_gemm);
+    SYNC_TIME_STOP();
+    params->time_reorder = sync_time_elapsed;
+
+    return 0;
+}
+
+/**
  * @brief Calculate memory requirements for Cholesky factorization
  * 
  * This function computes the memory requirements for the Cholesky factorization
@@ -2868,6 +2915,15 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcAr );
     parsec_tiled_matrix_destroy( &data->dcAr.band.super );
     parsec_tiled_matrix_destroy( &data->dcAr.off_band.super );
+
+    /* dcReorder, set up by hicma_parsec_reorder_gemm */
+    if( params->reorder_gemm ) {
+        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcReorder, params, FREE_BAND_MEMORY);
+        parsec_band_free_memory(parsec, (parsec_tiled_matrix_t *)&data->dcReorder, params, FREE_OFFBAND_MEMORY);
+        parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&data->dcReorder );
+        parsec_tiled_matrix_destroy( &data->dcReorder.band.super );
+        parsec_tiled_matrix_destroy( &data->dcReorder.off_band.super );
+    }
 
     /* dcDist */
     if( params->sparse ) {

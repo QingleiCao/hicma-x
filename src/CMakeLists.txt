@@ -90,6 +90,7 @@ set(JDF
     kernels/gemmex_TN_summa.jdf
     kernels/gemm_TN.jdf
     kernels/gemmex_TN.jdf
+    kernels/reorder_gemm.jdf
     
     # Utility JDF files
     kernels/rank_gather.jdf

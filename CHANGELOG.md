@@ -117,13 +117,19 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   7250 lines of wrapper code became 2500. The JDF bodies are untouched.
 - Per-core and per-GPU statistics arrays are allocated once, after device
   discovery.
-- Dead code removed: 15 unreferenced JDFs and sources (`copy2double`,
+- Dead code removed: 14 unreferenced JDFs and sources (`copy2double`,
   `isyrkmp_LT`, `gemm_TN_batched`, `gemm_TN_summa`, `gemm_f16_wrapper`,
   `matrix_dsum/ssum`, `cast_double_diag`, `check_read_data`, `sqrt_kernel`,
   `Lapack_to_Tile_sym`, `convert_i2s`, `diagonal_correction_calculation`,
-  `reorder_gemm`, `climate_emulator_print_double`), two unbuilt test sources,
+  `climate_emulator_print_double`), two unbuilt test sources,
   `hamming.jl`, ~40 uncalled functions, 14 declared-but-undefined prototypes,
   and the `#if 0` blocks around them.
+- GEMM reordering (`reorder_gemm.jdf`, `hicma_parsec_reorder_gemm`) is kept for
+  future use, still not called. Its launch was an `#if 0` block that did not
+  compile; it is now real code on the gathered rank array, so the build
+  checks it. Its sort swapped the positions but not the keys it compared, and
+  its destructor leaked the work pool; both fixed. `reorder_gemm.jdf` lists
+  what wiring it into the Cholesky needs.
 - Public headers include the PaRSEC and DPLASMA headers that those projects
   install; DPLASMA's test timing macros are replaced by `hicma_parsec_timing.h`.
 

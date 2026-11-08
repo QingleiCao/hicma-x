@@ -1111,6 +1111,7 @@ typedef struct hicma_parsec_data_s {
     parsec_matrix_sym_block_cyclic_band_t dcDist;     /**< Distribution matrix for kernel execution */
     parsec_matrix_sym_block_cyclic_band_t dcRank;     /**< Rank information matrix (if PRINT_RANK enabled) */
     parsec_matrix_block_cyclic_t dcFake;              /**< Fake matrix for auto-band distribution */
+    parsec_matrix_sym_block_cyclic_band_t dcReorder;  /**< GEMM order of each tile (hicma_parsec_reorder_gemm) */
     
     /* ========================================================================
      * Result validation matrices
@@ -1443,6 +1444,35 @@ int hicma_parsec_band_size_dense_auto_tuning( parsec_context_t *parsec,
         hicma_parsec_data_t *data,
         hicma_parsec_params_t *params,
         starsh_params_t *params_kernel );
+
+/**
+ * @brief Order the GEMM updates of each off-band tile by the ranks of their operands
+ *
+ * Kept for future use, not called: see reorder_gemm.jdf for the status and
+ * what wiring it into the Cholesky needs. When params->reorder_gemm > 1, sets
+ * up data->dcReorder and fills, for every off-band tile (m, n), the k-order
+ * of its GEMMs: ascending min(rank(A(m,k)), rank(A(n,k))) for k in
+ * 1 .. n-reorder_gemm, k = 0 first and the last reorder_gemm-1 updates in
+ * place. Needs the gathered params->rank_array (hicma_parsec_matrix_pre_analysis).
+ * hicma_parsec_free_memory frees dcReorder when params->reorder_gemm is set.
+ *
+ * @return 0; nothing is done when params->reorder_gemm is 0
+ */
+int hicma_parsec_reorder_gemm( parsec_context_t *parsec,
+        hicma_parsec_data_t *data,
+        hicma_parsec_params_t *params );
+
+/** Runs the reorder_gemm taskpool (reorder_gemm.jdf) */
+int parsec_reorder_gemm(parsec_context_t *parsec,
+                        parsec_tiled_matrix_t *dcAr,
+                        parsec_tiled_matrix_t *dcRG,
+                        int *rank_array, int band_size_dense,
+                        int reorder_gemm);
+
+/** Previous and next k of GEMM (m, n, k) in the order of dcReorder; -1 at the
+ *  ends and on processes that do not own tile (m, n) */
+int reorder_gemm_k_pre(parsec_tiled_matrix_t *descRG, int m, int n, int k);
+int reorder_gemm_k_next(parsec_tiled_matrix_t *descRG, int m, int n, int k);
 
 /**
  * @brief Calculate memory requirements for Cholesky factorization

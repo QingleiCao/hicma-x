@@ -555,6 +555,9 @@ band_size_dense_local = params_tlr->band_size_dense    /* Band size for dense/co
 send_full_tile_local = params_tlr->send_full_tile      /* Flag for full tile communication */
 
 // Predecessor and successor k indices for data flow
+// GEMM reordering (reorder_gemm.jdf, not wired in) would replace them with:
+//k_pre = %{ return reorder_gemm_k_pre(descRG, m, n, k); %}
+//k_next = %{ return reorder_gemm_k_next(descRG, m, n, k); %}
 k_pre = k-1    /* Previous k iteration */
 k_next = k+1   /* Next k iteration */
 
