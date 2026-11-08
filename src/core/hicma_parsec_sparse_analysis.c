@@ -13,13 +13,17 @@
 /* Configuration flags for sparse matrix analysis */
 
 /* Whether to use OpenMP for parallelization when matrix is very large */
+#ifndef USE_OPENMP
 #define USE_OPENMP 0
+#endif
 #if USE_OPENMP
 #include <omp.h>
 #endif
 
 /* If allocate memory in local_gemm dynamically (1) or statically (0) */
+#ifndef DYNAMIC_MEMORY_ALLOCATION
 #define DYNAMIC_MEMORY_ALLOCATION 1
+#endif
 
 /* Define the number of integers allocated for each tile index array
  * First allocation: max(tile_n_index/INT_EACH_TIME_PER_TILE, INT_EACH_TIME_PER_TILE)
@@ -27,10 +31,14 @@
 #define INT_EACH_TIME_PER_TILE 10
 
 /* Print analyzed results for debugging (1) or not (0) */
+#ifndef PRINT_ANALYSED_RESULT
 #define PRINT_ANALYSED_RESULT 0
+#endif
 
 /* Print redefined distribution for debugging (1) or not (0) */ 
+#ifndef PRINT_REDEFINED_DISTRIBUTION
 #define PRINT_REDEFINED_DISTRIBUTION 0
+#endif
 
 /* Set the number of threads used for analysis based on matrix size */
 #define NUM_THREADS_ANALYSIS ((NT-k)/10000)

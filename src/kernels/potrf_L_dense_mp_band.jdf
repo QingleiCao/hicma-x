@@ -35,7 +35,9 @@ extern "C" %{
  */
 
 /* If using self-written convertor or from lapack */
+#ifndef OWN_CONVERTOR
 #define OWN_CONVERTOR 0
+#endif
 
 /* Print more info for debugging */
 static int print_more = 0;

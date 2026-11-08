@@ -30,10 +30,14 @@
  * ============================================================================= */
 
 /* Enable/disable process execution time printing for performance analysis */
+#ifndef PRINT_PROCESS_EXE_TIME
 #define PRINT_PROCESS_EXE_TIME 0
+#endif
 
 /* Enable/disable thread execution time printing for fine-grained profiling */
+#ifndef PRINT_THREAD_EXE_TIME
 #define PRINT_THREAD_EXE_TIME 0
+#endif
 
 /* =============================================================================
  * Core Function Implementations

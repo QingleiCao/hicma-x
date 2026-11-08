@@ -12,6 +12,18 @@
 #include "hicma_kernel_time.h"
 #include "potrf_L_dense_mp_gpu_fp8_adaptive.h"
 
+/* Compile-time alternatives (-DNAME=value):
+ * CALL_HCORE_DSYRK  1: low-rank SYRK update T -= U (V^T V) U^T with HCORE_dsyrk;
+ *                   0: with three GEMMs (needs the mbr and rr work pools).
+ * ACC_DP            1: in runtime-decision mode an FP64 CPU GEMM leaves C in
+ *                   FP64; 0: C's precision is decided again from its norm. */
+#ifndef CALL_HCORE_DSYRK
+#define CALL_HCORE_DSYRK 1
+#endif
+#ifndef ACC_DP
+#define ACC_DP 1
+#endif
+
 /* Count conversions per worker/stream; slot 0 is reduced after execution. */
 void hicma_parsec_count_datatype_conversion(hicma_parsec_params_t *params_tlr,
                                             int counter_id)
@@ -1194,9 +1206,8 @@ void hicma_parsec_core_syrk_cpu( parsec_tiled_matrix_t* descA,
             Av = (void *)A_d + descA->mb * rank * sizeof(double);
         }
 
-#define call_hcore_dsyrk 1
 
-#if call_hcore_dsyrk
+#if CALL_HCORE_DSYRK
         void *p_elem_work = parsec_private_memory_pop( p_work );
         flop_counter flops;
         HCORE_dsyrk(PlasmaLower, PlasmaNoTrans,
@@ -1339,9 +1350,8 @@ void hicma_parsec_core_syrk_runtime_decision_cpu( parsec_tiled_matrix_t* descA,
             Av = (void *)A_d + descA->mb * rank * sizeof(double);
         }
 
-#define call_hcore_dsyrk 1
 
-#if call_hcore_dsyrk
+#if CALL_HCORE_DSYRK
         void *p_elem_work = parsec_private_memory_pop( p_work );
         flop_counter flops;
         HCORE_dsyrk(PlasmaLower, PlasmaNoTrans,
@@ -1744,7 +1754,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu( parsec_ti
     if(DEBUG_INFO) printf("GEMM_CPU (%d, %d, %d) : %d %d %d : C_DENSE, A_DENSE, B_DENSE\n",
             m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
 
-#define ACC_DP 1
 
     /* If dgemm */
     if( DENSE_DP == new_decision ) {

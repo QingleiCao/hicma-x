@@ -25,7 +25,9 @@ extern "C" %{
  * - Integration with PaRSEC runtime for distributed execution
  */
 
+#ifndef TEST_CPU
 #define TEST_CPU 0
+#endif
 
 #if TEST_CPU
 #define CBLAS_H
