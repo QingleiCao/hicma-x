@@ -43,6 +43,14 @@ ctest --output-on-failure -L hicma
 ctest --output-on-failure -L hicma -LE gpu
 ```
 
+Every case requires DPLASMA's `dplasma_blas_threadsafety`, a CTest fixture
+that ctest runs first, also under `-L hicma`. PaRSEC calls the BLAS from
+every worker thread at once, and the fixture checks that concurrent calls
+return identical results. A sequential OpenBLAS built without `USE_LOCKING`
+fails it: the cases then show as "Not Run" instead of failing with wrong
+residuals. Use MKL sequential, or a threaded OpenBLAS (which locks) with
+`OPENBLAS_NUM_THREADS=1`.
+
 Besides the factorization and TRMM cases, `lapack_tile_convert` and
 `lapack_tile_convert_np2` run `testing_lapack_tile`, the round-trip check of
 the tile/LAPACK-layout conversion (`hicma_parsec_lapack_tile_convert`) over

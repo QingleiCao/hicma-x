@@ -153,4 +153,7 @@ after the library changes.
   `release-readiness.md` section 5.9.
 - 2026-11-08 (on request): the 28 unnamed `#if 0`/`#if 1` blocks unwrapped,
   deleted or named (`GENOMICS_SYRK_ISYRK`); matrix again identical.
+- 2026-11-08 (on request): CI hardened after a runner-dependent failure:
+  BLAS thread-safety fixture for every HiCMA case, runner CPU/BLAS printed,
+  `OPENBLAS_NUM_THREADS=1`. See `release-readiness.md` section 5.10.
 

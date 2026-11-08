@@ -211,6 +211,13 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   is on (they need a CUDA build: the genomics kernels have no HIP bodies); the
   default build no longer ships binaries that cannot run. The Cholesky CTest
   cases are not registered in such a build, where `testing_potrf` refuses to run.
+- Every HiCMA CTest case requires DPLASMA's BLAS thread-safety test as a
+  fixture: a BLAS that cannot take concurrent calls now reports "Not Run"
+  instead of wrong residuals. The test gets the BLAS run-time path (on an MKL
+  module it could not start). The CPU CI job prints the runner's CPU and
+  OpenBLAS variant and sets `OPENBLAS_NUM_THREADS=1`; one run had failed
+  inside DPLASMA's reference Cholesky on a single runner, while an otherwise
+  identical run passed.
 - CTest registers the HiCMA tests (labels `hicma`, `mpi`, `gpu`), all with
   `--check 1`; `scripts/test_CI.sh` runs the same cases and no longer depends
   on a private data path; CI runs them and a CUDA compile job. The script and

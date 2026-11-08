@@ -22,6 +22,8 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `35b1007` Check the BLAS for concurrent calls before the HiCMA tests; harden CPU CI
+- `2617921` Documentation for the #if block cleanup
 - `7d21454` Resolve the 28 unnamed #if 0 / #if 1 blocks
 - `f4e8512` code-review.md: number the macro review as the fifth pass
 - `00afd86` Documentation for the macro and data-structure review
@@ -545,6 +547,24 @@ tile that only fed a dead `1 || flag` test. After the cleanup, the CPU, CUDA
 and HIP trees build, both values of `GENOMICS_SYRK_ISYRK` compile, CTest
 passes (25 / 25 CPU, 39 / 39 CUDA), and the 31 CPU and 50 GPU-tree matrix
 cases are again identical to the third pass.
+
+### 5.10 CI hardening
+
+One CI run (commit `f4e8512`, documentation only) failed 21 of 25 CPU cases
+inside DPLASMA's reference Cholesky and the LAPACK compressions. A run on the
+same code, image and packages 10 seconds earlier passed, so the cause is the
+runner, which the log does not name.
+
+- Every HiCMA CTest case now requires DPLASMA's BLAS thread-safety test as a
+  fixture. A BLAS that cannot take concurrent calls reports "Not Run"
+  instead of wrong residuals.
+- The fixture executable gets the BLAS run-time path. On methane's MKL
+  module it could not start, which would have skipped every case.
+- The CPU job prints the runner's CPU and OpenBLAS variant and sets
+  `OPENBLAS_NUM_THREADS=1`.
+
+On methane, CTest passes 26 / 26 (CPU) and 40 / 40 (CUDA), the fixture
+included.
 
 ## 6. Release checklist
 

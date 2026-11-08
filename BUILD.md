@@ -18,7 +18,10 @@ How to build, test and install HiCMA-X (formerly HiCMA-PaRSEC), a library of til
 - **C11 / C++17 compilers** (GCC 11+, Clang 14+, or the vendor compilers of the machine)
 - **Fortran compiler** (for the BLAS/LAPACK linkage of the test drivers)
 - **MPI** with `MPI_THREAD_MULTIPLE` (Open MPI 4/5, MPICH 4, Cray MPICH)
-- **BLAS** and **LAPACKE** (OpenBLAS or MKL)
+- **BLAS** and **LAPACKE** (OpenBLAS or MKL) that is safe to call from several
+  threads at once: MKL sequential, or a threaded OpenBLAS with
+  `OPENBLAS_NUM_THREADS=1` (a sequential OpenBLAS needs `USE_LOCKING=1`). CTest
+  checks this first (`TESTS.md`)
 - **Git** (submodules)
 
 ### Submodule Dependencies
