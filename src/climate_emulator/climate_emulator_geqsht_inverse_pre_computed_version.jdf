@@ -118,7 +118,7 @@ READ SC    <- desc_SC(0, rank_of_desc_f_spatial)
 /* CPU implementation of the inverse transformation */
 BODY
 {
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     // Print debug information for the current task
     printf("CPU n %d : %d\n", n, desc_f_spatial->super.rank_of(&desc_f_spatial->super, 0, n)); 
     climate_emulator_print_matrix_col_double(flm, 1, 20, 1); 

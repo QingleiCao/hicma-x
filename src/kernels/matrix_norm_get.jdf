@@ -85,7 +85,7 @@ BODY
     // Store per-tile norm for analysis/debugging
     norm_tile[n*descA->lmt+m] = sqrt(norm_squared);
     
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     printf("norm_tile %d %d : %lf\n", m, n, norm_tile[n*descA->lmt+m]);
 #endif
 

@@ -43,7 +43,7 @@ static int validateClimateEmulatorConfig(hicma_parsec_params_t *params, climate_
 static void performForwardSHT(parsec_context_t *parsec, climate_emulator_struct_t *gb, hicma_parsec_params_t *params) {
     // Forward SHT using pre-computed version
     SYNC_TIME_START();
-#if !READ_FROM_FILE
+#if !CLIMATE_EMULATOR_READ_FROM_FILE
     climate_emulator_geqsht_forward_pre_computed_version(parsec, gb, params); 
 #endif
     SYNC_TIME_PRINT(params->rank, ("geqsht_forward_pre_computed_version: %.2lf Gflop/s\n", 

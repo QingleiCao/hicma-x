@@ -95,9 +95,9 @@ static int read_csv_complex_core(const char* filename, complex double *_data, in
     // Close the file
     fclose(fp);
 
-#if DEBUG_INFO_CLIMATE_EMULATOR
+#if CLIMATE_EMULATOR_DEBUG_INFO
     // Print a subset of the loaded data for debugging (CPU mode only)
-    if(0 == nb_gpus) climate_emulator_print_matrix_col_complex(data, 10, 10, M);
+    if(0 == nb_gpus) climate_emulator_print_matrix_col_complex(_data, 10, 10, M);
 #endif
 
     return 0;

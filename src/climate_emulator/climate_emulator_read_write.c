@@ -167,7 +167,7 @@ void climate_emulator_write(parsec_context_t *parsec,
     
 #if CLIMATE_EMULATOR_DEBUG_INFO
     /* Print matrix in debug mode */
-    parsec_print_cm_sym(parsec, data->dcAd,  nodes, P, nodes/P);
+    if( symm ) parsec_print_cm_sym(parsec, A, nodes, P, nodes/P);  /* the matrix being written */
 #endif
 
     /* Allocate memory for the entire matrix */
