@@ -71,10 +71,20 @@ if(HICMA_PARSEC_HAVE_CUDA)
     set(DPLASMA_GPU_WITH_HIP OFF)
     set(PARSEC_HAVE_HIP OFF)
     set(PARSEC_GPU_WITH_HIP OFF)
+    # CUDA architectures: CMAKE_CUDA_ARCHITECTURES or CUDAARCHS if given, else
+    # 70 80 90 90a (CUDA 13 dropped sm_70). Decided before enable_language(),
+    # which otherwise caches the compiler's default (sm_52 with CUDA 12).
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT DEFINED ENV{CUDAARCHS})
+        set(_hicma_default_cuda_archs TRUE)
+    endif()
     enable_language(CUDA)
-    # Set CUDA architectures - can be overridden by user
-    if(NOT CMAKE_CUDA_ARCHITECTURES)
-        set(CMAKE_CUDA_ARCHITECTURES 70 80 90 90a)
+    if(_hicma_default_cuda_archs)
+        set(_archs 80 90 90a)
+        if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13)
+            list(PREPEND _archs 70)
+        endif()
+        set(CMAKE_CUDA_ARCHITECTURES ${_archs} CACHE STRING "CUDA architectures to build for" FORCE)
+        unset(_archs)
     endif()
     message(STATUS "CUDA support enabled")
 
