@@ -26,6 +26,10 @@ typedef struct hicma_potrf_reg_s {
     const parsec_taskpool_t *tp;
     hicma_parsec_params_t   *params;
     parsec_tiled_matrix_t   *descA;
+    /* Positions of m, n, k in task->locals: jdf2c lays the locals out in
+     * definition order, which differs between JDFs (the sparse kinds define
+     * trsm as k, num_trsm, m and syrk as m, num_syrk, k) */
+    int trsm_m, trsm_k, syrk_m, syrk_k, gemm_m, gemm_n, gemm_k;
 } hicma_potrf_reg_t;
 
 static hicma_potrf_reg_t hicma_potrf_registry[HICMA_POTRF_MAX_TASKPOOLS];
@@ -33,19 +37,16 @@ static pthread_mutex_t   hicma_potrf_registry_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Registration happens in New() and removal in Destruct(), both outside of
  * parsec_context_start/wait, so the hooks read the table without a lock. */
-static int hicma_potrf_remember(parsec_taskpool_t *tp, hicma_parsec_params_t *params,
-                                parsec_tiled_matrix_t *descA)
+static int hicma_potrf_remember(const hicma_potrf_reg_t *entry)
 {
     int slot = -1;
     pthread_mutex_lock(&hicma_potrf_registry_lock);
     for( int i = 0; i < HICMA_POTRF_MAX_TASKPOOLS; i++ ) {
-        if( hicma_potrf_registry[i].tp == tp ) { slot = i; break; }
+        if( hicma_potrf_registry[i].tp == entry->tp ) { slot = i; break; }
         if( NULL == hicma_potrf_registry[i].tp && slot < 0 ) slot = i;
     }
     if( slot >= 0 ) {
-        hicma_potrf_registry[slot].tp = tp;
-        hicma_potrf_registry[slot].params = params;
-        hicma_potrf_registry[slot].descA = descA;
+        hicma_potrf_registry[slot] = *entry;
     }
     pthread_mutex_unlock(&hicma_potrf_registry_lock);
     return slot < 0 ? -1 : 0;
@@ -80,9 +81,20 @@ static inline const hicma_potrf_reg_t *hicma_potrf_lookup(const parsec_task_t *t
 /* ============================================================================
  * Timing hooks: identical for every Cholesky JDF
  *
- * Locals: potrf(k) -> [0]; trsm(m, k) -> m [0], k [1]; syrk(k, m) -> k [0],
- * m [1]; gemm(m, n, k) -> [0], [1], [2].
+ * Locals: potrf(k) -> [0] in every JDF; the positions of m, n and k in trsm,
+ * syrk and gemm are looked up by name when the hooks are installed.
  * ============================================================================ */
+
+/* Index in task->locals of the local called `name`, -1 if there is none */
+static int hicma_potrf_local_index(const parsec_task_class_t *tc, const char *name)
+{
+    for( int i = 0; i < tc->nb_locals; i++ ) {
+        if( 0 == strcmp(tc->locals[i]->name, name) ) {
+            return tc->locals[i]->context_index;
+        }
+    }
+    return -1;
+}
 
 static int hicma_potrf_wrap_potrf(parsec_execution_stream_t *es, parsec_task_t *task)
 {
@@ -127,8 +139,9 @@ static int hicma_potrf_wrap_potrf_complete(parsec_execution_stream_t *es, parsec
  * contributes to the critical-path time, every task to the per-thread time */
 static int hicma_potrf_wrap_trsm(parsec_execution_stream_t *es, parsec_task_t *task)
 {
-    hicma_parsec_params_t *p = hicma_potrf_lookup(task)->params;
-    int m = task->locals[0].value, k = task->locals[1].value;
+    const hicma_potrf_reg_t *r = hicma_potrf_lookup(task);
+    hicma_parsec_params_t *p = r->params;
+    int m = task->locals[r->trsm_m].value, k = task->locals[r->trsm_k].value;
     double start_time = MPI_Wtime();
 #if PRINT_KERNEL_TIME
     hicma_kernel_time_record(task, start_time);
@@ -144,7 +157,7 @@ static int hicma_potrf_wrap_trsm_complete(parsec_execution_stream_t *es, parsec_
 {
     const hicma_potrf_reg_t *r = hicma_potrf_lookup(task);
     hicma_parsec_params_t *p = r->params;
-    int m = task->locals[0].value, k = task->locals[1].value;
+    int m = task->locals[r->trsm_m].value, k = task->locals[r->trsm_k].value;
     int val = p->wrap_trsm_complete(es, task);
     double end_time = MPI_Wtime();
     if( m == k + 1 ) {
@@ -166,8 +179,9 @@ static int hicma_potrf_wrap_trsm_complete(parsec_execution_stream_t *es, parsec_
 
 static int hicma_potrf_wrap_syrk(parsec_execution_stream_t *es, parsec_task_t *task)
 {
-    hicma_parsec_params_t *p = hicma_potrf_lookup(task)->params;
-    int k = task->locals[0].value, m = task->locals[1].value;
+    const hicma_potrf_reg_t *r = hicma_potrf_lookup(task);
+    hicma_parsec_params_t *p = r->params;
+    int k = task->locals[r->syrk_k].value, m = task->locals[r->syrk_m].value;
     double start_time = MPI_Wtime();
 #if PRINT_KERNEL_TIME
     hicma_kernel_time_record(task, start_time);
@@ -183,7 +197,7 @@ static int hicma_potrf_wrap_syrk_complete(parsec_execution_stream_t *es, parsec_
 {
     const hicma_potrf_reg_t *r = hicma_potrf_lookup(task);
     hicma_parsec_params_t *p = r->params;
-    int k = task->locals[0].value, m = task->locals[1].value;
+    int k = task->locals[r->syrk_k].value, m = task->locals[r->syrk_m].value;
     int val = p->wrap_syrk_complete(es, task);
     double end_time = MPI_Wtime();
     if( m == k + 1 ) {
@@ -220,7 +234,7 @@ static int hicma_potrf_wrap_gemm_complete(parsec_execution_stream_t *es, parsec_
     p->gather_time[es->th_id] += end_time - start_time;
 #if PRINT_KERNEL_TIME
     hicma_kernel_time_report(task, p, r->descA, es->th_id,
-                             "GEMM", task->locals[0].value, task->locals[1].value, task->locals[2].value,
+                             "GEMM", task->locals[r->gemm_m].value, task->locals[r->gemm_n].value, task->locals[r->gemm_k].value,
                              start_time, end_time);
 #endif
     (void)r;
@@ -284,7 +298,20 @@ int hicma_potrf_install_hooks(parsec_taskpool_t *tp,
             return -1;
         }
     }
-    if( 0 != hicma_potrf_remember(tp, params, descA) ) {
+    hicma_potrf_reg_t entry = {
+        .tp = tp, .params = params, .descA = descA,
+        .trsm_m = hicma_potrf_local_index(tc[1], "m"), .trsm_k = hicma_potrf_local_index(tc[1], "k"),
+        .syrk_m = hicma_potrf_local_index(tc[2], "m"), .syrk_k = hicma_potrf_local_index(tc[2], "k"),
+        .gemm_m = hicma_potrf_local_index(tc[3], "m"), .gemm_n = hicma_potrf_local_index(tc[3], "n"),
+        .gemm_k = hicma_potrf_local_index(tc[3], "k"),
+    };
+    if( entry.trsm_m < 0 || entry.trsm_k < 0 || entry.syrk_m < 0 || entry.syrk_k < 0
+        || entry.gemm_m < 0 || entry.gemm_n < 0 || entry.gemm_k < 0 ) {
+        fprintf(stderr, "hicma_potrf_install_hooks: taskpool %s: trsm, syrk or gemm lacks a local m, n or k\n",
+                tp->taskpool_name ? tp->taskpool_name : "?");
+        return -1;
+    }
+    if( 0 != hicma_potrf_remember(&entry) ) {
         fprintf(stderr, "hicma_potrf_install_hooks: more than %d Cholesky taskpools are live\n",
                 HICMA_POTRF_MAX_TASKPOOLS);
         return -1;
