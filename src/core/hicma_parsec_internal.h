@@ -235,17 +235,29 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
     )  /**< Check if tile (m,n) should be allocated in double precision */
 
 /* ============================================================================
- * Precision masks for GEMM operations
+ * GPU GEMM variants (--tensor_gemm_hp, --tensor_gemm_sp, --tensor_gemm;
+ * decisions_gemm_gpu)
+ *
+ * params->tensor_gemm holds exactly one variant for the GEMMs of FP16 tiles
+ * (one of the five bits 0x8 to 0x80, --tensor_gemm_hp), optionally with
+ * MASK_TF32 for the FP32 GEMMs (--tensor_gemm_sp 0x4); --tensor_gemm sets both;
+ * hicma_parsec_init rejects any other value and the variants a path does not
+ * implement, and every GEMM body derives its operand, C and compute types from
+ * HICMA_FP16_GEMM(). MASK_FP64 and MASK_FP32 are accepted (0.1.0's default
+ * 0xb has them) and change nothing; in decisions_gemm_gpu they mark the FP64
+ * and FP32 GEMMs.
  * ============================================================================ */
-#define MASK_FP64                  0x1   /**< Double precision mask (64-bit) */
-#define MASK_FP32                  0x2   /**< Single precision mask (32-bit) */
-#define MASK_TF32                  0x4   /**< TensorFloat-32 mask (NVIDIA tensor cores) */
-#define MASK_TF16_A16_B16_C32_OP32 0x8   /**< TF16 A16 B16 C32 OP32 mask (mixed precision) */
-#define MASK_TF16_A16_B16_C16_OP16 0x10  /**< TF16 A16 B16 C16 OP16 mask (full TF16) */
-#define MASK_BF16_A16_B16_C32_OP32 0x20  /**< BF16 A16 B16 C32 OP32 mask (Brain Float 16) */
-#define MASK_BF16_A16_B16_C16_OP16 0x40  /**< BF16 A16 B16 C16 OP16 mask (full BF16) */
-#define MASK_TF16_A16_B16_C16_OP32 0x80  /**< TF16 A16 B16 C16 OP32 mask (TF16 with FP32 ops) */
-#define MASK_ONLY_FP16             0xFFFF8 /**< FP16-only options mask (exclude FP32/FP64) */
+#define MASK_FP64                  0x1   /**< FP64 GEMM */
+#define MASK_FP32                  0x2   /**< FP32 GEMM */
+#define MASK_TF32                  0x4   /**< FP32 GEMM on TF32 tensor cores */
+#define MASK_TF16_A16_B16_C32_OP32 0x8   /**< FP16 A and B, FP32 C and compute (default) */
+#define MASK_TF16_A16_B16_C16_OP16 0x10  /**< FP16 A, B and C, FP16 compute */
+#define MASK_BF16_A16_B16_C32_OP32 0x20  /**< BF16 A and B, FP32 C and compute */
+#define MASK_BF16_A16_B16_C16_OP16 0x40  /**< BF16 A, B and C, FP32 compute */
+#define MASK_TF16_A16_B16_C16_OP32 0x80  /**< FP16 A, B and C, FP32 compute (TRMM only) */
+#define MASK_ONLY_FP16             0xFFFF8 /**< The FP16 variant bits */
+/** The FP16 GEMM variant chosen with --tensor_gemm: one MASK_* bit */
+#define HICMA_FP16_GEMM(params)    ((params)->tensor_gemm & MASK_ONLY_FP16)
 
 /* ============================================================================
  * GPU architecture definitions
@@ -606,7 +618,9 @@ typedef struct hicma_parsec_params_s {
     int nsnp;                 /**< Number of SNPs for genomics */
     int rbf_kernel;           /**< RBF kernel type */
     int order;                /**< Matrix reordering method */
-    int tensor_gemm;          /**< Tensor core GEMM type */
+    int tensor_gemm;          /**< GPU GEMM variants (MASK_*): one FP16 variant, optionally MASK_TF32 */
+    int tensor_gemm_sp;       /**< --tensor_gemm_sp: MASK_FP32 or MASK_TF32; -1: from --tensor_gemm */
+    int tensor_gemm_hp;       /**< --tensor_gemm_hp: one FP16 variant; -1: from --tensor_gemm */
     int datatype_convert;     /**< Data type conversion strategy */ 
 
     /* ========================================================================

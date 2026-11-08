@@ -172,6 +172,12 @@ static int parse_arg_value(const char *arg, int type, void *target) {
  * @note The options array must be terminated with a NULL name entry
  * @note String comparison is case-sensitive
  */
+/* One of the five FP16 GEMM variants of --tensor_gemm_hp (MASK_* bits 0x8 to 0x80) */
+static int is_fp16_gemm_variant(int v) {
+    return MASK_TF16_A16_B16_C32_OP32 == v || MASK_TF16_A16_B16_C16_OP16 == v || MASK_BF16_A16_B16_C32_OP32 == v
+        || MASK_BF16_A16_B16_C16_OP16 == v || MASK_TF16_A16_B16_C16_OP32 == v;
+}
+
 static config_option_t* find_option(config_option_t *options, const char *name) {
     for (int i = 0; options[i].name != NULL; i++) {
         if (strcmp(options[i].name, name) == 0) {
@@ -288,7 +294,9 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"radius", "Radius of influential nodes", 1, &params->radius},
         {"order", "No, Morton, or Hilbert ordering (0, 1, or 2, respectively)", 0, &params->order},
         {"density", "Density of sphere packing for rbf application. Use -1 for random distribution", 1, &params->density},
-        {"tensor_gemm", "Bitmask of GEMM compute modes: 0x1=FP64, 0x2=FP32, 0x4=TF32, 0x8=TF16 A16_B16_C32_OP32, 0x10=TF16 A16_B16_C16_OP16, 0x20=BF16 A16_B16_C32_OP32, 0x40=BF16 A16_B16_C16_OP16, 0x80=TF16 A16_B16_C16_OP32", 0, &params->tensor_gemm},
+        {"tensor_gemm_hp", "GPU GEMMs of the FP16 tiles, one of: 0x8=FP16 A and B, FP32 C and compute (default); 0x10=FP16 A, B, C and compute; 0x20=BF16 A and B, FP32 C and compute; 0x40=BF16 A, B and C, FP32 compute; 0x80=FP16 A, B and C, FP32 compute (TRMM only)", 0, &params->tensor_gemm_hp},
+        {"tensor_gemm_sp", "GPU GEMMs of the FP32 tiles: 0x2=FP32 (default), 0x4=TF32", 0, &params->tensor_gemm_sp},
+        {"tensor_gemm", "Both in one value (0.1.0): a --tensor_gemm_hp variant, plus 0x4 for TF32; 0x1 and 0x2 are accepted and ignored (default: 0xb). --tensor_gemm_hp and --tensor_gemm_sp override its parts", 0, &params->tensor_gemm},
         {"datatype_convert", "Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive", 0, &params->datatype_convert},
         {"band_size_termination", "Band size auto-tuning termination on GPU, default 3.0", 1, &params->band_size_auto_tuning_termination},
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
@@ -732,7 +740,9 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     params->adaptive_maxrank = 0;           // Disable adaptive maximum rank (0=disabled, >0=enabled)
     
     // GPU and tensor computation settings - control GPU acceleration
-    params->tensor_gemm = MASK_FP64 | MASK_FP32 | MASK_TF16_A16_B16_C32_OP32; // Supported tensor GEMM types
+    params->tensor_gemm = MASK_FP64 | MASK_FP32 | MASK_TF16_A16_B16_C32_OP32; // GPU GEMM variants (MASK_*)
+    params->tensor_gemm_sp = -1;    // --tensor_gemm_sp, unset
+    params->tensor_gemm_hp = -1;    // --tensor_gemm_hp, unset
     params->datatype_convert = 0;           // Disable datatype conversion on sender side (0=receiver, 1=sender, 2=adaptive)
     params->fixedrk = 0;                    // Disable fixed rank computation (0=adaptive, >0=fixed rank)
     params->band_size_auto_tuning_termination = FLUCTUATION; // Auto-tuning termination criterion
@@ -773,6 +783,34 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
             fprintf(stderr, "Error parsing arguments\n");
         }
         exit(1);
+    }
+
+    /* GPU GEMM variants (hicma_parsec_internal.h), for every driver:
+     * --tensor_gemm_sp and --tensor_gemm_hp set the FP32 and the FP16 part of
+     * --tensor_gemm, which must then name exactly one FP16 variant.
+     * hicma_parsec_params_check refuses what the chosen Cholesky lacks. */
+    {
+        const char *opt = NULL, *error = NULL;
+        int value = 0;
+        if( params->tensor_gemm_sp >= 0 && MASK_FP32 != params->tensor_gemm_sp && MASK_TF32 != params->tensor_gemm_sp ) {
+            opt = "--tensor_gemm_sp"; value = params->tensor_gemm_sp; error = "0x2 (FP32) or 0x4 (TF32)";
+        } else if( params->tensor_gemm_hp >= 0 && !is_fp16_gemm_variant(params->tensor_gemm_hp) ) {
+            opt = "--tensor_gemm_hp"; value = params->tensor_gemm_hp; error = "one of 0x8, 0x10, 0x20, 0x40 and 0x80";
+        } else {
+            if( params->tensor_gemm_sp >= 0 )
+                params->tensor_gemm = (params->tensor_gemm & ~(MASK_FP32 | MASK_TF32)) | params->tensor_gemm_sp;
+            if( params->tensor_gemm_hp >= 0 )
+                params->tensor_gemm = (params->tensor_gemm & ~MASK_ONLY_FP16) | params->tensor_gemm_hp;
+            if( (params->tensor_gemm & ~0xFF) || !is_fp16_gemm_variant(HICMA_FP16_GEMM(params)) ) {
+                opt = "--tensor_gemm"; value = params->tensor_gemm;
+                error = "give exactly one FP16 GEMM variant (0x8, 0x10, 0x20, 0x40 or 0x80), optionally with 0x4 (TF32)";
+            }
+        }
+        if( NULL != error ) {
+            if( 0 == params->rank )
+                fprintf(stderr, RED "%s 0x%x: %s\n" RESET, opt, value, error);
+            exit(1);
+        }
     }
 
     // Set verbose flag for rank 0 only (avoid duplicate output in parallel execution)
@@ -2337,13 +2375,29 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
         exit(1);
     }
 
-    /* Make sure tensor_gemm is correct */
-    // TODO Add BF16 support is needed
-    if( (params->tensor_gemm & MASK_BF16_A16_B16_C32_OP32) && (params->auto_band || params->band_size_dense < params->NT) ) {
-        if( params->rank == 0 ) {
-            fprintf(stderr, RED "tensor_gemm BF16 only supports MP+dense (no TLR)\n" RESET);
+    /* GPU GEMM variants (the value is checked in parse_arguments): refuse
+     * what the chosen path does not implement. BF16 is in the dense FP16 GEMM
+     * only, not in the low-rank GEMMs or the kind-3 band kernel, and it cannot
+     * read the FP16 tiles that --datatype_convert 2 sends; the run-time
+     * decision GEMM computes FP16 GEMMs with FP32 C (0x8); 0x80 is the TRMM's
+     * (hicma_parsec_potrf refuses it). */
+    {
+        const int v = HICMA_FP16_GEMM(params);
+        const char *error = NULL;
+        if( (MASK_BF16_A16_B16_C32_OP32 == v || MASK_BF16_A16_B16_C16_OP16 == v)
+            && (params->auto_band || params->band_size_dense < params->NT || params->sparse
+                || DENSE_MP_BAND == params->kind_of_cholesky || ADAPTIVE_CONVERT == params->datatype_convert) ) {
+            error = "BF16 needs every tile dense (--band_dense >= NT, no --auto_band or --sparse), "
+                    "a kind other than 3, and no --datatype_convert 2";
+        } else if( params->adaptive_decision_runtime && DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky
+                   && MASK_TF16_A16_B16_C32_OP32 != v ) {
+            error = "the run-time decisions (--adaptive_decision_runtime) compute FP16 GEMMs with FP32 C: 0x8 only";
         }
-        exit(1);
+        if( NULL != error ) {
+            if( 0 == params->rank )
+                fprintf(stderr, RED "--tensor_gemm 0x%x: %s\n" RESET, params->tensor_gemm, error);
+            exit(1);
+        }
     }
 
 #if defined(PARSEC_HAVE_DEV_RECURSIVE_SUPPORT)

@@ -77,30 +77,10 @@ int hicma_parsec_decision_init( hicma_parsec_params_t *params )
 {
     for(int i = 0; i < params->NT; i++) {
         for(int j = 0; j <= i; j++) {
-            /* decisions_gemm_gpu */
-            params->decisions_gemm_gpu[j*params->NT+i] |= MASK_FP64;
-            if( params->tensor_gemm & MASK_TF32 ) {
-                params->decisions_gemm_gpu[j*params->NT+i] |= MASK_TF32;
-            } else {
-                params->decisions_gemm_gpu[j*params->NT+i] |= MASK_FP32;
-            }
-            switch( params->tensor_gemm & MASK_ONLY_FP16 ) {
-                case MASK_TF16_A16_B16_C32_OP32:
-                    params->decisions_gemm_gpu[j*params->NT+i] |= MASK_TF16_A16_B16_C32_OP32;
-                    break;
-                case MASK_TF16_A16_B16_C16_OP32:
-                    params->decisions_gemm_gpu[j*params->NT+i] |= MASK_TF16_A16_B16_C16_OP32;
-                    break;
-                case MASK_TF16_A16_B16_C16_OP16:
-                    params->decisions_gemm_gpu[j*params->NT+i] |= MASK_TF16_A16_B16_C16_OP16;
-                    break;
-                case MASK_BF16_A16_B16_C32_OP32:
-                    params->decisions_gemm_gpu[j*params->NT+i] |= MASK_BF16_A16_B16_C32_OP32;
-                    break;
-                case MASK_BF16_A16_B16_C16_OP16:
-                    params->decisions_gemm_gpu[j*params->NT+i] |= MASK_BF16_A16_B16_C16_OP16;
-                    break;
-            }
+            /* decisions_gemm_gpu: the GEMM variant of each precision
+             * (--tensor_gemm, checked in hicma_parsec_init) */
+            params->decisions_gemm_gpu[j*params->NT+i] |= MASK_FP64
+                | ((params->tensor_gemm & MASK_TF32)? MASK_TF32: MASK_FP32) | HICMA_FP16_GEMM(params);
 
             /* decisions */
             if( i-j < params->band_size_dense_dp ) {
@@ -675,9 +655,9 @@ void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
         // No GPU support
         if( 0 ) {
 #endif
-            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_TF16_A16_B16_C32_OP32;
+            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = HICMA_FP16_GEMM(params_tlr);
         } else if( decision_sp ) {
-            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = MASK_FP32;
+            params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] = (params_tlr->tensor_gemm & MASK_TF32)? MASK_TF32: MASK_FP32;
         } else {
             // Fall back to highest precision based on build configuration
 #if GENOMICS

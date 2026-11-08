@@ -138,6 +138,12 @@ hicma_add_test(trmm_adaptive           1 ${T} --N 2000 --K 1500 --NB 256 --check
 hicma_add_test(trmm_adaptive_sr        1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4 --enable_stochastic_rounding 1)
 hicma_add_test(lapack_tile_convert     1 $<TARGET_FILE:testing_lapack_tile>)
 hicma_add_test(matrix_sum              1 $<TARGET_FILE:testing_matrix_sum>)
+# --tensor_gemm with two FP16 GEMM variants is refused at start-up (it gave
+# wrong results in kind 3 and aborted mid-run in kind 5)
+hicma_add_test(tensor_gemm_invalid     1 ${P} ${COMMON} --tensor_gemm 0x18)
+if(TEST tensor_gemm_invalid)
+    set_tests_properties(tensor_gemm_invalid PROPERTIES PASS_REGULAR_EXPRESSION "give exactly one FP16 GEMM variant")
+endif()
 # two ranks
 hicma_add_test(potrf_dense_fp64_np2    2 ${P} ${COMMON})
 hicma_add_test(potrf_tlr_dp_band2_np2  2 ${P} ${COMMON} --kind_of_cholesky 2 --band_dense 2)
@@ -176,5 +182,23 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
         hicma_add_test(gpu_band_sp_hp        1 ${P} ${G} --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5)
         # FP16 accumulation (--tensor_gemm 0x10): residual 2.3e-5
         hicma_add_test(gpu_band_hp_fp16acc   1 ${P} ${G} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4)
+        # GEMM variants of the dense GEMMs (kind 5), through --tensor_gemm_hp,
+        # --tensor_gemm_sp and the combined --tensor_gemm: BF16 operands with
+        # FP32 C (residual 6.7e-6) and with BF16 C (1.0e-4); TF32 for the FP32
+        # band (5.1e-6, against 5.1e-8 in FP32)
+        hicma_add_test(gpu_dense_bf16        1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm_hp 0x20 --check_tol 1e-4)
+        hicma_add_test(gpu_dense_bf16_c16    1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm 0x40 --check_tol 1e-3)
+        hicma_add_test(gpu_dense_tf32        1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 8 --tensor_gemm_sp 0x4 --check_tol 1e-4)
+        # Adaptive TLR with FP16 C (0x10): the dense and the low-rank GEMMs of a
+        # tile disagreed on its type (NaNs, then a crash); residual 2.2e-5
+        hicma_add_test(gpu_tlr_adaptive_fp16acc 1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
+                       --fixedacc 1e-4 --maxrank 256 --adaptive_decision 1 --tensor_gemm_hp 0x10 --check_tol 1e-4)
+        # A static FP16 band with low-rank tiles fails on GPUs (segfault or a
+        # wrong result, cause not established) and is refused before factorizing
+        hicma_add_test(gpu_tlr_hp_band_refused 1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
+                       --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256)
+        if(TEST gpu_tlr_hp_band_refused)
+            set_tests_properties(gpu_tlr_hp_band_refused PROPERTIES PASS_REGULAR_EXPRESSION "static FP16 or FP8 band with low-rank tiles")
+        endif()
     endif()
 endif()

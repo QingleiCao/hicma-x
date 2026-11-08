@@ -139,9 +139,9 @@ BODY
         // No GPU support
         if( 0 ) {
 #endif
-            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_TF16_A16_B16_C32_OP32;
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = HICMA_FP16_GEMM(params_tlr);
         } else if( decision_sp ) {
-            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = MASK_FP32;
+            params_tlr->decisions_gemm_gpu[n*descA->lmt+m] = (params_tlr->tensor_gemm & MASK_TF32)? MASK_TF32: MASK_FP32;
         } else {
             // Fall back to highest precision based on build configuration
 #if GENOMICS

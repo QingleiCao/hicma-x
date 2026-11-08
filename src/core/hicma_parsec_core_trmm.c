@@ -558,7 +558,7 @@ void hicma_parsec_trmm_core_gemm_lln_gpu(
                 &beta,  C,     CUDA_R_32F, ldc,
                 CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT );
         PARSEC_CUDA_CHECK_ERROR( "TRMM GEMM FP16, FP32 accumulation", status, {exit(1);} );
-    } else if( DENSE_HP == decisionC && (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP32) ) {
+    } else if( DENSE_HP == decisionC && MASK_TF16_A16_B16_C16_OP32 == HICMA_FP16_GEMM(params_tlr) ) {
         /* --tensor_gemm 0x80: FP16 operands and C, FP32 compute */
         float alpha = (float)lalpha, beta = (float)lbeta;
         status = cublasGemmEx( handle, dplasma_cublas_op(transA), dplasma_cublas_op(transB),

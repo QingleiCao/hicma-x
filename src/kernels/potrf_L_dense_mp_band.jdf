@@ -643,9 +643,13 @@ BODY [type=CUDA]
             float2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, parsec_body.stream );
         }
 
+        /* FP16 GEMM variant, 0x8 or 0x10 here (hicma_parsec_init): 0x10 keeps
+         * C in FP16 from the first to the last update and computes in FP16 */
+        const int c16 = MASK_TF16_A16_B16_C32_OP32 != HICMA_FP16_GEMM(params_tlr);
+        const int compute16 = MASK_TF16_A16_B16_C16_OP16 == HICMA_FP16_GEMM(params_tlr);
+
         /* First local GEMM convert C from single to half */
-        if( 0 == k && (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP32
-                    || params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16) ) {
+        if( 0 == k && c16 ) {
             /* Convert datatype */
             float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, parsec_body.stream );
 
@@ -655,18 +659,16 @@ BODY [type=CUDA]
 
         /* HGEMM; with FP16 compute cuBLAS reads alpha and beta as half
          * precision (the float values read that way are 0) */
-        const int compute16 = 0 != (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16);
         char alphah[16], betah[16];
         status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                 (int64_t)tempmm, (int64_t)descA->mb, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, alpha_float, alphah), A_h, CUDA_R_16F, (int64_t)ldam,
                               B_h, CUDA_R_16F, (int64_t)ldan,
-                HICMA_GEMM_SCALAR(compute16, beta_float, betah), C,   (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)ldam,
-                (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUDA_R_16F: CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+                HICMA_GEMM_SCALAR(compute16, beta_float, betah), C,   c16? CUDA_R_16F: CUDA_R_32F, (int64_t)ldam,
+                compute16? CUDA_R_16F: CUDA_R_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
 
         /* After last local GEMM convert C from half to single */
-        if( n-1 == k && (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP32
-                    || params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16) ) {
+        if( n-1 == k && c16 ) {
             /* Convert datatype */
             half2float_GPU( descA->mb, descA->nb, C, descA->mb, C_s, descA->mb, parsec_body.stream );
 

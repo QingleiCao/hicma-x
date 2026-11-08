@@ -4329,9 +4329,17 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         Au = (void *)A_use;
         Av = (void *)A_use + descA->mb * Arank * sizeof(float) / 2;
 
+        /* FP16 GEMM variant of this C tile, from decisions_gemm_gpu as in its
+         * dense GEMMs (0x8 or 0x10 here, hicma_parsec_init): 0x10 keeps an FP16
+         * C in FP16 from the first to the last update and computes in FP16; an
+         * FP8 C stays in FP32, as its FP8 GEMMs expect */
+        const int variant = params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] & MASK_ONLY_FP16;
+        const int hp_C = DENSE_HP == params_tlr->decisions[n*descA->lmt+m];
+        const int c16 = hp_C && (MASK_TF16_A16_B16_C16_OP16 == variant || MASK_TF16_A16_B16_C16_OP32 == variant);
+        const int compute16 = hp_C && MASK_TF16_A16_B16_C16_OP16 == variant;
+
         /* First local GEMM convert C from single to half */
-        if( 0 == k && (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP32
-                    || params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16) ) {
+        if( 0 == k && c16 ) {
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
@@ -4343,14 +4351,13 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         /* tmp_mbr = trans(Av) * trans(B) */
         float alpha = 1.0f;
         float beta = 0.0f;
-        const int compute16 = 0 != (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16);
         char alphah[16], betah[16];
         status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_T,
                 (int64_t)Arank, (int64_t)descA->mb, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, alpha, alphah), Av, CUDA_R_16F, (int64_t)descA->mb,
                         B_use,       CUDA_R_16F, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, beta, betah), buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
-                (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         /* C = C - Au * tmp_mbr */
         alpha = -1.0f;
@@ -4359,12 +4366,11 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
                 (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Arank,
                 HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au, CUDA_R_16F, (int64_t)descA->mb,
                         buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
-                HICMA_GEMM_SCALAR(compute16, beta, betah), C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
-                (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                HICMA_GEMM_SCALAR(compute16, beta, betah), C,           c16? CUDA_R_16F: CUDA_R_32F, (int64_t)descA->mb,
+                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         /* After last local GEMM convert C from half to single */
-        if( n-1 == k && (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP32
-                    || params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16) ) {
+        if( n-1 == k && c16 ) {
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             half2float_GPU( descA->mb, descA->nb, C, descA->mb, C_s, descA->mb, cuda_stream->cuda_stream );
@@ -4629,9 +4635,17 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         Bu = (void *)B_use;
         Bv = (void *)B_use + descA->mb * Brank * sizeof(float) / 2;
 
+        /* FP16 GEMM variant of this C tile, from decisions_gemm_gpu as in its
+         * dense GEMMs (0x8 or 0x10 here, hicma_parsec_init): 0x10 keeps an FP16
+         * C in FP16 from the first to the last update and computes in FP16; an
+         * FP8 C stays in FP32, as its FP8 GEMMs expect */
+        const int variant = params_tlr->decisions_gemm_gpu[n*params_tlr->NT+m] & MASK_ONLY_FP16;
+        const int hp_C = DENSE_HP == params_tlr->decisions[n*descA->lmt+m];
+        const int c16 = hp_C && (MASK_TF16_A16_B16_C16_OP16 == variant || MASK_TF16_A16_B16_C16_OP32 == variant);
+        const int compute16 = hp_C && MASK_TF16_A16_B16_C16_OP16 == variant;
+
         /* First local GEMM convert C from single to half */
-        if( 0 == k && (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP32
-                    || params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16) ) {
+        if( 0 == k && c16 ) {
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
@@ -4643,14 +4657,13 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         /* tmp_rr = trans(Av) * Bv */
         float alpha = 1.0f;
         float beta = 0.0f;
-        const int compute16 = 0 != (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16);
         char alphah[16], betah[16];
         status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                 (int64_t)Arank, (int64_t)Brank, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, alpha, alphah), Av,          CUDA_R_16F, (int64_t)descA->mb,
                         Bv,          CUDA_R_16F, (int64_t)descA->mb,
                 HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_rr,   CUDA_R_16F, (int64_t)Arank,
-                (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         if( Arank > Brank ) {
             /* tmp_mbr = Au * tmp_rr */
@@ -4661,7 +4674,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
                     HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au,          CUDA_R_16F, (int64_t)descA->mb,
                             buffer_rr,   CUDA_R_16F, (int64_t)Arank,
                     HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_mbr,  CUDA_R_16F, (int64_t)descA->mb,
-                    (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
             /* C = C - tmp_mbr * trans(Bu) */
             alpha = -1.0f;
@@ -4670,8 +4683,8 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
                     (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Brank,
                     HICMA_GEMM_SCALAR(compute16, alpha, alphah), buffer_mbr,  CUDA_R_16F, (int64_t)descA->mb,
                             Bu,          CUDA_R_16F, (int64_t)descA->mb,
-                    HICMA_GEMM_SCALAR(compute16, beta, betah),  C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
-                    (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                    HICMA_GEMM_SCALAR(compute16, beta, betah),  C,           c16? CUDA_R_16F: CUDA_R_32F, (int64_t)descA->mb,
+                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         } else {
             /* tmp_mbr = tmp_rr * trans(Bu) */
@@ -4682,7 +4695,7 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
                     HICMA_GEMM_SCALAR(compute16, alpha, alphah), buffer_rr,   CUDA_R_16F, (int64_t)Arank,
                             Bu,          CUDA_R_16F, (int64_t)descA->mb,
                     HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
-                    (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
             /* C = C - Au * tmp_mbr */
             alpha = -1.0f;
@@ -4691,13 +4704,12 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
                     (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Arank,
                     HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au,          CUDA_R_16F, (int64_t)descA->mb,
                             buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
-                    HICMA_GEMM_SCALAR(compute16, beta, betah),  C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
-                    (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+                    HICMA_GEMM_SCALAR(compute16, beta, betah),  C,           c16? CUDA_R_16F: CUDA_R_32F, (int64_t)descA->mb,
+                    compute16? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         }
 
         /* After last local GEMM convert C from half to single */
-        if( n-1 == k && (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP32
-                    || params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16) ) {
+        if( n-1 == k && c16 ) {
             /* Convert datatype */
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
             half2float_GPU( descA->mb, descA->nb, C, descA->mb, C_s, descA->mb, cuda_stream->cuda_stream );

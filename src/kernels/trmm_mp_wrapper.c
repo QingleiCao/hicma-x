@@ -69,6 +69,14 @@ hicma_parsec_trmm_New( dplasma_enum_t side,  dplasma_enum_t uplo,
         return NULL;
     }
 
+    /* The TRMM's FP16 GEMMs have FP16 operands; C is FP32 with
+     * --accumulation_fp32 and FP16 otherwise, computed in FP16 except with
+     * --tensor_gemm 0x80 */
+    if (HICMA_FP16_GEMM(params) & (MASK_BF16_A16_B16_C32_OP32 | MASK_BF16_A16_B16_C16_OP16)) {
+        dplasma_error("hicma_parsec_trmm_New", "--tensor_gemm BF16 variants (0x20, 0x40) are not supported by the TRMM");
+        return NULL;
+    }
+
     /* The kernels, arenas and memory pools use NB-by-NB tiles, and the
      * decision arrays NT tile rows and at most KT tile columns */
     if (A->mb != A->nb || B->mb != A->mb || B->nb != A->mb) {
