@@ -664,16 +664,14 @@ int hicma_parsec_sparse_dist_calculate( parsec_tiled_matrix_t *A,
         memset(count, 0, P*sizeof(int));
         int current = 0;
 
-        /* It should be limit or limit+1 if index < left */
-        int limit, left;
-
-        if( analysis->trsm[k][0] == k + 1 ) {
-            limit = (analysis->trsm_num[k]-1) / P;
-            left = (analysis->trsm_num[k]-1) % P;
-        } else {
-            limit = analysis->trsm_num[k] / P;
-            left = analysis->trsm_num[k] % P;
-        }
+        /* It should be limit or limit+1 if index < left. The quotas cover the
+         * tiles placed below, those outside band_size_dist; subtracting only
+         * tile k+1 assumed band_size_dist >= 2, and with 0 or 1 the search
+         * below ran past count[P-1] and corrupted the heap */
+        int placed = 0;
+        for( int m = 0; m < analysis->trsm_num[k]; m++ )
+            if( analysis->trsm[k][m] - k >= band_size_dist ) placed++;
+        int limit = placed / P, left = placed % P;
 
         for( int m = 0; m < analysis->trsm_num[k]; m++) {
             /* Real tile row index */
@@ -699,8 +697,10 @@ int hicma_parsec_sparse_dist_calculate( parsec_tiled_matrix_t *A,
                             || (current >= left && count[current] >= limit) )
                         current++;
 
-                    if( current >= P )
-                        fprintf(stderr, "Wrong : %d !!!\n", current);
+                    if( current >= P ) {
+                        fprintf(stderr, "WORKLOAD_BALANCE 4: no process left for tile (%d, %d)\n", m_index, k);
+                        exit(1);
+                    }
 
                     count[current]++;
                     local_p = current;
@@ -719,8 +719,10 @@ int hicma_parsec_sparse_dist_calculate( parsec_tiled_matrix_t *A,
                             || (current >= left && count[current] >= limit) )
                         current++;
 
-                    if( current >= P )
-                        fprintf(stderr, "Wrong : %d !!!\n", current);
+                    if( current >= P ) {
+                        fprintf(stderr, "WORKLOAD_BALANCE 4: no process left for tile (%d, %d)\n", m_index, k);
+                        exit(1);
+                    }
 
                     count[current]++;
                     local_p = current;
