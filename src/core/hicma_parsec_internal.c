@@ -3103,7 +3103,7 @@ void parsec_print_cm_sym(parsec_context_t* parsec, parsec_tiled_matrix_t *dcA,  
     
     float *tempaa=(float *)malloc((size_t)dcA->llm*(size_t)dcA->lln*
                                         (size_t)parsec_datadist_getsizeoftype(dcA->mtype));
-    hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)dcA, tempaa, p, q);
+    if( 0 != hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)dcA, tempaa, p, q) ) exit(1);  /* message printed by the conversion */
 
     
     printf("\nM:%d, Node(%d): \n", dcA->llm, node);

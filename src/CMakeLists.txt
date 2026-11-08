@@ -114,14 +114,7 @@ set(JDF
     kernels/matrix_det.jdf
     
     # LAPACK to Tile conversion JDF files
-    kernels/Lapack_to_Tile.jdf
-    kernels/Tile_to_Lapack.jdf
-    kernels/Tile_to_Lapack_single.jdf
-    kernels/Lapack_to_Tile_Single.jdf
-    kernels/Tile_to_Lapack_sym.jdf
-    kernels/Tile_to_Lapack_sym_single.jdf
-    kernels/Tile_to_Lapack_int.jdf
-    kernels/Tile_to_Lapack_int8.jdf
+    kernels/lapack_tile_convert.jdf
     
     # Other utility JDF files
     kernels/replicate_to_rows.jdf

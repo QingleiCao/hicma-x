@@ -354,6 +354,32 @@ int parsec_datatype_convert_dense_static(parsec_context_t *parsec,
         char *convert_type);
 
 /**
+ * @brief Copy between a tiled matrix and the local column-major ("LAPACK")
+ *        buffer of the calling process
+ *
+ * Collective over the processes of dcA. The buffer holds the tiles this
+ * process owns, tile (m, n) at local tile position (m / P, n / Q), column-major
+ * with leading dimension dcA->llm (local rows of a 2D block-cyclic descriptor,
+ * global rows of a symmetric one); on a 1 x 1 grid it is the whole matrix in
+ * LAPACK layout. The named functions below are this one with fixed arguments.
+ *
+ * @param[in]    parsec      PaRSEC context
+ * @param[inout] dcA         tiled matrix, 2D block-cyclic or symmetric block-cyclic over P x Q
+ * @param[inout] lapack      buffer of at least dcA->llm x dcA->lln elements of @p type
+ * @param[in]    P           process grid rows of dcA
+ * @param[in]    Q           process grid columns of dcA
+ * @param[in]    type        element type of the tiles and of the buffer
+ *                           (parsec_datatype_double_t, _float_t, _int_t, _int8_t, ...)
+ * @param[in]    lower       1: only the tiles on and below the diagonal
+ * @param[in]    into_tiles  1: buffer -> tiles, 0: tiles -> buffer
+ * @return 0 on success; -1 on every process when the arguments or the
+ *         distribution do not fit the layout (nothing is copied)
+ */
+int hicma_parsec_lapack_tile_convert(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcA, void *lapack, int P, int Q,
+        parsec_datatype_t type, int lower, int into_tiles);
+
+/**
  * @brief Convert PaRSEC tiled matrix to LAPACK double precision format
  * 
  * Converts a PaRSEC tiled matrix to LAPACK-compatible double precision format.
@@ -401,7 +427,8 @@ int hicma_parsec_Tile_to_Lapack_int8(parsec_context_t *parsec,
 /**
  * @brief Convert PaRSEC tiled matrix to LAPACK integer format
  * 
- * Converts a PaRSEC tiled matrix to LAPACK-compatible integer format.
+ * Converts the tiles on and below the diagonal of a PaRSEC tiled matrix to
+ * LAPACK-compatible integer format (the tiles above are not copied).
  * 
  * @param[in] parsec PaRSEC context for task scheduling and execution
  * @param[in] dcA Source tiled matrix

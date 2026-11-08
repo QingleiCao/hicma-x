@@ -809,9 +809,9 @@ void hicma_parsec_writeB(parsec_context_t *parsec,
 
     /* Convert from tile format to LAPACK format in single precision */
     if(symm)
-        hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P);
+        if( 0 != hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
     else
-        hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P);
+        if( 0 != hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
     
     /* Write matrix using MPI-IO with float precision */
     MPI_Writing_sfile(filename, rank, DB, B->llm*B->lln, MPI_FLOAT, darrayB);
@@ -825,9 +825,9 @@ void hicma_parsec_writeB(parsec_context_t *parsec,
 
     /* Convert from tile format to LAPACK format in single precision */
     if(symm)
-        hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P);
+        if( 0 != hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
     else
-        hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P);
+        if( 0 != hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
 
     /* Write matrix directly to binary file */
     FILE *FY;
@@ -1061,7 +1061,7 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         
         MPI_Reading_sfile(params->pheno_file, params->rank, phenoB, B->llm*B->lln, MPI_FLOAT, darrayB);
         
-        hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P);
+        if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
         
         free(phenoB);
 
@@ -1077,7 +1077,7 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         if(params->rank == 0) fprintf(stderr, RED "\nSTART READING B:\n" RESET); 
         read_file(params->pheno_file, params->RHS, params->N, phenoB);
         
-        hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P);
+        if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
             
         //parsec_print_cm(parsec, (parsec_tiled_matrix_t *)B,  nodes, P, Q);
         parsec_data_free(phenoB);
@@ -1108,7 +1108,7 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
 
     read_file(gene_file, params->N, params->nsnp, geneA); //This is only for single precsion 
         
-    hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)&A, geneA, params->P, params->Q); //This is only for single precsion 
+    if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)&A, geneA, params->P, params->Q) ) exit(1);  /* message printed by the conversion */ //This is only for single precsion 
     parsec_data_free(geneA);
 
     #if PREDICTION 
@@ -1122,7 +1122,7 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         if(params->rank == 0) fprintf(stderr, RED "\nSTART READING B:\n" RESET); 
         read_file(params->pheno_file, params->RHS, params->N, phenoB);
         
-        hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P);
+        if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
             
         //parsec_print_cm(parsec, (parsec_tiled_matrix_t *)B,  nodes, P, Q);
         parsec_data_free(phenoB);
@@ -1344,7 +1344,7 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
                 dgeneA[i] = (double) sgeneA[i];
             }
         
-            hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)&A, dgeneA, P, nodes/P);
+            if( 0 != hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)&A, dgeneA, P, nodes/P) ) exit(1);  /* message printed by the conversion */
             //parsec_print_cm( parsec, (parsec_tiled_matrix_t *)&A, rank, P, nodes/P);
         
             free(sgeneA);
@@ -1367,7 +1367,7 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
         if(rank == 0) fprintf(stderr, RED "\nRead A from file:\n" RESET);
         read_file(gene_file, N, SNP, geneA);
         
-        hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)&A, geneA, P, Q);
+        if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)&A, geneA, P, Q) ) exit(1);  /* message printed by the conversion */
         free(geneA);
         #endif
 
@@ -1472,7 +1472,7 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
             dphenoB[i]=(double)sphenoB[i];
         
         /* Convert from LAPACK format to tiled format for PaRSEC */
-        hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)B, dphenoB, P, nodes/P);
+        if( 0 != hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)B, dphenoB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
         
         /* Clean up allocated memory */
         parsec_data_free(dphenoB);
@@ -1491,7 +1491,7 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
             read_file(params->pheno_file, params->RHS, params->N, phenoB);
         
             /* Convert from LAPACK format to tiled format for PaRSEC */
-            hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P);
+            if( 0 != hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
             
             /* Clean up allocated memory */
             parsec_data_free(phenoB);

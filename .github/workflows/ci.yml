@@ -58,6 +58,7 @@ jobs:
             -DMPI_CXX_SKIP_MPICXX=ON
           cmake --build build-consumer
           ./build-consumer/hicma_consumer --N 512 --NB 128 --kind_of_problem 2 --check 1
+          ./build-consumer/hicma_consumer_lapack
 
   cuda-compile:
     name: CUDA build (compile only)
