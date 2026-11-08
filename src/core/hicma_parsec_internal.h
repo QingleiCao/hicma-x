@@ -37,8 +37,12 @@
 /* ============================================================================
  * Feature test macros for additional functions
  * ============================================================================ */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE        /**< Enable GNU extensions for enhanced functionality */
+#endif
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L  /**< Enable POSIX.1-2008 features for modern system calls */
+#endif
 
 /* ============================================================================
  * System includes
@@ -207,16 +211,27 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 #define HICMA_PARSEC_SPARSE     3
 
 /* Application-specific flags - control specialized computation modes */
+#ifndef FOR_CLIMATE_EMULATOR
 #define FOR_CLIMATE_EMULATOR    0  /**< Enable climate emulator mode for atmospheric modeling */
+#endif
 #ifndef GENOMICS
 #define GENOMICS                    0  /**< Genomics mode (kernel ridge regression); set by -DHICMA_PARSEC_GENOMICS=ON */
 #endif
+#ifndef GENOMICS_ALLOCATE_SP
 #define GENOMICS_ALLOCATE_SP    0  /**< Allocate in single precision for genomics (memory optimization) */
+#endif
+#ifndef GENOMICS_ALLOCATE_INT
 #define GENOMICS_ALLOCATE_INT   0  /**< Use integer allocation for genomics (genotype data) */
-#define CHOLESKY_CPU_ONLY       0  /**< Force CPU-only Cholesky decomposition (disable GPU) */
+#endif
+#ifndef GEMM_SUMMA
 #define GEMM_SUMMA              0  /**< Enable SUMMA GEMM algorithm for matrix multiplication */
+#endif
+#ifndef DISTFILE
 #define DISTFILE                0  /**< Enable distributed file I/O for large datasets */
+#endif
+#ifndef SINGLEFILE
 #define SINGLEFILE              0  /**< Enable single file I/O for simplified data handling */
+#endif
 #define DATATYPE                double  /**< Double precision for general applications */
 #define DATATYPE_USE            HICMA_PARSEC_FP64 
 
@@ -279,11 +294,21 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 /* ============================================================================
  * Feature enablement flags
  * ============================================================================ */
+#ifndef ENABLE_TF16_A16_B16_C16_OP16
 #define ENABLE_TF16_A16_B16_C16_OP16   0  /**< Enable TF16 A16 B16 C16 OP16 (tensor core operations) */
+#endif
+#ifndef HAVE_HP
 #define HAVE_HP                        1  /**< Enable half precision support (FP16) */
+#endif
+#ifndef DEBUG_INFO
 #define DEBUG_INFO                     0  /**< Enable debug information and verbose output */
+#endif
+#ifndef ENABLE_PROFILING
 #define ENABLE_PROFILING               0  /**< Enable GPU profiling and performance monitoring */
+#endif
+#ifndef GENERATE_RANDOM_DATA
 #define GENERATE_RANDOM_DATA           0  /**< Generate random data for testing */
+#endif
 
 /* Conditional feature flags - enable features based on available hardware */
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -393,8 +418,15 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define DENSE_MP_GPU_FP8_ADAPTIVE   10  /**< Dense mixed precision GPU FP8 single (FP8 + SP on GPU) */
 
 /* TLR boundary conditions - control off-band computation */
+#ifndef TLR_BOUND_WITHOUT_OFFBAND_GEMM
 #define TLR_BOUND_WITHOUT_OFFBAND_GEMM      0  /**< Skip off-band GEMM operations */
+#endif
+#ifndef TLR_BOUND_WITHOUT_OFFBAND_GEMM_TRSM
 #define TLR_BOUND_WITHOUT_OFFBAND_GEMM_TRSM 0  /**< Skip off-band GEMM and TRSM operations */
+#endif
+#if TLR_BOUND_WITHOUT_OFFBAND_GEMM || TLR_BOUND_WITHOUT_OFFBAND_GEMM_TRSM
+#warning "TLR_BOUND_WITHOUT_OFFBAND_*: off-band updates are skipped to measure a performance bound; results are wrong"
+#endif
 
 /* Analysis data type - data type for matrix analysis operations */
 #define DATATYPE_ANALYSIS uint16_t  /**< 16-bit unsigned integer for matrix analysis */
@@ -407,7 +439,9 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
  * ============================================================================ */
 
 /* Rank statistics - control rank information output */
+#ifndef PRINT_RANK
 #define PRINT_RANK 0  /**< Enable rank statistics printing (debugging) */
+#endif
 
 /* Rank mapping configuration - rank analysis parameters */
 #define RANK_MAP_BUFF 4  /**< Buffer size for rank mapping operations */
@@ -425,30 +459,30 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
  * Memory and performance configuration
  * ============================================================================ */
 
+#ifndef BAND_MEMORY_CONTIGUOUS
 #define BAND_MEMORY_CONTIGUOUS 0  /**< Use contiguous memory for band (memory layout optimization) */
+#endif
 #define THRESHOLD_MEMORY_PER_NODE INT_MAX  /**< Memory threshold per node (unlimited) */
+#ifndef WORKLOAD_BALANCE
 #define WORKLOAD_BALANCE 1  /**< Workload balancing strategy (enable load balancing) */
+#endif
 #define FREE_BAND_MEMORY    0  /**< Free band memory flag (keep band memory allocated) */
 #define FREE_OFFBAND_MEMORY 1  /**< Free off-band memory flag (free off-band memory) */
-#define PERFORMANCE_BAND_BOUND 0  /**< Performance testing band bound (disable performance bounds) */
 #define PORTION_NORM 1  /**< Portion of band for global norm calculation (full band) */
 
 /* ============================================================================
  * Application-specific configuration
  * ============================================================================ */
 
-#if GENOMICS
-/* Genomics-specific flags - specialized settings for genetic analysis */
-#define WRITE_A 0      /**< Write kernel matrix to file (genomics output) */
-#define MPIIO 0        /**< Use MPI I/O for parallel file operations */
-#define CHECKSOLVE 0   /**< Check solution correctness (validation) */
-#define PREDICTION 0   /**< Enable prediction mode (genetic prediction) */
-#else
-/* General application flags - standard settings for general applications */
-#define WRITE_A 0      /**< Write kernel matrix to file (general output) */
-#define MPIIO 0        /**< Use MPI I/O for parallel file operations */
-#define CHECKSOLVE 0   /**< Check solution correctness (validation) */
-#define PREDICTION 0   /**< Enable prediction mode (general prediction) */
+/* Genomics I/O and prediction paths (off by default; -DNAME=1 to enable) */
+#ifndef MPIIO
+#define MPIIO 0
+#endif
+#ifndef CHECKSOLVE
+#define CHECKSOLVE 0
+#endif
+#ifndef PREDICTION
+#define PREDICTION 0
 #endif
 
 /* ============================================================================
@@ -483,7 +517,9 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define HICMA_GEMM_TT_SUMMA  8  /**< GEMM TT with SUMMA algorithm (scalable with both transposed) */
 
 /* GPU buffer allocation strategy - memory management for GPU operations */
+#ifndef GPU_BUFFER_ONCE
 #define GPU_BUFFER_ONCE 1  /**< Allocate GPU buffer once and reuse (memory efficiency) */
+#endif
 
 /* ============================================================================
  * Utility macros
