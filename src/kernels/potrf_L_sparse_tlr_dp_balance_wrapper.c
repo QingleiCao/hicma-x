@@ -43,8 +43,13 @@ potrf_L_sparse_tlr_dp_balance_New( parsec_context_t *parsec,
     int compmaxrank = params->compmaxrank;
     int storagemaxrank = params->genmaxrank;
 
-    /* The sparse kinds always work on the band/off-band descriptor */
+    /* The matrix: dcAd when it is dense and contiguous (the condition under
+     * which hicma_parsec_data_init allocates dcAd instead of the band tiles of
+     * dcA, e.g. a single tile row), dcA otherwise; as in DENSE_TLR_DP */
     parsec_tiled_matrix_t *A = (parsec_tiled_matrix_t *)&data->dcA;
+    if( params->band_size_dense >= params->NT && params->auto_band == 0 && !params->adaptive_memory ) {
+        A = (parsec_tiled_matrix_t *)&data->dcAd;
+    }
     parsec_tiled_matrix_t *Ar = (parsec_tiled_matrix_t *)&data->dcAr;
     parsec_tiled_matrix_t *Rank = (parsec_tiled_matrix_t *)&data->dcRank;
     parsec_tiled_matrix_t *Dist = (parsec_tiled_matrix_t *)&data->dcDist;

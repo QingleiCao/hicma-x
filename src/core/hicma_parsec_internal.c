@@ -815,6 +815,9 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Ensure process grid dimensions are valid and consistent with number of nodes
     if( 0 == params->P
             || params->Q * params->P != params->nodes ) {
+        if( 0 == params->rank && (params->P > 0 || params->Q > 0) )
+            fprintf(stderr, YEL "The requested process grid (--P %d --Q %d) does not cover the %d processes; "
+                    "choosing one\n" RESET, params->P, params->Q, params->nodes);
         params->Q = hicma_parsec_process_grid_calculation( params->nodes );
         params->P = params->nodes / params->Q;
     }
@@ -824,6 +827,12 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
 
     /* Matrix Dimension Validation and Default Assignment */
     // Matrix size N is required for most computations
+    if( params->N < 0 || params->NB < 0 || params->M < 0 ) {
+        if( 0 == params->rank )
+            fprintf(stderr, RED "Error: negative matrix or tile size (N= %d, M= %d, NB= %d)\n" RESET,
+                    params->N, params->M, params->NB);
+        exit(1);
+    }
     if( params->N <= 0 ) {
         if( 0 == params->rank )
             fprintf(stderr, "Matrix size (N) is not set; set to 2048!\n");

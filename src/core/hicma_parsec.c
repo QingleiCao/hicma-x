@@ -470,11 +470,12 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             break;
 
         default:
-            /* Invalid Cholesky type specified */
+            /* Invalid Cholesky type: every rank has the same parameters */
             if( 0 == params->rank ) {
-                fprintf(stderr, RED "ERROR: Cholesky is not called. Make sure the right parameters are used !!!\n\n");
+                fprintf(stderr, RED "ERROR: --kind_of_cholesky %d is not one of 1 to 10; no factorization run\n" RESET,
+                        params->kind_of_cholesky);
             }
-            return 1;
+            exit(1);
     }
 
     if( 0 != rc ) {
