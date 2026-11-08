@@ -372,6 +372,13 @@ consolidation):
 N = 16384 (2.3e-5 at N = 8192). These grow with N; the registered cases use
 bounds measured at their own sizes.
 
+**Fresh clone, final tree.** The walkthrough was repeated on the pushed
+branch: HTTPS clone with `--recursive`, `cmake .. -G Ninja` without options,
+`ninja`, CPU CTest 23 / 23, `cmake --install`, and the install consumer
+(Cholesky driver and conversion test) from the prefix, all with
+`LD_LIBRARY_PATH` unset. Both CI jobs of ecrc/hicma-x#13 pass on the commits
+of this section.
+
 **Harness note.** Inside a `srun --overlap` step, an Open MPI 5 singleton (a
 one-rank test started without `mpirun`, as CTest does) waits forever on the
 step's PMIx server; the guyot runs clear the `SLURM_*`/`PMIX_*` variables. Not

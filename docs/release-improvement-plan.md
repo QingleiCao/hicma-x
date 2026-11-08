@@ -123,7 +123,7 @@ after the library changes.
 - 2026-11-08: second pass on request: tile/LAPACK conversion JDFs merged
   (`TODOs` item 1); external-user walkthrough (fresh clone, BUILD.md verbatim,
   an embedding application) and corner-case sweeps (61 CPU cases on methane,
-  93 GPU cases on guyot with 1 process x 8 A100s, 8 ranks x 1 and 4 ranks x 2).
+  83 GPU cases on guyot with 1 process x 8 A100s, 8 ranks x 1 and 4 ranks x 2).
   Eleven problems fixed, among them kind 3 on GPUs (reshape abort, sender
   conversion), FP16-accumulation GEMM scalars, sparse kinds with a single tile
   row, embedding crashes and the BLAS run-time path; see
