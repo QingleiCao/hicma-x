@@ -7,8 +7,10 @@
 # Writes <out_dir>/results_<label>.tsv (case, exit code, residual, factorization
 # time, GEMM counts) and one log per case under <out_dir>/logs_<label>/.
 # <out_dir> defaults to ./validation. "gpu" adds the single-GPU cases and the
-# two-rank cases that share one GPU (they pass --mca device_cuda_memory_use 30).
+# two-rank cases that share one GPU (they pass --mca device_{cuda,hip}_memory_use 30).
 # The run-time libraries (BLAS, MPI) must be on LD_LIBRARY_PATH / PATH.
+# HICMA_MPIRUN overrides the launcher of the two-rank cases (called with -n N);
+# the default is mpirun, else srun inside a Slurm allocation, else they are skipped.
 set -u
 BUILD=$(cd "$1" && pwd); LABEL=$2; MODE=${3:-cpu}
 OUT=${4:-./validation}; mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
@@ -17,11 +19,26 @@ RES=$OUT/results_${LABEL}.tsv
 LOGD=$OUT/logs_${LABEL}; mkdir -p $LOGD
 echo -e "case\texit\tresidual\ttime_s\tgemms" > $RES
 cd $BUILD
-MPIRUN="mpirun --oversubscribe --bind-to none"
+if [ -n "${HICMA_MPIRUN:-}" ]; then
+  MPIRUN=$HICMA_MPIRUN
+elif command -v mpirun > /dev/null 2>&1; then
+  MPIRUN="mpirun --oversubscribe --bind-to none"
+elif [ -n "${SLURM_JOB_ID:-}" ] && command -v srun > /dev/null 2>&1; then
+  MPIRUN=srun
+else
+  MPIRUN=skip
+fi
+# kinds 1-4 have CUDA bodies only (refused on HIP with --gpus > 0); the device
+# MCA parameters are named after the device type
+HIP_BUILD=0; GPU_MCA=device_cuda
+grep -q '^HICMA_PARSEC_HAVE_HIP:BOOL=ON' CMakeCache.txt 2> /dev/null && { HIP_BUILD=1; GPU_MCA=device_hip; }
 run() { # name, np, cmd...
   local name=$1; local np=$2; shift 2
   local log=$LOGD/$name.log
-  if [ "$np" -gt 1 ]; then $MPIRUN -np $np "$@" > $log 2>&1; else "$@" > $log 2>&1; fi
+  if [ "$np" -gt 1 ] && [ "$MPIRUN" = skip ]; then
+    echo -e "$name\tskip\tNA\tNA\t" >> $RES; printf "%-40s skipped (no MPI launcher)\n" "$name"; return
+  fi
+  if [ "$np" -gt 1 ]; then $MPIRUN -n $np "$@" > $log 2>&1; else "$@" > $log 2>&1; fi
   local rc=$?
   local resid=$(grep -oE 'result_accuracy= *[0-9.e+-]+' $log | tail -1 | awk '{print $2}')
   [ -z "$resid" ] && resid=$(grep -oE '\|\|A-LL.?\|\|/\|\|A\|\| *= *[0-9.e+-]+' $log | tail -1 | grep -oE '[0-9.e+-]+$')
@@ -79,17 +96,21 @@ run gpu_dense_k8_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1
 run gpu_dense_k9_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 9 --adaptive_decision 1 --check 1 --check_tol 1e-6 --verbose 2
 run gpu_runtime_k10         1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --check 1 --verbose 2
 run gpu_runtime_k10_admem   1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --adaptive_memory 1 --check 1 --verbose 2
+if [ "$HIP_BUILD" -eq 0 ]; then
 run gpu_tlr_kind2_band2     1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 2 --band_dense 2 --gpus 1 --check 1 --verbose 2
 run gpu_tlr_kind1_band2     1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 1 --band_dense 2 --adaptive_decision 1 --gpus 1 --check 1 --check_tol 1e-7 --verbose 2
 run gpu_tlr_mp_k1           1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2 --band_dense 1000 --adaptive_decision 1 --kind_of_cholesky 1 --check_tol 1e-7
+fi
 run gpu_dense_k5_dtconv2    1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision 1 --datatype_convert 2 --check 1 --verbose 2
 run gpu_trmm_adapt          1 $T --N 2000 --K 1500 --NB 256 --gpus 1 --check 1 --adaptive_decision 1 --fixedacc 1e-4
+if [ "$HIP_BUILD" -eq 0 ]; then
 run gpu_band_k3_hp          1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check 1 --check_tol 1e-5 --verbose 2
 run gpu_band_k3_hp_sender   1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check 1 --check_tol 1e-5 --verbose 2
 run gpu_band_k4_hp          1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 4 --band_dense_sp 4 --check 1 --check_tol 1e-5 --verbose 2
 run gpu_band_k3_fp16acc    1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check 1 --check_tol 1e-4 --verbose 2
-run gpu_dense_k5_fp64_np2   2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2 -- --mca device_cuda_memory_use 30
-run gpu_runtime_k10_np2     2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --check 1 --verbose 2 -- --mca device_cuda_memory_use 30
-run gpu_dense_k8_np2        2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 8 --adaptive_decision 1 --check 1 --verbose 2 -- --mca device_cuda_memory_use 30
+fi
+run gpu_dense_k5_fp64_np2   2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2 -- --mca ${GPU_MCA}_memory_use 30
+run gpu_runtime_k10_np2     2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --check 1 --verbose 2 -- --mca ${GPU_MCA}_memory_use 30
+run gpu_dense_k8_np2        2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 8 --adaptive_decision 1 --check 1 --verbose 2 -- --mca ${GPU_MCA}_memory_use 30
 fi
 echo "results: $RES"

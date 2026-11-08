@@ -59,7 +59,10 @@ cd build && HICMA_GPUS=1 ../scripts/test_CI.sh
 
 `HICMA_CLIMATE_DATA` points the climate emulator case at its input directory
 (skipped when unset), `HICMA_MESH_FILE` at the SARS-CoV-2 mesh (default: the
-copy in `stars-h/`), `HICMA_MPIRUN=skip` runs the single-rank cases only.
+copy in `stars-h/`). The two-rank cases use `HICMA_MPIRUN -n 2` (default:
+`mpirun --oversubscribe`, else `srun` inside a Slurm allocation as on Frontier,
+else they are skipped); `HICMA_MPIRUN=skip` runs the single-rank cases only.
+On a HIP build the GPU cases of kinds 1 to 4 are skipped (CUDA bodies only).
 
 ### The validation matrix
 
@@ -123,7 +126,7 @@ Climate emulator (needs the external data set):
 ```
 
 Genomics (kernel ridge regression) needs `-DHICMA_PARSEC_GENOMICS=ON` and a
-GPU build; see `BUILD.md`.
+CUDA build; see `BUILD.md`.
 
 ## Requirements and limitations
 
@@ -138,8 +141,8 @@ GPU build; see `BUILD.md`.
   only.
 - `--datatype_convert 2` needs GPUs.
 - One process per node is the fastest layout; several ranks per GPU work but
-  need `-- --mca device_cuda_memory_use <percent>` so that each rank reserves
-  only a share of the device memory.
+  need `-- --mca device_cuda_memory_use <percent>` (`device_hip_memory_use`
+  on AMD GPUs) so that each rank reserves only a share of the device memory.
 
 ## Cholesky kinds (`--kind_of_cholesky`)
 

@@ -88,6 +88,11 @@ endif()
 # scripts/test_CI.sh runs the same cases outside CTest. ----
 set(HICMA_TEST_LABELS hicma)
 function(hicma_add_test name nproc)
+    # testing_potrf refuses to run when the library is built with GENOMICS=1
+    list(GET ARGN 0 exe)
+    if(HICMA_PARSEC_GENOMICS AND "${exe}" STREQUAL "${P}")
+        return()
+    endif()
     set(labels hicma)
     set(launch)
     if(nproc GREATER 1)

@@ -19,6 +19,10 @@ if(@HICMA_PARSEC_HAVE_CUDA@)
 endif()
 if(@HICMA_PARSEC_HAVE_HIP@)
     find_dependency(hip)
+    # DPLASMA::dplasma links roc::hipblas and roc::rocsolver; its own package
+    # configuration does not look for them (CUDAToolkit above covers CUDA::*)
+    find_dependency(hipblas)
+    find_dependency(rocsolver)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/HICMAParsecTargets.cmake")

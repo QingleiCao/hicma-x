@@ -46,7 +46,7 @@ option(ON_FUGAKU "Running on Fugaku Supercomputer (default OFF)" OFF)
 option(ENABLE_SANITIZER "Enable AddressSanitizer (default OFF)" OFF)
 option(ENABLE_CUTLASS "Enable CUTLASS (default OFF)" OFF)
 option(GIT_SUBMODULE "Check submodules during build (default ON)" ON)
-option(HICMA_PARSEC_GENOMICS "Build the genomics drivers (kernel ridge regression) and compile the library with GENOMICS=1; needs CUDA or HIP (default OFF)" OFF)
+option(HICMA_PARSEC_GENOMICS "Build the genomics drivers (kernel ridge regression) and compile the library with GENOMICS=1; needs CUDA (default OFF)" OFF)
 
 # C standard configuration
 if(SUPPORT_C11)
@@ -104,8 +104,8 @@ if(HICMA_PARSEC_HAVE_HIP)
     message(STATUS "HIP support enabled")
 endif(HICMA_PARSEC_HAVE_HIP)
 
-if(HICMA_PARSEC_GENOMICS AND NOT (HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP))
-    message(FATAL_ERROR "HICMA_PARSEC_GENOMICS needs HICMA_PARSEC_HAVE_CUDA or HICMA_PARSEC_HAVE_HIP: the genomics GEMM kernels have GPU bodies only")
+if(HICMA_PARSEC_GENOMICS AND NOT HICMA_PARSEC_HAVE_CUDA)
+    message(FATAL_ERROR "HICMA_PARSEC_GENOMICS needs HICMA_PARSEC_HAVE_CUDA: the genomics GEMM kernels (isyrk_LT, gemmex_TN*) have CUDA bodies only and their wrappers use CUDA devices only")
 endif()
 
 # Fugaku-specific configuration
@@ -175,6 +175,14 @@ add_subdirectory(dplasma)
 
 if(_restore_pe_env)
     set(ENV{PE_ENV} "${_saved_pe_env}")
+endif()
+
+# PaRSEC installs its Fortran module directory whenever a Fortran compiler
+# works, but only creates it when the compiler passes CMake's F90 check. Flang
+# from ROCm (PrgEnv-amd on Frontier) fails that check, so `cmake --install`
+# stopped at the missing directory. Create it so the install has nothing to copy.
+if(DEFINED PARSEC_BINARY_DIR AND NOT CMAKE_Fortran_COMPILER_SUPPORTS_F90)
+    file(MAKE_DIRECTORY ${PARSEC_BINARY_DIR}/parsec/include/fortran)
 endif()
 
 add_subdirectory(stars-h)

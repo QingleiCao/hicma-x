@@ -17,8 +17,11 @@
 #                        skipped when unset or missing)
 #   HICMA_MESH_FILE      SARS-CoV-2 mesh (default: the copy in stars-h)
 #   HICMA_GPUS           number of GPUs for the GPU cases (default 0: skipped)
-#   HICMA_MPIRUN         launcher for the 2-rank cases (default: mpirun
-#                        --oversubscribe; set to "skip" to run single rank only)
+#   HICMA_MPIRUN         launcher for the 2-rank cases, called as
+#                        "$HICMA_MPIRUN -n <ranks> ..." (default: "mpirun
+#                        --oversubscribe" when mpirun exists, else srun inside
+#                        a Slurm allocation, as on Frontier, else "skip");
+#                        "skip" runs single rank only
 #
 # The same cases are registered with CTest (tests/CMakeLists.txt); this script
 # is the stand-alone variant for machines where ctest is inconvenient.
@@ -37,7 +40,18 @@ if [ ! -x tests/testing_potrf_tlr ]; then
 fi
 
 GPUS=${HICMA_GPUS:-0}
-MPIRUN=${HICMA_MPIRUN:-"mpirun --oversubscribe"}
+if [ -n "${HICMA_MPIRUN:-}" ]; then
+    MPIRUN=$HICMA_MPIRUN
+elif command -v mpirun > /dev/null 2>&1; then
+    MPIRUN="mpirun --oversubscribe"
+elif [ -n "${SLURM_JOB_ID:-}" ] && command -v srun > /dev/null 2>&1; then
+    MPIRUN=srun   # inside an allocation; outside one srun would request a new job
+else
+    MPIRUN=skip
+fi
+# kinds 1-4 have CUDA bodies only: a HIP build refuses them with --gpus > 0
+HIP_BUILD=0
+grep -q '^HICMA_PARSEC_HAVE_HIP:BOOL=ON' CMakeCache.txt 2> /dev/null && HIP_BUILD=1
 MESH=${HICMA_MESH_FILE:-$(dirname "$0")/../stars-h/SARS-CoV-2-meshes/singleviursdata/SortVirus10370.txt}
 failed=0
 passed=0
@@ -48,7 +62,7 @@ run() {
     local name=$1 ranks=$2; shift 2
     if [ "$ranks" -gt 1 ]; then
         if [ "$MPIRUN" = "skip" ]; then print_warning "$name (needs $ranks ranks)"; skipped=$((skipped+1)); return; fi
-        set -- $MPIRUN -np "$ranks" "$@"
+        set -- $MPIRUN -n "$ranks" "$@"   # -n: understood by mpirun, mpiexec and srun
     fi
     print_status "$name: $*"
     if "$@"; then
@@ -110,12 +124,16 @@ if [ "$GPUS" -gt 0 ]; then
     run gpu_fp8_sp              1 $P $G --kind_of_cholesky 9 --adaptive_decision 1 --check_tol 1e-6
     run gpu_runtime_decision    1 $P $G --adaptive_decision_runtime 1 --check_tol 1e-7
     run gpu_runtime_admem       1 $P $G --adaptive_decision_runtime 1 --adaptive_memory 1 --check_tol 1e-7
+    if [ "$HIP_BUILD" -eq 0 ]; then
     run gpu_tlr_mp              1 $P $COMMON --gpus $GPUS --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7
     run gpu_tlr_dp_band2        1 $P $COMMON --gpus $GPUS --kind_of_cholesky 2 --band_dense 2
     run gpu_band_dp_sp_hp       1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-5
     run gpu_band_dp_sp_hp_sender 1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-5
     run gpu_band_sp_hp          1 $P $G --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5
     run gpu_band_hp_fp16acc     1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4
+    else
+    print_warning "GPU cases of kinds 1-4 (CUDA bodies only, refused on HIP)"; skipped=$((skipped+1))
+    fi
     run gpu_trmm_adaptive       1 $T --N 2000 --K 1500 --NB 256 --gpus $GPUS --check 1 --adaptive_decision 1 --fixedacc 1e-4
 else
     print_warning "GPU cases (set HICMA_GPUS=1)"; skipped=$((skipped+1))

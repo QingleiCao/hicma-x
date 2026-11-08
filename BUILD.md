@@ -104,7 +104,7 @@ ctest --preset=release
 |--------|---------|-------------|
 | `CMAKE_BUILD_TYPE` | `RelWithDebInfo` | Build type (Debug, Release, RelWithDebInfo, MinSizeRel) |
 | `BUILD_TESTING` | `ON` | Build the drivers in `tests/` and register the CTest cases |
-| `HICMA_PARSEC_GENOMICS` | `OFF` | Build the genomics (kernel ridge regression) drivers and compile the library with `GENOMICS=1`; needs CUDA or HIP |
+| `HICMA_PARSEC_GENOMICS` | `OFF` | Build the genomics (kernel ridge regression) drivers and compile the library with `GENOMICS=1`; needs CUDA (the genomics kernels have no HIP bodies). The Cholesky drivers refuse to run in such a build, so their CTest cases are not registered |
 | `BUILD_SHARED_LIBS` | `ON` | Shared (`ON`) or static libraries |
 | `HICMA_PARSEC_HAVE_CUDA` | `OFF` | Enable CUDA support. Also builds the FP8 (E4M3) GEMMs, which kinds 8, 9 and 10 use only when every GPU has compute capability >= 8.9; `--fp8 0` turns them off at runtime |
 | `HICMA_PARSEC_HAVE_HIP` | `OFF` | Enable HIP support |

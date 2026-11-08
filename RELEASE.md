@@ -48,9 +48,10 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
   differ in their storage precisions (results are within tolerance in both).
 - The residual of mixed-precision runs is bounded by the precisions used, not by
   `--fixedacc`; pass `--check_tol` with the bound you expect (see `TESTS.md`).
-- The genomics drivers need `-DHICMA_PARSEC_GENOMICS=ON` and a GPU build; the
+- The genomics drivers need `-DHICMA_PARSEC_GENOMICS=ON` and a CUDA build; the
   climate emulator needs its external data set. Neither is covered by CI.
-- Several ranks sharing one GPU need `-- --mca device_cuda_memory_use <percent>`.
+- Several ranks sharing one GPU need `-- --mca device_cuda_memory_use <percent>`
+  (`device_hip_memory_use` on AMD GPUs).
 
 ### Validation
 

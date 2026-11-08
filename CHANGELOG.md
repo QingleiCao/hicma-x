@@ -80,13 +80,21 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   processes is reported before the grid is chosen.
 - Refused instead of silently miscomputed: `--enable_stochastic_rounding` with
   kinds 8, 9, 10; `--datatype_convert 2` without GPUs; kinds 1 to 4 with GPUs
-  on HIP; a half-precision band on CPU-only runs of kind 3.
+  on HIP; a half-precision band on CPU-only runs of kind 3. Kind 3 with
+  `--datatype_convert 2` runs in the receiver mode: it does not implement the
+  sender conversion, and with a one-tile FP64 band its GPU TRSM read the FP64
+  diagonal factor as FP32.
+- HIP builds register DPLASMA's hipBLAS handles (`DPLASMA::HIP::HANDLES`); the
+  DPLASMA routines that run on the GPU with `--gpus > 0`, such as the TRMM in
+  `--check`, dereferenced a NULL handle.
 - Memory safety: write through `NULL+1` in `hicma_parsec_params_init` when
   `argv[0]` has no `/`; 8-byte allocation for a 24-byte struct in
   `readLocsFile`; `info_gpu` allocated with the requested and freed with the
   detected GPU count; `pheno_file` and other parameter fields read or freed
-  uninitialized (the parameter struct is now zeroed first); `gpus` agreed
-  across ranks; the Hamming GPU kernel prototypes match their definitions.
+  uninitialized (the parameter struct is now zeroed first); processes that
+  see different numbers of GPUs are refused (they took different branches
+  around collectives, and PaRSEC keeps the devices it enabled at start-up);
+  the Hamming GPU kernel prototypes match their definitions.
 - Resource leaks: memory-pool structs of every Cholesky taskpool, GPU device
   index arrays, the cuBLASLt/cuSOLVER setup failures now reported.
 
@@ -126,7 +134,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   decision, low-rank U and V with their ranks), identical on every process and
   for every process grid; replaces the single-precision `matrix_dsum` and
   `matrix_ssum`, whose tile task never stored its partial sum. Test
-  `testing_matrix_sum` (CTest `matrix_sum`, `matrix_sum_np2`).
+  `testing_matrix_sum` (CTest `matrix_sum`, `matrix_sum_np2`), including
+  low-rank tiles in a partial last tile row, where V has more rows than U.
 - The compile-time switches of `hicma_parsec_internal.h` can be set with
   `-DNAME=value` in `CMAKE_C_FLAGS` (20 had no `#ifndef`); every non-default
   value was compiled on the CPU and CUDA trees; the dead `CHOLESKY_CPU_ONLY`,
@@ -155,7 +164,12 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - `find_package(HICMAParsec)` works: the package config is generated with
   `configure_package_config_file`, finds PaRSEC, DPLASMA, MPI and CUDA/HIP,
   and the library carries its own link interface. `cmake --install` is
-  exercised by CI through `tests/install_consumer`.
+  exercised by CI through `tests/install_consumer`. On HIP the config also
+  finds `hipblas` and `rocsolver`, which DPLASMA's link interface names but
+  DPLASMA's own config does not look for. With ROCm's Flang (Frontier),
+  `cmake --install` stopped at PaRSEC's Fortran module directory, which PaRSEC
+  installs but does not create when the compiler fails CMake's F90 check; the
+  configure step creates it.
 - One version: `project(VERSION 0.2.0)`, SOVERSION 0; `VERSION.txt` and the
   version updater script are gone.
 - `cmake_minimum_required(3.21)`; configure no longer runs
@@ -174,11 +188,15 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   `LD_LIBRARY_PATH`. A BLAS outside the system directories still needs
   `LD_LIBRARY_PATH` (CMake does not record the MKL directory).
 - `HICMA_PARSEC_GENOMICS` option: the genomics drivers are built only when it
-  is on (they need a GPU build); the default build no longer ships binaries that
-  cannot run.
+  is on (they need a CUDA build: the genomics kernels have no HIP bodies); the
+  default build no longer ships binaries that cannot run. The Cholesky CTest
+  cases are not registered in such a build, where `testing_potrf` refuses to run.
 - CTest registers the HiCMA tests (labels `hicma`, `mpi`, `gpu`), all with
   `--check 1`; `scripts/test_CI.sh` runs the same cases and no longer depends
-  on a private data path; CI runs them and a CUDA compile job.
+  on a private data path; CI runs them and a CUDA compile job. The script and
+  `scripts/validation_matrix.sh` launch the two-rank cases with `-n` (mpirun,
+  or srun inside a Slurm allocation; skipped without a launcher), skip the
+  GPU cases of kinds 1 to 4 on HIP and use `device_hip_memory_use` there.
 - `scripts/` reorganized: generic tools at the top level, site recipes under
   `scripts/machines/`, genomics data tools under `scripts/genomics/`,
   byte-identical and obsolete scripts removed; the stale Dockerfiles removed.
@@ -193,7 +211,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 ### Known limitations (see `docs/release-readiness.md`)
 
 - Cholesky drivers need `N % NB == 0`.
-- Kinds 1 to 4 have no HIP bodies; HIP is compile-tested only.
+- Kinds 1 to 4 have no HIP bodies. HIP builds are compiled and their CPU cases
+  run (Frontier, gfx90a); HIP GPU execution is not validated.
 - `--enable_stochastic_rounding` is not implemented for kinds 8 to 10.
 - The CPU and GPU runtime-decision GEMMs use different storage policies for
   FP16 updates.
