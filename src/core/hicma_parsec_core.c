@@ -4618,14 +4618,17 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
             A_use = A_h;
         }
 
-        /* Convert datatype, B */
-        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
+        /* Convert datatype, B: low-rank, U and V of rank Brank (this was the
+         * dense conversion of a full tile, which read the FP64 U and V of a
+         * LOW_RANK_DP B as FP32: wrong results or a crash in every GPU run
+         * where an FP16 tile gets a low-rank x low-rank update) */
+        if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2half_GPU(   descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+            double2half_GPU(   descA->mb, Brank * 2, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
             B_use = B_h;
         } else {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU(   descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+            float2half_GPU(   descA->mb, Brank * 2, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
             B_use = B_h;
         }
 

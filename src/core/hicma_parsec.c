@@ -288,34 +288,24 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
     hicma_parsec_decisions_update( parsec, data, params );
     SYNC_TIME_PRINT(params->rank, ("Decision update: %d\n", params->adaptive_decision));
 
-    /* Step 10b: precisions a GPU run cannot handle (the decisions are final
-     * and the same on every rank). A static FP16 or FP8 band together with
-     * low-rank tiles fails on GPUs in kinds 1 and 5: a segfault in cuBLAS or
-     * NaNs in HCORE's QR, or a wrong result, also with 0.1.0's code; the cause
-     * is not established, and the same layouts pass on the CPU, with an FP32
-     * band, or with --adaptive_decision. And with FP16 C (--tensor_gemm_hp
-     * 0x10) a dense FP16 tile goes to FP16 at its first update and back at its
-     * last, which a rank-0 low-rank operand skips. */
-    if( params->gpus > 0 && (params->band_size_dense < params->NT || params->auto_band) ) {
+    /* Step 10b: with FP16 C (--tensor_gemm_hp 0x10) a dense FP16 tile goes to
+     * FP16 at its first update and back at its last, which a rank-0 low-rank
+     * operand skips: refuse it on GPUs when a low-rank tile has rank 0 (the
+     * decisions are final and the same on every rank) */
+    if( params->gpus > 0 && 0 == params->iminrk && MASK_TF16_A16_B16_C16_OP16 == HICMA_FP16_GEMM(params)
+        && (params->band_size_dense < params->NT || params->auto_band) ) {
         const int NT = params->NT;
-        int has_lr = 0, has_hp = 0, has_hp_fp8 = 0;
+        int has_lr = 0, has_hp = 0;
         for( int k = 0; k < NT; k++ ) {
             for( int m = k+1; m < NT; m++ ) {
-                const uint16_t d = params->decisions[k*NT+m];
-                has_lr |= LOW_RANK_DP == d || LOW_RANK_SP == d;
-                has_hp |= DENSE_HP == d;
-                has_hp_fp8 |= DENSE_HP == d || DENSE_FP8 == d;
+                has_lr |= LOW_RANK_DP == params->decisions[k*NT+m] || LOW_RANK_SP == params->decisions[k*NT+m];
+                has_hp |= DENSE_HP == params->decisions[k*NT+m];
             }
         }
-        const char *error = NULL;
-        if( has_lr && has_hp_fp8 && !params->adaptive_decision && !params->adaptive_decision_runtime )
-            error = "a static FP16 or FP8 band with low-rank tiles fails on GPUs (crash or wrong result): keep the "
-                    "band at FP32 or above (--band_dense_sp >= --band_dense), use --adaptive_decision, or run on the CPU";
-        else if( has_lr && has_hp && 0 == params->iminrk && MASK_TF16_A16_B16_C16_OP16 == HICMA_FP16_GEMM(params) )
-            error = "a low-rank tile has rank 0, which skips the FP16 conversion of C under --tensor_gemm_hp 0x10: use 0x8";
-        if( NULL != error ) {
+        if( has_lr && has_hp ) {
             if( 0 == params->rank )
-                fprintf(stderr, RED "%s\n" RESET, error);
+                fprintf(stderr, RED "a low-rank tile has rank 0, which skips the FP16 conversion of C under "
+                        "--tensor_gemm_hp 0x10: use 0x8\n" RESET);
             exit(1);
         }
     }

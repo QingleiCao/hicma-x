@@ -193,12 +193,12 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
         # tile disagreed on its type (NaNs, then a crash); residual 2.2e-5
         hicma_add_test(gpu_tlr_adaptive_fp16acc 1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
                        --fixedacc 1e-4 --maxrank 256 --adaptive_decision 1 --tensor_gemm_hp 0x10 --check_tol 1e-4)
-        # A static FP16 band with low-rank tiles fails on GPUs (segfault or a
-        # wrong result, cause not established) and is refused before factorizing
-        hicma_add_test(gpu_tlr_hp_band_refused 1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
-                       --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256)
-        if(TEST gpu_tlr_hp_band_refused)
-            set_tests_properties(gpu_tlr_hp_band_refused PROPERTIES PASS_REGULAR_EXPRESSION "static FP16 or FP8 band with low-rank tiles")
-        endif()
+        # Static FP16 band with low-rank tiles, so FP16 tiles get low-rank x
+        # low-rank updates (their low-rank B was converted as a dense tile:
+        # residual 22 to 59, or a segfault); residuals 4.3e-5 (kinds 5 and 1)
+        hicma_add_test(gpu_tlr_hp_band       1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
+                       --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256 --check_tol 3e-4)
+        hicma_add_test(gpu_tlr_mp_hp_band    1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --kind_of_cholesky 1
+                       --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256 --check_tol 3e-4)
     endif()
 endif()
