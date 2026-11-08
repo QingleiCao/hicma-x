@@ -176,40 +176,6 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
  * Feature flags and configuration
  * ============================================================================ */
 
-/* Datatypes - Unique identifiers for different numeric precision types */
-/* 64-bit types */
-#define HICMA_PARSEC_FP64      1   /**< 64-bit double precision floating point */
-#define HICMA_PARSEC_INT64     2   /**< 64-bit signed integer */
-
-/* 32-bit types */
-#define HICMA_PARSEC_FP32      3   /**< 32-bit single precision floating point */
-#define HICMA_PARSEC_INT32     4   /**< 32-bit signed integer */
-#define HICMA_PARSEC_UINT32    5   /**< 32-bit unsigned integer */
-
-/* 16-bit types */
-#define HICMA_PARSEC_FP16      6   /**< 16-bit half precision floating point */
-#define HICMA_PARSEC_BF16      7   /**< 16-bit bfloat16 floating point format */
-#define HICMA_PARSEC_INT16     8   /**< 16-bit signed integer */
-#define HICMA_PARSEC_UINT16    9   /**< 16-bit unsigned integer */
-
-/* 8-bit types */
-#define HICMA_PARSEC_FP8_E4M3  10  /**< 8-bit floating point (4 exponent, 3 mantissa bits) */
-#define HICMA_PARSEC_FP8_E5M2  11  /**< 8-bit floating point (5 exponent, 2 mantissa bits) */
-#define HICMA_PARSEC_INT8      12  /**< 8-bit signed integer */
-#define HICMA_PARSEC_UINT8     13  /**< 8-bit unsigned integer */
-
-/* 4-bit types */
-#define HICMA_PARSEC_INT4      14  /**< 4-bit signed integer */
-#define HICMA_PARSEC_UINT4     15  /**< 4-bit unsigned integer */
-
-/* 1-bit type */
-#define HICMA_PARSEC_ONE_BIT   16  /**< Single bit data type */ 
-
-/* Tile Formats */
-#define HICMA_PARSEC_DENSE      1  
-#define HICMA_PARSEC_LOW_RANK   2
-#define HICMA_PARSEC_SPARSE     3
-
 /* Application-specific flags - control specialized computation modes */
 #ifndef FOR_CLIMATE_EMULATOR
 #define FOR_CLIMATE_EMULATOR    0  /**< Enable climate emulator mode for atmospheric modeling */
@@ -232,15 +198,12 @@ extern "C" {  /**< Enable C linkage for C++ compatibility */
 #ifndef SINGLEFILE
 #define SINGLEFILE              0  /**< Enable single file I/O for simplified data handling */
 #endif
-#define DATATYPE                double  /**< Double precision for general applications */
-#define DATATYPE_USE            HICMA_PARSEC_FP64 
+#define DATATYPE                double  /**< Element type of the genomics/distributed-allocation tiles */
 
 /* Data type selection - choose precision based on application */
 #if GENOMICS
 #undef DATATYPE
-#undef DATATYPE_USE 
 #define DATATYPE                float   /**< Single precision for genomics applications */
-#define DATATYPE_USE            HICMA_PARSEC_FP32 
 #endif
 
 /* ============================================================================
@@ -346,28 +309,12 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
  * Utility macros
  * ============================================================================ */
 
-/* String conversion macros - convert macro values to strings */
-#define xstr(a) str(a)  /**< Expand macro then convert to string */
-#define str(a) #a       /**< Convert macro argument to string literal */
 
 /* ============================================================================
  * Debug and timing print macros
  * ============================================================================ */
 
-/* Synchronized time printing macro - print timing information from rank 0 */
-#undef SYNC_TIME_PRINT
-#define SYNC_TIME_PRINT(rank, print) do {                          \
-        SYNC_TIME_STOP();                                           \
-        if(0 == rank) {                                             \
-            printf("[****] TIME(s) %12.5f : ", sync_time_elapsed);  \
-            printf print;                                           \
-            fflush(stdout);                                         \
-            fflush(stderr);                                         \
-        }                                                           \
-  } while(0)  /**< Print synchronized timing information with custom message */
-
 /* Verbose printing macro - print debug information when verbose mode is enabled */
-#undef VERBOSE_PRINT
 #define VERBOSE_PRINT(rank, verbose, print) do {                               \
         if(0 == rank && verbose) {                                             \
             printf print;                                           \
@@ -399,11 +346,6 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define RECEIVER_CONVERT 0  /**< Receiver converts data (reduce sender overhead) */
 #define SENDER_CONVERT   1  /**< Sender converts data (reduce receiver overhead) */
 #define ADAPTIVE_CONVERT 2  /**< Adaptive conversion strategy (dynamic selection) */
-
-/* Sparse matrix handling modes - control sparse matrix processing */
-#define NOT_SPARSE     0  /**< Not sparse (dense matrix processing) */
-#define SPARSE_NORMAL  1  /**< Normal sparse mode (standard sparse algorithms) */
-#define SPARSE_BALANCE 2  /**< Balanced sparse mode (workload-balanced sparse algorithms) */
 
 /* Cholesky decomposition variants - different algorithm implementations */
 #define DENSE_TLR_MP          1  /**< Dense TLR mixed precision (dense band + low-rank off-band) */
@@ -462,7 +404,6 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #ifndef BAND_MEMORY_CONTIGUOUS
 #define BAND_MEMORY_CONTIGUOUS 0  /**< Use contiguous memory for band (memory layout optimization) */
 #endif
-#define THRESHOLD_MEMORY_PER_NODE INT_MAX  /**< Memory threshold per node (unlimited) */
 #ifndef WORKLOAD_BALANCE
 #define WORKLOAD_BALANCE 1  /**< Workload balancing strategy (enable load balancing) */
 #endif
@@ -497,7 +438,6 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define FLOPS_GEMM(__m, __n, __k) (FMULS_GEMM((__m), (__k), (__n)) + FADDS_GEMM((__m), (__k), (__n)))  /**< Calculate total FLOPS for GEMM operation */
 
 /* Machine epsilon values - precision limits for different floating point formats */
-#define EPS_DP     1.11e-16  /**< Double precision epsilon (IEEE 754) */
 #define EPS_SP     5.96e-08  /**< Single precision epsilon (IEEE 754) */
 #define EPS_HP     4.88e-04  /**< Half precision epsilon (IEEE 754) */
 #define EPS_HP_GPU 8.88e-01  /**< Half precision GPU epsilon (relaxed precision) */
@@ -614,8 +554,7 @@ typedef struct hicma_parsec_params_s {
     int NB;                   /**< Number of columns in a tile */
     int KB;                   /**< Number of K rows in a tile */
     int NP;                   /**< Number of processes */
-    int HMB;                  /**< Small MB for recursive H-DAGs */
-    int HNB;                  /**< Small NB for recursive H-DAGs */
+    int HNB;                  /**< Inner tile size of the recursive algorithms (--HNB) */
     int MT;                   /**< Number of tiles in row dimension */
     int NT;                   /**< Number of tiles in column dimension */
     int KT;                   /**< Number of tiles in K dimension, also the column dimension in B of TRMM */
@@ -641,7 +580,7 @@ typedef struct hicma_parsec_params_s {
     int reorder_gemm;         /**< Enable GEMM reordering */
     int kind_of_cholesky;     /**< Type of Cholesky decomposition */
     int auto_band;            /**< Enable automatic band size tuning */
-    int sparse;               /**< Enable sparse matrix handling */
+    int sparse;               /**< 0: dense; 1: sparse TLR (kind 6); > 1: sparse TLR, workload-balanced (kind 7) */
     int adaptive_maxrank;     /**< Enable adaptive maxrank adjustment */
     int left_looking;         /**< Use left-looking algorithm */
     int enable_stochastic_rounding; /**< Enable stochastic rounding kernels when available */
@@ -750,10 +689,6 @@ typedef struct hicma_parsec_params_s {
     uint16_t *decisions_gemm_gpu; /**< GPU GEMM type decisions for each tile */
     uint16_t *decisionsB;      /**< Precision decisions for each tile */
 
-    /* ========================================================================
-     * Problem type strings
-     * ======================================================================== */
-    char *str_problem[NB_PROBLEM]; /**< Array of problem type names */
 
     /* ========================================================================
      * Timing measurements
@@ -845,7 +780,6 @@ typedef struct hicma_parsec_params_s {
     double start_time_syrk;       /**< Start time for SYRK */
     double start_time_gemm;       /**< Start time for GEMM */
     double start_time_kernel_add; /**< Start time for kernel addition */
-    double start_time_kernel_sqr_sum_vec; /**< Start time for kernel square sum vector */
     double *gather_time;          /**< Array to gather timing information */
     double *gather_time_tmp;      /**< Temporary array for timing information */
     double *kernel_time_cpu;      /**< Per-CPU-worker GEMM timing accumulator */
@@ -1101,9 +1035,6 @@ typedef struct hicma_parsec_data_s {
     /* ========================================================================
      * Matrix descriptors
      * ======================================================================== */
-    // TODO: dcAd and dcAcpy need to be full matrix? Consider matrix type requirements
-    //parsec_matrix_block_cyclic_t dcAd;      /**< Dense mixed-precision matrix */
-    //parsec_matrix_block_cyclic_t dcAcpy;     /**< Copy of dense mixed-precision matrix */
     parsec_matrix_sym_block_cyclic_t dcAd;       /**< Dense mixed-precision matrix */
     parsec_matrix_sym_block_cyclic_t dcAcpy;     /**< Copy of dense mixed-precision matrix */
     parsec_matrix_sym_block_cyclic_band_t dcA;        /**< Main matrix for TLR or mixed-precision+TLR */

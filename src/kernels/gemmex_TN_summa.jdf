@@ -9,11 +9,6 @@ extern "C" %{
  **/
 #include "hicma_parsec.h"
 
-/* Define the different shapes this JDF is using for SUMMA matrix operations */
-#define A_SHAPE 0  // Matrix A shape identifier
-#define B_SHAPE 1  // Matrix B shape identifier  
-#define C_SHAPE 2  // Matrix C shape identifier
-
 
 #include "gemmex_TN_summa.h"
 

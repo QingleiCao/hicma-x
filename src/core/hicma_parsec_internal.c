@@ -1011,7 +1011,7 @@ static void print_arguments(hicma_parsec_params_t *params)
 
 		fprintf(stderr, "#+++++ MB x NB              : %d x %d\n",
 				params->MB, params->NB);
-		fprintf(stderr, "#+++++ HMB x HNB            : %d x %d\n", params->HNB, params->HNB);
+		fprintf(stderr, "#+++++ HNB                  : %d\n", params->HNB);
 	}
 }
 
@@ -1488,9 +1488,6 @@ int hicma_parsec_params_init(hicma_parsec_params_t *params, char **argv)
      * =========================================== */
     
     // Copy problem type strings to parameter structure
-    for(int i = 0; i < NB_PROBLEM; i++) {
-        params->str_problem[i] = str_problem[i]; 
-    }
 
     /* ===========================================
      * Initialize timing variables
@@ -1595,9 +1592,9 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
 {
     // Only print on rank 0 to avoid duplicate output in parallel execution
     if( 0 == params->rank ) {
-        printf("\nM=%d N=%d K=%d MB=%d NB=%d KB= %d HNB=%d HNB=%d\n", params->M, params->N, params->K, params->MB, params->NB, params->KB, params->HNB, params->HNB);
+        printf("\nM=%d N=%d K=%d MB=%d NB=%d KB= %d HNB=%d\n", params->M, params->N, params->K, params->MB, params->NB, params->KB, params->HNB);
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
-        printf("kind_of_problem=%d %s\n", params->kind_of_problem, params->str_problem[params->kind_of_problem]);
+        printf("kind_of_problem=%d %s\n", params->kind_of_problem, str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
         printf("send_full_tile=%d lookahead= %d trmm_window= %d adaptive_decision= %d adaptive_decision_runtime= %d adaptive_memory= %d arena_pinned_memory= %d\n", params->send_full_tile, params->lookahead, params->trmm_window, params->adaptive_decision, params->adaptive_decision_runtime, params->adaptive_memory, params->arena_pinned_memory);
         printf("band_size_dist= %d band_size_dense_dp:%d band_size_dense_sp:%d band_size_dense_hp: %d band_size_dense: %d band_size_low_rank_dp:%d NT= %d band_p= %d\n", params->band_size_dist, params->band_size_dense_dp, params->band_size_dense_sp, params->band_size_dense_hp, params->band_size_dense, params->band_size_low_rank_dp, params->NT, params->band_p);
@@ -1639,7 +1636,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%d %d %d %d   ", params->N, params->N, params->NB, params->NB);
         printf("%d %d   ", params->HNB, params->HNB);
         printf("%d %d %d %d %d %d   ", params->nodes, params->P, params->Q, params->cores, params->NT, params->adaptive_decision);
-        printf("%d %s %.1e %g %d %g   ", params->kind_of_problem, params->str_problem[params->kind_of_problem], params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
+        printf("%d %s %.1e %g %d %g   ", params->kind_of_problem, str_problem[params->kind_of_problem], params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
         printf("%d %d %d %d %d %d  ", params->send_full_tile, params->band_size_dense, params->band_size_dist, params->lookahead, params->reorder_gemm, params->auto_band);
         printf("%d %d %d   ", params->maxrank, params->genmaxrank, params->compmaxrank);
         printf("%lf %lu %lu %llu   ",  params->norm_global, analysis->total_trsm_num, analysis->total_syrk_num, analysis->total_gemm_num);
@@ -1668,7 +1665,9 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%d ", params->arena_pinned_memory);
         printf("%d ", params->accumulation_fp32);
 #ifdef GITHASH
-        printf("%s ", xstr(GITHASH));
+#define HICMA_STR(a) #a
+#define HICMA_XSTR(a) HICMA_STR(a)
+        printf("%s ", HICMA_XSTR(GITHASH));
 #else
         printf("GITHASH:N/A    ");
 #endif
@@ -2760,12 +2759,10 @@ int hicma_parsec_reorder_gemm( parsec_context_t *parsec,
  * 
  * @note Memory is calculated per node for distributed systems
  * @note Results are stored in params->memory_per_node and params->memory_per_node_maxrank
- * @note Function exits with error if memory usage exceeds 70% of THRESHOLD_MEMORY_PER_NODE
  */
 int hicma_parsec_memory_calculation( parsec_context_t *parsec,
         hicma_parsec_params_t *params ) 
 {
-    int rank = params->rank;
     int nodes = params->nodes;
     int NT = params->NT;
     int NB = params->NB;
@@ -2784,12 +2781,6 @@ int hicma_parsec_memory_calculation( parsec_context_t *parsec,
 
     params->memory_per_node = size_allocate / (double)1024 / 1024 / 1024 * 8 / nodes; 
     params->memory_per_node_maxrank = size_allocate_maxrank / (double)1024 / 1024 / 1024 * 8 / nodes; 
-
-    if( params->memory_per_node > THRESHOLD_MEMORY_PER_NODE * 0.7 ) {
-        if( 0 == rank )
-            fprintf(stderr, "memory_for_matrix_allocation_per_node : 0.7 * %d < %lf Gbytes\n", THRESHOLD_MEMORY_PER_NODE, params->memory_per_node);
-        exit(1);
-    }
 
     return 0;
 }

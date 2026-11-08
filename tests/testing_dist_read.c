@@ -24,8 +24,6 @@
 
 #include "hicma_parsec.h"
 
-#define NUM_FILES 3
-
 /**
  * @brief Main function for testing distributed matrix reading and redistribution
  * @param argc Number of command line arguments
