@@ -22,6 +22,15 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `f448fd3` Rewrite the build scripts for the single-configure build
+- `7841d07` Kind 3: test the sender conversion through a JDF global
+- `2de52d2` Apply the documented default CUDA architectures
+- `d6bf679` HIP install, genomics gating and test scripts on Frontier
+- `093b313` matrix_sum: sum V of a low-rank tile with its own row count
+- `0f4e8f5` Look up the trsm/syrk/gemm locals by name in the timing hooks
+- `43b52ec` Set-up fixes found on Frontier: HIP handles, GPU count, kind 3 mode 2
+- `6e01e6b` Brace the if/else around the tile-to-LAPACK conversions
+- `ec39832` Documentation for the third pass: matrix sum, macros, sanitizers
 - `e1a381a` Fix the heap corruption of workload-balance strategy 4
 - `c55d6a1` Remove GPU_BUFFER_ONCE: keep the GPU workspace allocated once
 - `fcf311d` Compile-time switches: settable with -D, dead ones removed
@@ -59,8 +68,11 @@ SONAME `libhicma_parsec.so.0`.
 
 (This documentation commit follows.) Each commit is self-contained in intent;
 the trees that were built and tested are the one after the documentation
-commit `8f7cb5e` (section 5.3), the one after the CI fixes (section 5.5) and
-the final one (sections 4, 5.1, 5.2, 5.6 and 5.7).
+commit `8f7cb5e` (section 5.3), the one after the CI fixes (section 5.5), the
+one after the third pass (`ec39832`; sections 4, 5.1, 5.2, 5.6 and 5.7) and the
+final one, which includes the Frontier commits `6e01e6b` to `d6bf679`
+(section 5.8: CTest on CPU and CUDA, kind 3 on 2 ranks; the validation matrix
+was not rerun after the third pass).
 Intermediate commits were not built individually.
 
 ## 3. Validation environment
@@ -251,6 +263,9 @@ multi-GPU measurement was possible on this machine.
   configuration, not run (needs the external data set).
 - The genomics drivers: see section 4; not run (data files).
 - The Fugaku (`ON_FUGAKU`) build.
+- The machine build scripts on their machines: only `install_icl.sh` was run
+  as written (methane); the others were configured on methane with their
+  modules stubbed, and the Fugaku and Shaheen scripts not at all (section 5.8).
 - The intermediate commits individually (only the final tree).
 
 ### 5.5 First CI run and the follow-up fixes
@@ -439,6 +454,41 @@ TRMM (N=40960, 8 GPUs; 8 ranks; memory pressure), kind 5 with adaptive
 conversion on 8 GPUs and on 8 ranks (also 3 repeated runs), and kind 10 with 3
 repeated runs on 8 ranks all pass. HIP compiles.
 
+### 5.8 Fourth pass: build scripts (methane)
+
+Requested: bring the out-of-date install scripts up to date.
+
+**Scripts.** The machine scripts built and installed STARS-H and HCORE before
+the main build, which compiles both from the submodules anyway, and had
+drifted further (CHANGELOG lists each case). They now configure the whole tree
+once with the site's modules and options and take `[build-dir] [extra CMake
+options]`. `scripts/machines/legacy/` is removed. `build_hicma_with_lapack.sh`
+builds a pinned reference LAPACK and passes the search hints that STARS-H's
+own modules need.
+
+| Run on methane | Result |
+|---|---|
+| `install_icl.sh`, fresh build (ICL modules, MKL, CUDA 12.6) | builds; CTest 39 / 39 on the A100 |
+| `build_hicma_with_lapack.sh`, MKL unloaded | LAPACK 3.12.1 built; HiCMA-X links only it; CTest 25 / 25 (CPU) |
+| `build_release.sh --test` | CTest 25 / 25 (CPU) |
+| Alps, Frontier (ROCm 6.4), Leonardo, Polaris, TACC, Vista: configure with `module` stubbed | all configure; CMake reports no unused variable |
+| `install_icl_debug.sh`, `install_leonardo_no_gsl.sh`, `install_shaheen_slurm.sh` | forward their arguments; a later `-D` wins |
+
+**Found while validating.**
+
+- *CUDA architectures.* A build given only `-DHICMA_PARSEC_HAVE_CUDA=ON`
+  compiled its CUDA code for sm_52 alone. `enable_language(CUDA)` cached the
+  compiler's default before the documented default `70 80 90 90a` could
+  apply; CI and the earlier validation always passed the architecture. Fixed:
+  a fresh configure gives `70;80;90;90a` (`80;90;90a` with CUDA 13), and a
+  user or `CUDAARCHS` value is kept.
+- *Kind 3 guards.* The kind-3 fix of the second pass (`6493db1`) used the C
+  macro `SENDER_CONVERT` in 17 JDF dependency guards. The JDF compiler printed
+  17 "Fatal Error ... unbound variable" lines per build while the generated
+  code was right. A hidden JDF global replaces it. The CTest kind-3 cases pass,
+  and so do 2 ranks with `--datatype_convert` 0, 1 and 2, with and without
+  the GPU.
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -455,6 +505,7 @@ repeated runs on 8 ranks all pass. HIP compiles.
 | P2 items | done except P2-6, P2-9, P2-12 (deferred) and the remaining parts of P2-5, P2-7, P2-8 |
 | Second pass: conversion merge, external-user walkthrough, guyot sweeps (section 5.6) | done; 11 problems fixed |
 | Third pass: matrix sum, macro review, sanitizers (section 5.7) | done; pool leak, `GPU_BUFFER_ONCE`, strategy 4 fixed |
+| Fourth pass: build scripts (section 5.8) | done; CUDA default architectures and kind-3 guard messages fixed |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 

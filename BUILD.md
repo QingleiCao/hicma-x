@@ -71,9 +71,11 @@ The configure step finds MPI and the BLAS/LAPACKE stack (DPLASMA's
 `FindLAPACKE`: set `LAPACKE_ROOT` or `BLA_VENDOR` to choose one) and records
 their directories in the binaries, so the drivers start without
 `LD_LIBRARY_PATH` changes.
-If LAPACKE is not available, use the example script:
+If no LAPACKE is available, `scripts/build_hicma_with_lapack.sh` builds the
+reference LAPACK 3.12.1 (BLAS, CBLAS, LAPACK, LAPACKE) in `lapack_build/` and
+HiCMA-X against it. The reference BLAS is slow; prefer OpenBLAS or MKL.
 ```bash
-./scripts/build_hicma_with_lapack.sh
+./scripts/build_hicma_with_lapack.sh [build-dir] [extra CMake options]
 ```
 
 #### Using the Build Script
@@ -111,7 +113,7 @@ ctest --preset=release
 | `ENABLE_SANITIZER` | `OFF` | Enable AddressSanitizer instrumentation |
 | `HICMA_ASAN_RUNTIME_LIBRARY` | empty | Optional absolute path to `libasan.so` when sanitizer link probe fails |
 | `ENABLE_CUTLASS` | `OFF` | Enable CUTLASS support (requires CUDA) |
-| `CMAKE_CUDA_ARCHITECTURES` | `70 80 90 90a` | Target CUDA architectures |
+| `CMAKE_CUDA_ARCHITECTURES` | `70 80 90 90a` (`80 90 90a` with CUDA 13) | Target CUDA architectures; the `CUDAARCHS` environment variable also sets them |
 
 Check CMake for more options.
 
@@ -238,47 +240,25 @@ make -j2
 
 #### 6. System Specific Issues
 
-Some system may have different configurations.
-##### Frontier
-This is the cmake command used on Frontier supercomtpuer.
+`scripts/machines/install_<machine>.sh` hold the modules and CMake options of
+the machines HiCMA-X is used on: Alps, Frontier, Fugaku, the ICL machines,
+Leonardo, Polaris, Shaheen, TACC and Vista. Each configures and builds the
+whole tree once, STARS-H, HCORE, DPLASMA and PaRSEC included:
+
 ```bash
-cmake ../ \
-  -DCMAKE_INSTALL_PREFIX=`pwd`/installdir \
-  -DCMAKE_C_COMPILER=mpicc \
-  -DCMAKE_CXX_COMPILER=mpic++ \
-  -DCMAKE_Fortran_COMPILER=mpif90 \
-  -G Ninja \
-  -DCMAKE_HIP_ARCHITECTURES=gfx90a \
-  -DHICMA_PARSEC_HAVE_HIP=ON \
-  -DCMAKE_HIP_FLAGS="-I$CRAY_MPICH_DIR/include -D__HIP_PLATFORM_AMD__" \
-  -DCMAKE_C_FLAGS="-I$OLCF_OPENBLAS_ROOT/include -I$ROCM_PATH/include -DLAPACKE_UTILS -D__HIP_PLATFORM_AMD__" \
-  -DCMAKE_CXX_FLAGS="-I$OLCF_OPENBLAS_ROOT/include -I$ROCM_PATH/include -DLAPACKE_UTILS -D__HIP_PLATFORM_AMD__" \
-  -DCMAKE_EXE_LINKER_FLAGS="-L$ROCM_PATH/lib" \
-  -DCMAKE_SHARED_LINKER_FLAGS="-L$ROCM_PATH/lib" \
-  -DROCM_PATH="$ROCM_PATH"
+scripts/machines/install_icl.sh [build-dir] [extra CMake options]   # build-dir defaults to build/
+cmake --install build                                              # into build/installdir
 ```
 
-GPU-direct:
+##### Frontier
+`install_frontier.sh` needs `ROCM_PATH`, `OLCF_OPENBLAS_ROOT` and
+`CRAY_MPICH_DIR`. For GPU-aware MPI:
 ```bash
-module load craype-accel-amd-gfx90a
-module load rocm
+module load craype-accel-amd-gfx90a rocm
 export MPICH_GPU_SUPPORT_ENABLED=1
-cmake ../ \
-  -DCMAKE_INSTALL_PREFIX=`pwd`/installdir \
-  -DCMAKE_C_COMPILER=mpicc \
-  -DCMAKE_CXX_COMPILER=mpic++ \
-  -DCMAKE_Fortran_COMPILER=mpif90 \
-  -G Ninja \
-  -DCMAKE_HIP_ARCHITECTURES=gfx90a \
-  -DHICMA_PARSEC_HAVE_HIP=ON \
-  -DCMAKE_HIP_FLAGS="-I$CRAY_MPICH_DIR/include -D__HIP_PLATFORM_AMD__" \
-  -DCMAKE_C_FLAGS="-I$OLCF_OPENBLAS_ROOT/include -I$ROCM_PATH/include -DLAPACKE_UTILS -D__HIP_PLATFORM_AMD__" \
-  -DCMAKE_CXX_FLAGS="-I$OLCF_OPENBLAS_ROOT/include -I$ROCM_PATH/include -DLAPACKE_UTILS -D__HIP_PLATFORM_AMD__" \
-  -DCMAKE_EXE_LINKER_FLAGS="-L$ROCM_PATH/lib" \
-  -DCMAKE_SHARED_LINKER_FLAGS="-L$ROCM_PATH/lib -lamdhip64 -lmpi_gtl_hsa" \
-  -DROCM_PATH="$ROCM_PATH"
+scripts/machines/install_frontier.sh build -DCMAKE_SHARED_LINKER_FLAGS="-L$ROCM_PATH/lib -lamdhip64 -lmpi_gtl_hsa"
+```
 
-``` 
 ##### Jetstream2 
 This is the cmake command using gcc and openmpi.
 ```bash

@@ -138,4 +138,9 @@ after the library changes.
   heap corruption fixed; AddressSanitizer runs found the pool-storage leak
   (fixed: kind-10 memory over 8 runs 1238 -> 605 MB). See
   `release-readiness.md` section 5.7.
+- 2026-11-08 (fourth pass, on request): build scripts rewritten for the
+  single-configure build, `scripts/machines/legacy/` removed; validating them
+  found that CUDA builds without an explicit architecture compiled for sm_52
+  only (fixed) and that the kind-3 guards made the JDF compiler print fatal
+  errors (fixed). See `release-readiness.md` section 5.8.
 

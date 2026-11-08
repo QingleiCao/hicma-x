@@ -64,8 +64,12 @@ before/after timing comparison.
 
 - New: `hicma_parsec_matrix_sum` (mixed-precision checksum). The build-time
   switches of `hicma_parsec_internal.h` (`PRINT_RANK`, `DEBUG_INFO`,
-  `GPU_BUFFER_ONCE`, ...) are set with `-DNAME=value` in `CMAKE_C_FLAGS`
-  instead of editing the header.
+  `WORKLOAD_BALANCE`, ...) are set with `-DNAME=value` in `CMAKE_C_FLAGS`
+  instead of editing the header. `GPU_BUFFER_ONCE` is gone: the GPU
+  workspace is always allocated once.
+- CUDA builds without `CMAKE_CUDA_ARCHITECTURES` (or `CUDAARCHS`) compile for
+  70 80 90 90a (80 90 90a with CUDA 13). 0.1.0 documented this default but
+  compiled for the compiler's default, sm_52 with CUDA 12.
 
 - `hicma_parsec_lapack_tile_convert` replaces the eight tile/LAPACK
   conversion taskpools; the named `hicma_parsec_{Tile_to_Lapack,Lapack_to_Tile}*`
@@ -87,7 +91,11 @@ before/after timing comparison.
   `testing_igemm_summa`) are built only with `-DHICMA_PARSEC_GENOMICS=ON`.
 - Scripts moved: machine recipes to `scripts/machines/`, genomics data tools
   to `scripts/genomics/`; `scripts/test_run*.sh` are replaced by
-  `scripts/test_CI.sh` and CTest.
+  `scripts/test_CI.sh` and CTest. The machine scripts configure the whole tree
+  once and take `[build-dir] [extra CMake options]`; they no longer build
+  STARS-H and HCORE separately or write `env_hicma_parsec.sh`. The scripts of
+  retired machines and the ExaGeoStat builds (`scripts/machines/legacy/`) are
+  removed.
 
 ## 0.1.0
 

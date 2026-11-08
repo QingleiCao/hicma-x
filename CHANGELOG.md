@@ -200,6 +200,23 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - `scripts/` reorganized: generic tools at the top level, site recipes under
   `scripts/machines/`, genomics data tools under `scripts/genomics/`,
   byte-identical and obsolete scripts removed; the stale Dockerfiles removed.
+- The machine build scripts are rewritten for the current build: one
+  configure of the whole tree, `[build-dir] [extra CMake options]`, modules
+  loaded in a login shell. They built and installed STARS-H and HCORE
+  separately (unused: the build compiles the submodules), passed PaRSEC's GPU
+  flags without `HICMA_PARSEC_HAVE_CUDA` (Leonardo without GSL: HiCMA-X built
+  without CUDA), ran CMake from the wrong directory (Fugaku), loaded Python 2
+  (Shaheen; DPLASMA needs Python 3) or emptied an existing `build/`
+  (`build_hicma_with_lapack.sh`). `build_hicma_with_lapack.sh` builds a pinned
+  LAPACK (3.12.1) once and passes the search hints STARS-H and HCORE need;
+  `build_release.sh` uses `cmake --build`. `scripts/machines/legacy/` (Summit,
+  Saturn, ECRC, ExaGeoStat builds) is removed.
+- CUDA builds compile for the documented default architectures, 70 80 90 90a
+  (80 90 90a with CUDA 13), unless `CMAKE_CUDA_ARCHITECTURES` or `CUDAARCHS`
+  is given. The default never applied: `enable_language(CUDA)` cached the
+  compiler's default first, so a build with only `-DHICMA_PARSEC_HAVE_CUDA=ON`
+  compiled its CUDA code for sm_52 alone, which newer GPUs ran after JIT
+  compilation.
 - `.gitignore` covers build trees, logs and editor state; LICENSE placeholder
   removed.
 
