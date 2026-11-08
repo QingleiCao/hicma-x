@@ -204,6 +204,47 @@ foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
 endforeach()
 unset(_starsh_libs)
 
+# Record the directories of the BLAS/LAPACKE libraries in the run-time path of
+# the built and installed binaries. CMake leaves out a directory it treats as
+# implicit, which includes every LIBRARY_PATH entry: with an MKL module that
+# sets LIBRARY_PATH but not LD_LIBRARY_PATH, every driver and test of a fresh
+# build failed to start ("libmkl_gf_lp64.so.2: cannot open shared object
+# file"). System directories are left out so LD_LIBRARY_PATH keeps working.
+set(HICMA_BLAS_RUNTIME_DIRS)
+foreach(_t LAPACKE::LAPACKE LAPACKE::LAPACK LAPACKE::CBLAS LAPACKE::BLAS)
+    if(NOT TARGET ${_t})
+        continue()
+    endif()
+    set(_items)
+    get_target_property(_type ${_t} TYPE)
+    if(NOT _type STREQUAL "INTERFACE_LIBRARY")
+        get_target_property(_loc ${_t} IMPORTED_LOCATION)
+        list(APPEND _items ${_loc})
+    endif()
+    get_target_property(_ill ${_t} INTERFACE_LINK_LIBRARIES)
+    list(APPEND _items ${_ill})
+    foreach(_lib IN LISTS _items)
+        if(_lib AND IS_ABSOLUTE "${_lib}" AND EXISTS "${_lib}")
+            get_filename_component(_dir "${_lib}" DIRECTORY)
+            if(NOT _dir MATCHES "^/(usr/|lib)")
+                list(APPEND HICMA_BLAS_RUNTIME_DIRS "${_dir}")
+            endif()
+        endif()
+    endforeach()
+endforeach()
+if(HICMA_BLAS_RUNTIME_DIRS)
+    list(REMOVE_DUPLICATES HICMA_BLAS_RUNTIME_DIRS)
+    message(STATUS "BLAS/LAPACKE run-time path: ${HICMA_BLAS_RUNTIME_DIRS}")
+    list(APPEND CMAKE_BUILD_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+    # targets created above, in the submodules, that load BLAS themselves
+    set_property(TARGET hcore dplasma APPEND PROPERTY BUILD_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+    set_property(TARGET hcore dplasma APPEND PROPERTY INSTALL_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+endif()
+unset(_items)
+unset(_loc)
+unset(_ill)
+unset(_type)
+
 # Configure HCORE from submodule
 # HCORE is now built as part of the project via submodule
 # The hcore library target is available after add_subdirectory(hcore)
@@ -406,7 +447,7 @@ message(STATUS "==========================================")
 # "libdplasma.so.2: cannot open shared object file"). Set here, after the
 # submodules, so that it applies to hicma_parsec and the drivers only; PaRSEC
 # and HCORE set their own.
-set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../${CMAKE_INSTALL_LIBDIR};${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}")
+set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../${CMAKE_INSTALL_LIBDIR};${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR};${HICMA_BLAS_RUNTIME_DIRS}")
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH ON)
 
 add_subdirectory(src)

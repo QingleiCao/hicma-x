@@ -249,6 +249,13 @@ if(BUILD_SHARED_LIBS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
+# Executables that link the library also link BLAS/LAPACKE directly (through
+# hcore's interface) and need its directory in their own run-time path; see
+# HICMA_BLAS_RUNTIME_DIRS in the top-level CMakeLists.txt
+foreach(_d IN LISTS HICMA_BLAS_RUNTIME_DIRS)
+    target_link_options(hicma_parsec INTERFACE "LINKER:-rpath,${_d}")
+endforeach()
+
 # Add dependencies for HIP device headers
 if(HICMA_PARSEC_HAVE_HIP)
     add_dependencies(hicma_parsec parsec)
