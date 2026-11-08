@@ -90,6 +90,8 @@ run trmm_adaptive_sr        1 $T --N 2000 --K 1500 --NB 256 --check 1 --adaptive
 run trmm_adaptive_np2       2 $T --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4
 run lapack_tile_convert     1 ./tests/testing_lapack_tile
 run lapack_tile_convert_np2 2 ./tests/testing_lapack_tile
+run matrix_sum              1 ./tests/testing_matrix_sum
+run matrix_sum_np2          2 ./tests/testing_matrix_sum
 
 # 3-D RBF mesh (needs the SARS-CoV-2 mesh shipped with stars-h)
 if [ -f "$MESH" ]; then

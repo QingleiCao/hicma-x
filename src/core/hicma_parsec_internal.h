@@ -2119,6 +2119,26 @@ void hicma_parsec_matrix_sum_vec( parsec_context_t *parsec,
         float *vec);
 
 /**
+ * @brief Sum of the entries of a tiled matrix whose tiles may be stored in
+ *        different precisions (a checksum for debugging and comparing runs)
+ *
+ * Collective. Each tile is read as FP64 (DENSE_DP, LOW_RANK_DP) or FP32
+ * (DENSE_SP, DENSE_HP, DENSE_FP8, LOW_RANK_SP) from @p decisions, or in the
+ * descriptor's element type (double or float) when @p decisions is NULL; a
+ * low-rank tile adds the entries of its U and V factors.
+ *
+ * @param decisions storage decision per tile (index n*NT+m): params->decisions
+ *        before a factorization, params->decisions_storage_final after one; or NULL
+ * @param dcAr ranks of the low-rank tiles (data->dcAr), or NULL when there are none
+ * @param lower 1: only the tiles on and below the diagonal
+ * @return the sum, identical on every process and for every process grid; NaN
+ *         or Inf if a tile holds one (reported per tile on stderr)
+ */
+double hicma_parsec_matrix_sum(parsec_context_t *parsec,
+        parsec_tiled_matrix_t *dcA, parsec_tiled_matrix_t *dcAr,
+        const uint16_t *decisions, int lower);
+
+/**
  * @brief Print symmetric matrix tile in human-readable format
  * 
  * This function extracts and prints a specific tile from a symmetric distributed

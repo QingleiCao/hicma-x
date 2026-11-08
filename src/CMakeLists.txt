@@ -115,6 +115,7 @@ set(JDF
     
     # LAPACK to Tile conversion JDF files
     kernels/lapack_tile_convert.jdf
+    kernels/matrix_sum.jdf
     
     # Other utility JDF files
     kernels/replicate_to_rows.jdf

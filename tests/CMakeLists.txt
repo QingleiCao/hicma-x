@@ -29,6 +29,7 @@ target_compile_definitions(testing_dgemm_tlr PRIVATE HICMA_PARSEC_HAVE_TLR=1)
 hicma_add_driver(testing_climate_emulator testing_climate_emulator.c)
 hicma_add_driver(testing_dist_read testing_dist_read.c)
 hicma_add_driver(testing_lapack_tile testing_lapack_tile.c)
+hicma_add_driver(testing_matrix_sum testing_matrix_sum.c)
 
 # CBLAS micro-benchmark (no HiCMA)
 add_executable(testing_dgemm_cpu testing_dgemm.c)
@@ -126,6 +127,7 @@ hicma_add_test(trmm_fp64               1 ${T} --N 2000 --K 1500 --NB 256 --check
 hicma_add_test(trmm_adaptive           1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4)
 hicma_add_test(trmm_adaptive_sr        1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4 --enable_stochastic_rounding 1)
 hicma_add_test(lapack_tile_convert     1 $<TARGET_FILE:testing_lapack_tile>)
+hicma_add_test(matrix_sum              1 $<TARGET_FILE:testing_matrix_sum>)
 # two ranks
 hicma_add_test(potrf_dense_fp64_np2    2 ${P} ${COMMON})
 hicma_add_test(potrf_tlr_dp_band2_np2  2 ${P} ${COMMON} --kind_of_cholesky 2 --band_dense 2)
@@ -133,6 +135,7 @@ hicma_add_test(potrf_runtime_np2       2 ${P} ${COMMON} --adaptive_decision_runt
 hicma_add_test(potrf_sparse_np2        2 ${P} ${COMMON} --sparse 1)
 hicma_add_test(trmm_adaptive_np2       2 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4)
 hicma_add_test(lapack_tile_convert_np2 2 $<TARGET_FILE:testing_lapack_tile>)
+hicma_add_test(matrix_sum_np2          2 $<TARGET_FILE:testing_matrix_sum>)
 # the virus mesh shipped with stars-h
 set(HICMA_MESH ${PROJECT_SOURCE_DIR}/stars-h/SARS-CoV-2-meshes/singleviursdata/SortVirus10370.txt)
 if(EXISTS ${HICMA_MESH})
