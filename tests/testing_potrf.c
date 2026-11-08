@@ -31,7 +31,7 @@ int main(int argc, char **argv)
     hicma_parsec_params_t params;
     starsh_params_t params_kernel;
     hicma_parsec_data_t data;
-    hicma_parsec_matrix_analysis_t analysis;
+    hicma_parsec_matrix_analysis_t analysis = {0};
 
     /* Check GENOMICS feature flag */
 #if GENOMICS
@@ -59,23 +59,28 @@ int main(int argc, char **argv)
     }
     hicma_parsec_matrix_pre_analysis(parsec, &data, &params, &params_kernel, &analysis);
 
-    /* Perform Cholesky decomposition multiple times for benchmarking */
-    if (params.rank == 0) {
-        printf("Running Cholesky decomposition %d times...\n", params.nruns);
-    }
-
     /* The factorization is in place, so run 2 would factorize run 1's L, and
      * in runtime-decision mode the precision mix (hence the time) depends on
      * the data. Regenerate A (and redo the pre-analysis, which resets the
      * precision decisions) before every later run where that is
      * allocation-free: the dense FP64 layout without --check, --auto_band,
-     * --adaptive_memory or sparse mode. */
+     * --adaptive_memory or sparse mode. Elsewhere a later run would time a
+     * different problem (L is not A; in TLR its ranks outgrow the tile
+     * buffers and the run crashes), so only one run is done. */
     int regenerate = params.nruns > 1
                      && params.band_size_dense >= params.NT && 0 == params.auto_band
                      && !params.adaptive_memory && !params.check && 0 == params.sparse;
-    if (params.nruns > 1 && !regenerate && 0 == params.rank) {
-        fprintf(stderr, "Warning: with this configuration runs 2..%d factorize the previous run's factor; "
-                "time them with care (or use --nruns 1 per launch)\n", params.nruns);
+    if (params.nruns > 1 && !regenerate) {
+        if (0 == params.rank)
+            fprintf(stderr, "Warning: --nruns %d needs the dense layout (--band_dense >= NT) without --check, "
+                    "--auto_band, --adaptive_memory or --sparse, where A is regenerated before each run; "
+                    "doing one run\n", params.nruns);
+        params.nruns = 1;
+    }
+
+    /* Perform Cholesky decomposition multiple times for benchmarking */
+    if (params.rank == 0) {
+        printf("Running Cholesky decomposition %d times...\n", params.nruns);
     }
 
     int ret = EXIT_SUCCESS;
@@ -99,8 +104,9 @@ int main(int argc, char **argv)
         /* Perform Cholesky decomposition */
         hicma_parsec_potrf(parsec, &data, &params, &analysis);
 
-        /* Print final parameters for this run */
-        if(!params.check) hicma_parsec_params_print_final(argc, argv, &params, &analysis);
+        /* Summary of this run; hicma_parsec_fini prints the last one again
+         * with the post-analysis counts */
+        if(!params.check && params.nruns > 1) hicma_parsec_params_print_final(argc, argv, &params, &analysis);
 
         /* Check factorization status: info is the same on every rank after
          * the reduction in hicma_parsec_potrf */

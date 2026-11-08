@@ -28,6 +28,9 @@
 #ifdef GSL
 #include <gsl/gsl_errno.h>
 #endif
+#if defined(PARSEC_HAVE_HWLOC)
+#include <hwloc.h>
+#endif
 
 /*******************************
  * Global Variables and Constants *
@@ -233,8 +236,8 @@ static int is_negative_number(const char *str) {
 static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t *params) {
     config_option_t options[] = {
         // PaRSEC specific options
-        {"cores", "Number of concurrent threads (default: number of physical hyper-threads)", 0, &params->cores},
-        {"gpus", "Number of GPUs (default: 0)", 0, &params->gpus},
+        {"cores", "Number of compute threads per process (default: number of physical cores)", 0, &params->cores},
+        {"gpus", "Number of GPUs per process (default: 0, CPU only)", 0, &params->gpus},
         {"P", "Rows (P) in the PxQ process grid (default: NP)", 0, &params->P},
         {"Q", "Columns (Q) in the PxQ process grid (default: NP/P)", 0, &params->Q},
         {"grid_rows", "Same as --P", 0, &params->P},
@@ -242,10 +245,10 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"KP", "Block rows (KP) in the PxQ process grid (default: 1)", 0, &params->KP},
         {"KQ", "Block columns (KQ) in the PxQ process grid (default: 1)", 0, &params->KQ},
         {"M", "Row dimension (M) of the matrices; must equal N (default: N)", 0, &params->M},
-        {"N", "Column dimension (N) of the matrices (required)", 0, &params->N},
+        {"N", "Column dimension (N) of the matrices (default: 2048)", 0, &params->N},
         {"K", "Columns (K) of B in the TRMM (default: N)", 0, &params->K},
         {"MB", "Row tile size; must equal NB (default: NB)", 0, &params->MB},
-        {"NB", "Tile size (required)", 0, &params->NB},
+        {"NB", "Tile size (default: 2048)", 0, &params->NB},
         {"KB", "Tile size along K; must equal NB (default: NB)", 0, &params->KB},
         {"check", "Verify the results (--check, or --check 0|1)", 3, &params->check},
         {"check_tol", "Residual bound ||LL^T-A||_F/||A||_F accepted by --check (default: fixedacc)", 1, &params->check_tol},
@@ -268,7 +271,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"band_dense_dp", "Dense band double precision", 0, &params->band_size_dense_dp},
         {"band_dense_sp", "Dense band single precision", 0, &params->band_size_dense_sp},
         {"band_dense_hp", "Dense band half precision", 0, &params->band_size_dense_hp},
-        {"band_dense", "Dense band size, default 1: only diagonal is dense", 0, &params->band_size_dense},
+        {"band_dense", "Dense band size in tiles (default: NT, every tile dense; 1: only the diagonal dense, the other tiles low-rank)", 0, &params->band_size_dense},
         {"band_low_rank_dp", "Low rank band double precision", 0, &params->band_size_low_rank_dp},
         {"band_dist", "If 0: normal two_dim_block_cyclic; if >0: with band distribution", 0, &params->band_size_dist},
         {"band_p", "Row process grid on band, default 1", 0, &params->band_p},
@@ -290,7 +293,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"band_size_termination", "Band size auto-tuning termination on GPU, default 3.0", 1, &params->band_size_auto_tuning_termination},
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
         {"enable_stochastic_rounding", "Stochastic rounding for the down-conversions (0 or 1); not with FP8 GEMMs", 0, &params->enable_stochastic_rounding},
-        {"nruns", "The number of runs of Cholesky", 0, &params->nruns},
+        {"nruns", "Number of Cholesky runs (default: 1); more than one needs the dense layout without --check, --auto_band, --adaptive_memory or --sparse", 0, &params->nruns},
         {"accumulation_fp32", "TRMM: store the FP16 tiles of B in FP32 and accumulate their GEMMs in FP32 (0 or 1)", 0, &params->accumulation_fp32},
         
         // Kernel parameters
@@ -304,7 +307,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"noise", "Noise in kernels", 1, &params->noise},
         
         // Special cases
-        {"HNB", "Inner NB used for recursive algorithms (default: MB)", 0, &params->HNB},
+        {"HNB", "Inner NB used for recursive algorithms (default: 300)", 0, &params->HNB},
         {"nsnp", "Number of SNPs (number of snps for each individual)", 0, &params->nsnp},
         
         {"numobj", "Number of objects (number of viruses within a population)", 0, &params->numobj},
@@ -921,7 +924,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Set single precision band size (defaults to general band size)
     if( params->band_size_dense_sp < 0 ) {
         params->band_size_dense_sp = params->band_size_dense;
-        if( 0 == params->rank ) {
+        if( 0 == params->rank && params->verbose ) {
             fprintf( stderr, MAG "Set band_size_dense_sp = band_size_dense\n" RESET );
         }
     }
@@ -929,7 +932,7 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     // Set half precision band size (defaults to general band size)
     if( params->band_size_dense_hp < 0 ) {
         params->band_size_dense_hp = params->band_size_dense;
-        if( 0 == params->rank ) {
+        if( 0 == params->rank && params->verbose ) {
             fprintf( stderr, MAG "Set band_size_dense_hp = band_size_dense\n" RESET );
         }
     }
@@ -1066,6 +1069,7 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
 
 	/* Core Detection and Performance Monitoring Setup */
 	// If the number of cores was not specified, detect from PaRSEC context
+	int cores_auto = (params->cores <= 0);
 	if(params->cores <= 0)
 	{
 		int p, nb_total_comp_threads = 0;
@@ -1075,6 +1079,33 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
 		}
 		params->cores = nb_total_comp_threads;
     }
+
+#if defined(PARSEC_HAVE_HWLOC)
+    /* PaRSEC runs its threads on the cores the launcher bound the process to,
+     * and Open MPI binds each process to a single core by default (5.0; 4.x
+     * binds to a socket beyond two processes). Say so when the processes of
+     * rank 0's node use at most half of its cores. */
+    {
+        MPI_Comm node_comm;
+        int local_ranks = 1;
+        MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &node_comm);
+        MPI_Comm_size(node_comm, &local_ranks);
+        MPI_Comm_free(&node_comm);
+        if( 0 == params->rank && cores_auto ) {
+            hwloc_topology_t topo;
+            int node_cores = 0;
+            if( 0 == hwloc_topology_init(&topo) ) {
+                if( 0 == hwloc_topology_load(topo) )
+                    node_cores = hwloc_get_nbobjs_by_type(topo, HWLOC_OBJ_CORE);
+                hwloc_topology_destroy(topo);
+            }
+            if( params->cores * local_ranks <= node_cores / 2 )
+                fprintf(stderr, YEL "The %d process(es) on this node use %d of its %d cores: the launcher's binding limits "
+                        "the worker threads (Open MPI: --bind-to none, or --map-by ppr:<processes per socket>:package:pe=<cores per process>; "
+                        "Slurm: --cpus-per-task)\n" RESET, local_ranks, params->cores * local_ranks, node_cores);
+        }
+    }
+#endif
 
     // Print parameter summary for verification
     print_arguments(params);
@@ -1149,6 +1180,15 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
             exit(1);
         }
     }
+
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* A GPU build runs on the CPU unless --gpus is given: say so when devices are visible */
+    if( 0 == params->gpus && 0 == params->rank ) {
+        int nb_visible = 0;
+        if( cudaSuccess == cudaGetDeviceCount(&nb_visible) && nb_visible > 0 )
+            fprintf(stderr, YEL "%d GPU(s) visible but --gpus is 0: running on the CPU only\n" RESET, nb_visible);
+    }
+#endif
 
     /* cores and gpus are final: allocate the per-worker statistics once */
     hicma_parsec_stats_allocate(params);
@@ -1271,8 +1311,8 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
 #if !GENOMICS
     if(-1 == params->lookahead && params->band_size_dense >= params->NT && 0 == params->auto_band) {
         params->lookahead = params->gpu_rows * params->P;
-        if( params->rank == 0 ) {
-            fprintf(stderr, RED "Set lookahead to %d = %d X %d\n" RESET, params->lookahead, params->gpu_rows, params->P);
+        if( params->rank == 0 && params->verbose ) {
+            fprintf(stderr, "Set lookahead to %d = %d X %d\n", params->lookahead, params->gpu_rows, params->P);
         }
     }
 #endif
@@ -1592,7 +1632,8 @@ void hicma_parsec_params_print_initial( hicma_parsec_params_t *params )
 {
     // Only print on rank 0 to avoid duplicate output in parallel execution
     if( 0 == params->rank ) {
-        printf("\nM=%d N=%d K=%d MB=%d NB=%d KB= %d HNB=%d\n", params->M, params->N, params->K, params->MB, params->NB, params->KB, params->HNB);
+        printf("\nHiCMA-X %s, revision %s\n", HICMA_PARSEC_VERSION_STRING, HICMA_PARSEC_REVISION);
+        printf("M=%d N=%d K=%d MB=%d NB=%d KB= %d HNB=%d\n", params->M, params->N, params->K, params->MB, params->NB, params->KB, params->HNB);
         printf("nodes=%d P=%d Q=%d cores=%d nb_gpus= %d gpu_type= %d verbose= %d\n", params->nodes, params->P, params->Q, params->cores, params->gpus, params->gpu_type, params->verbose);
         printf("kind_of_problem=%d %s\n", params->kind_of_problem, str_problem[params->kind_of_problem]);
         printf("fixedacc=%.1e add_diag=%g fixed_rk=%d wave_k=%g\n", params->fixedacc, params->add_diag, params->fixedrk, params->wave_k);
@@ -1664,13 +1705,7 @@ void hicma_parsec_params_print_final( int argc, char **argv,
         printf("%lu %lu %lu %lu %lu %lu %lu ", params->nb_gemms[DENSE_DP*params->counter_stride], params->nb_gemms[DENSE_SP*params->counter_stride], params->nb_gemms[DENSE_HP*params->counter_stride], params->nb_gemms[LOW_RANK_DP*params->counter_stride], params->nb_gemms[LOW_RANK_SP*params->counter_stride], params->nb_gemms[DENSE_FP8*params->counter_stride], params->nb_datatype_conversions[0]);
         printf("%d ", params->arena_pinned_memory);
         printf("%d ", params->accumulation_fp32);
-#ifdef GITHASH
-#define HICMA_STR(a) #a
-#define HICMA_XSTR(a) HICMA_STR(a)
-        printf("%s ", HICMA_XSTR(GITHASH));
-#else
-        printf("GITHASH:N/A    ");
-#endif
+        printf("GITHASH:%s ", HICMA_PARSEC_REVISION);
         printf("\"");
         for(int i = 0; i < argc; i++){
             printf("%s ",  argv[i]);
@@ -2053,8 +2088,8 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
      * =========================================== */
     
     // Warn about tile size importance for performance
-    if( params->rank == 0 ) {
-        fprintf(stderr, RED "Tile size is very important to performance, especially for Low-rank. Make sure to tune the tile size for performance!!!\n" RESET);
+    if( params->rank == 0 && params->verbose ) {
+        fprintf(stderr, "Tile size is very important to performance, especially for Low-rank. Make sure to tune the tile size for performance\n");
     }
 
     /* ===========================================
@@ -2082,8 +2117,8 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
     
     // Check half-precision support on CPU
     if( HAVE_HP && !HAVE_HP_CPU && params->gpus < 1 ) {
-        if( params->rank == 0 ) {
-            fprintf(stderr, RED "Half-precision only for accuracy purpose! And it's could be disable by setting HAVE_HP to 0\n" RESET);
+        if( params->rank == 0 && params->verbose ) {
+            fprintf(stderr, "No native FP16 on this CPU: half-precision tiles are emulated (accuracy only, no speed-up)\n");
         }
     }
 
@@ -2195,8 +2230,8 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
     params->band_size_dist = params->band_size_dense;
 #endif
 
-    if( 0 == params->rank && params->band_size_dense != params->band_size_dist )
-        printf(YEL "%d: Band distribution is different from band dense\n" RESET, __LINE__);
+    if( 0 == params->rank && params->verbose && params->band_size_dense != params->band_size_dist )
+        printf("Band distribution (%d) is different from band dense (%d)\n", params->band_size_dist, params->band_size_dense);
 
     /* Re-order GEMM is not support now */
     assert( 0 == params->reorder_gemm );
@@ -2239,6 +2274,14 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
             fflush(stdout);
         }
         params->band_size_low_rank_dp = params->NT;
+    }
+
+    /* Kinds 1 and 2 are the tile low-rank Cholesky, but the default dense band
+     * is the whole matrix */
+    if( 0 == params->rank && params->NT > 1 && params->band_size_dense >= params->NT && !params->auto_band
+        && (DENSE_TLR_MP == params->kind_of_cholesky || DENSE_TLR_DP == params->kind_of_cholesky) ) {
+        fprintf(stderr, YEL "Every tile is dense (dense band of %d tiles): pass --band_dense 1 or --auto_band 1 "
+                "for low-rank tiles\n" RESET, params->NT);
     }
 
     /* Check band_size_* */
@@ -2291,7 +2334,7 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
         if( 0 == params->rank ) {
             fprintf(stderr, RED "left_looking should be non-negative\n" RESET);
         }
-        exit(0);
+        exit(1);
     }
 
     /* Make sure tensor_gemm is correct */
@@ -2300,7 +2343,7 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
         if( params->rank == 0 ) {
             fprintf(stderr, RED "tensor_gemm BF16 only supports MP+dense (no TLR)\n" RESET);
         }
-        exit(0);
+        exit(1);
     }
 
 #if defined(PARSEC_HAVE_DEV_RECURSIVE_SUPPORT)
@@ -2413,8 +2456,8 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
 #endif
 
         // Notify user about dense memory allocation strategy
-        if( params->rank == 0 ) {
-            printf(YEL "Matrix is dense (band_size_dense >= NT) and auto_band is disabled, so memory is allocated continuously using dcAd instead\n" RESET);
+        if( params->rank == 0 && params->verbose ) {
+            printf("Matrix is dense (band_size_dense >= NT) and auto_band is disabled, so memory is allocated continuously using dcAd instead\n");
             fflush(stdout);
         }
     }

@@ -180,7 +180,7 @@ int main(int argc, char **argv)
     hicma_parsec_params_t params;
     starsh_params_t params_kernel;
     hicma_parsec_data_t data;
-    hicma_parsec_matrix_analysis_t analysis;
+    hicma_parsec_matrix_analysis_t analysis = {0};
     climate_emulator_struct_t gb;
     
     // PaRSEC context

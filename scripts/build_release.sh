@@ -57,7 +57,7 @@ OPTIONS:
     --cutlass               Enable CUTLASS support (requires CUDA)
     --static                Build static libraries instead of shared
     --debug                 Build in debug mode
-    --release               Build in release mode (default)
+    --release               Build in Release mode (default: RelWithDebInfo)
 
 EXAMPLES:
     $0 --clean --test --install

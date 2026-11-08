@@ -105,6 +105,7 @@ typedef struct parsec_hip_exec_stream_s parsec_hip_exec_stream_t;
 #define cudaDeviceReset hipDeviceReset                    // Reset GPU device to initial state
 #define cudaDeviceSynchronize hipDeviceSynchronize        // Synchronize all device operations
 #define cudaGetDevice hipGetDevice                        // Get current active device
+#define cudaGetDeviceCount hipGetDeviceCount              // Number of visible devices
 #define cudaGetDeviceProperties hipGetDeviceProperties    // Get device properties
 #define cudaSetDevice hipSetDevice                        // Set active device
 #define cudaHostRegister hipHostRegister

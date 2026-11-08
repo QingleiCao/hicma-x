@@ -453,7 +453,7 @@ int hicma_parsec_matrix_compress( parsec_context_t *parsec,
 {
     parsec_taskpool_t *parsec_matrix_compress = NULL;
 
-    if( params_tlr->rank == 0 ) {
+    if( params_tlr->rank == 0 && params_tlr->verbose ) {
 #if GENERATE_RANDOM_DATA
         fprintf(stderr, YEL "Use GENERATE_RANDOM_DATA\n" RESET);
 #else

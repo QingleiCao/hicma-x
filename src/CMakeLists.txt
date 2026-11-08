@@ -284,3 +284,21 @@ target_compile_definitions(hicma_parsec
     $<$<BOOL:${HICMA_PARSEC_GENOMICS}>:GENOMICS=1>
 )
 
+# Version and source revision printed with the run parameters and in the R-LO
+# line; the revision is the one at configure time. Set on that one file only,
+# so a new revision recompiles nothing else.
+set(HICMA_PARSEC_REVISION "N/A")
+find_package(Git QUIET)
+if(GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
+    execute_process(COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
+                    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+                    OUTPUT_VARIABLE _hicma_rev OUTPUT_STRIP_TRAILING_WHITESPACE
+                    RESULT_VARIABLE _hicma_rev_rc ERROR_QUIET)
+    if(_hicma_rev_rc EQUAL 0 AND _hicma_rev)
+        set(HICMA_PARSEC_REVISION "${_hicma_rev}")
+    endif()
+endif()
+set_property(SOURCE core/hicma_parsec_internal.c APPEND PROPERTY COMPILE_DEFINITIONS
+    "HICMA_PARSEC_VERSION_STRING=\"${HICMA_PARSEC_VERSION}\""
+    "HICMA_PARSEC_REVISION=\"${HICMA_PARSEC_REVISION}\"")
+

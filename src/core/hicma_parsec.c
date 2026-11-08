@@ -254,7 +254,7 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
     /* Step 5: Calculate memory requirements for matrix allocation */
     SYNC_TIME_START();
     hicma_parsec_memory_calculation( parsec, params );
-    SYNC_TIME_PRINT(params->rank, ("Memory for matrix allocatiion" "\tactual= %lf GB maxrank= %lf GB\n",
+    SYNC_TIME_PRINT(params->rank, ("Memory for matrix allocation" "\tactual= %lf GB maxrank= %lf GB\n",
                 params->memory_per_node, params->memory_per_node_maxrank));
 
     /* Step 6: Perform sparse matrix analysis for workload optimization */
