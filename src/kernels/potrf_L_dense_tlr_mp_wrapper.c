@@ -33,7 +33,7 @@
  * @param task POTRF task descriptor
  * @return PARSEC_HOOK_RETURN_DONE to use GPU, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_potrf(const parsec_task_t* task) {
     return PARSEC_HOOK_RETURN_DONE;
 }
 
@@ -47,7 +47,7 @@ static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
  * @param task TRSM task descriptor
  * @return PARSEC_HOOK_RETURN_DONE to use GPU, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_trsm(const parsec_task_t* task) {
     int m = ((__parsec_potrf_L_dense_tlr_mp_potrf_dtrsm_task_t *)task)->locals.m.value;
     int k = ((__parsec_potrf_L_dense_tlr_mp_potrf_dtrsm_task_t *)task)->locals.k.value;
     int band_size_dense = ((__parsec_potrf_L_dense_tlr_mp_potrf_dtrsm_task_t *)task)->locals.band_size_dense_local.value;
@@ -68,7 +68,7 @@ static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
  * @param task SYRK task descriptor
  * @return PARSEC_HOOK_RETURN_DONE to use GPU, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static  parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_syrk(const parsec_task_t* task) {
         return PARSEC_HOOK_RETURN_DONE;
 }
 
@@ -82,7 +82,7 @@ static  parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
  * @param task GEMM task descriptor
  * @return PARSEC_HOOK_RETURN_DONE to use GPU, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_gemm(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_gemm(const parsec_task_t* task) {
     int m = ((__parsec_potrf_L_dense_tlr_mp_potrf_dgemm_task_t *)task)->locals.m.value;
     int n = ((__parsec_potrf_L_dense_tlr_mp_potrf_dgemm_task_t *)task)->locals.n.value;
     int k = ((__parsec_potrf_L_dense_tlr_mp_potrf_dgemm_task_t *)task)->locals.k.value;

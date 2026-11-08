@@ -37,7 +37,7 @@
  * @param task Pointer to the POTRF task
  * @return PARSEC_HOOK_RETURN_DONE to execute on GPU
  */
-static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_potrf(const parsec_task_t* task) {
     (void)task; /* Suppress unused parameter warning */
     /* Always execute POTRF on GPU for maximum performance */
     return PARSEC_HOOK_RETURN_DONE;
@@ -58,7 +58,7 @@ static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
  * @param task Pointer to the TRSM task
  * @return PARSEC_HOOK_RETURN_DONE for GPU execution, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_trsm(const parsec_task_t* task) {
     /* Extract task parameters for device selection decision */
     int m = ((__parsec_potrf_L_dense_tlr_dp_potrf_dtrsm_task_t *)task)->locals.m.value;
     int k = ((__parsec_potrf_L_dense_tlr_dp_potrf_dtrsm_task_t *)task)->locals.k.value;
@@ -86,7 +86,7 @@ static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
  * @param task Pointer to the SYRK task
  * @return PARSEC_HOOK_RETURN_DONE to execute on GPU
  */
-static parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_syrk(const parsec_task_t* task) {
     (void)task; /* Suppress unused parameter warning */
     /* Always execute SYRK on GPU for maximum performance */
     return PARSEC_HOOK_RETURN_DONE;
@@ -108,7 +108,7 @@ static parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
  * @param task Pointer to the GEMM task
  * @return PARSEC_HOOK_RETURN_DONE for GPU execution, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_gemm(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_gemm(const parsec_task_t* task) {
     /* Extract task parameters for device selection decision */
     int m = ((__parsec_potrf_L_dense_tlr_dp_potrf_dgemm_task_t *)task)->locals.m.value;
     int n = ((__parsec_potrf_L_dense_tlr_dp_potrf_dgemm_task_t *)task)->locals.n.value;

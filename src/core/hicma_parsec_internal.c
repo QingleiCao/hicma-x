@@ -136,9 +136,10 @@ static int parse_arg_value(const char *arg, int type, void *target) {
     char *endptr;
     
     switch(type) {
-        case 0: // int - parse as base-10 integer
-            *(int*)target = strtol(arg, &endptr, 10);
-            return (*endptr == '\0') ? 0 : -1;
+        case 0: // int - base 10, or base 16 with a 0x prefix (the --tensor_gemm masks are documented in hex)
+            *(int*)target = strtol(arg, &endptr,
+                                   ('0' == arg[0] && ('x' == arg[1] || 'X' == arg[1])) ? 16 : 10);
+            return (*endptr == '\0' && endptr != arg) ? 0 : -1;
         case 1: // double - parse as floating-point number
             *(double*)target = strtod(arg, &endptr);
             return (*endptr == '\0') ? 0 : -1;

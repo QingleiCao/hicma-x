@@ -60,7 +60,7 @@ static void hicma_trim_remote_operand(parsec_data_copy_t *tile,
     }
 }
 
-static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_potrf(const parsec_task_t* task) {
     return PARSEC_HOOK_RETURN_DONE;
 }
 
@@ -75,7 +75,7 @@ static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
  * @param task TRSM task structure containing matrix dimensions
  * @return PARSEC_HOOK_RETURN_DONE to use GPU kernel, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_trsm(const parsec_task_t* task) {
     int m = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dtrsm_task_t *)task)->locals.m.value;
     int k = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dtrsm_task_t *)task)->locals.k.value;
     int band_size_dense = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dtrsm_task_t *)task)->locals.band_size_dense_local.value;
@@ -99,7 +99,7 @@ static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
  * @param task TRSM_SEND task to evaluate
  * @return PARSEC_HOOK_RETURN_DONE for GPU execution, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_trsm_send(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_trsm_send(const parsec_task_t* task) {
     int m = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dtrsm_send_task_t *)task)->locals.m.value;
     int k = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dtrsm_send_task_t *)task)->locals.k.value;
     int band_size_dense = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dtrsm_send_task_t *)task)->locals.band_size_dense_local.value;
@@ -121,7 +121,7 @@ static parsec_hook_return_t evaluate_gpu_trsm_send(parsec_task_t* task) {
  * @param task SYRK task structure
  * @return PARSEC_HOOK_RETURN_DONE to use GPU kernel
  */
-static parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_syrk(const parsec_task_t* task) {
     __parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dsyrk_task_t *t =
         (__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dsyrk_task_t *)task;
     parsec_tiled_matrix_t *descA = ((parsec_potrf_L_dense_mp_gpu_fp8_adaptive_taskpool_t *)task->taskpool)->_g_descA;
@@ -141,7 +141,7 @@ static parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
  * @param task GEMM task structure containing matrix dimensions
  * @return PARSEC_HOOK_RETURN_DONE to use GPU kernel, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_gemm(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_gemm(const parsec_task_t* task) {
     int m = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)task)->locals.m.value;
     int n = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)task)->locals.n.value;
     int k = ((__parsec_potrf_L_dense_mp_gpu_fp8_adaptive_potrf_dgemm_task_t *)task)->locals.k.value;

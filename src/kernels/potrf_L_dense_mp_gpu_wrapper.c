@@ -33,7 +33,7 @@
  * @param task POTRF task to evaluate
  * @return PARSEC_HOOK_RETURN_DONE to execute on GPU
  */
-static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_potrf(const parsec_task_t* task) {
     return PARSEC_HOOK_RETURN_DONE;
 }
 
@@ -47,7 +47,7 @@ static parsec_hook_return_t evaluate_gpu_potrf(parsec_task_t* task) {
  * @param task TRSM task to evaluate
  * @return PARSEC_HOOK_RETURN_DONE for GPU execution, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_trsm(const parsec_task_t* task) {
     int m = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_task_t *)task)->locals.m.value;
     int k = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_task_t *)task)->locals.k.value;
     int band_size_dense = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_task_t *)task)->locals.band_size_dense_local.value;
@@ -71,7 +71,7 @@ static parsec_hook_return_t evaluate_gpu_trsm(parsec_task_t* task) {
  * @param task TRSM_SEND task to evaluate
  * @return PARSEC_HOOK_RETURN_DONE for GPU execution, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_trsm_send(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_trsm_send(const parsec_task_t* task) {
     int m = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.m.value;
     int k = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.k.value;
     int band_size_dense = ((__parsec_potrf_L_dense_mp_gpu_potrf_dtrsm_send_task_t *)task)->locals.band_size_dense_local.value;
@@ -92,7 +92,7 @@ static parsec_hook_return_t evaluate_gpu_trsm_send(parsec_task_t* task) {
  * @param task SYRK task to evaluate
  * @return PARSEC_HOOK_RETURN_DONE to execute on GPU
  */
-static parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_syrk(const parsec_task_t* task) {
     return PARSEC_HOOK_RETURN_DONE;
 }
 
@@ -106,7 +106,7 @@ static parsec_hook_return_t evaluate_gpu_syrk(parsec_task_t* task) {
  * @param task GEMM task to evaluate
  * @return PARSEC_HOOK_RETURN_DONE for GPU execution, PARSEC_HOOK_RETURN_NEXT for CPU
  */
-static parsec_hook_return_t evaluate_gpu_gemm(parsec_task_t* task) {
+static parsec_hook_return_t evaluate_gpu_gemm(const parsec_task_t* task) {
     int m = ((__parsec_potrf_L_dense_mp_gpu_potrf_dgemm_task_t *)task)->locals.m.value;
     int n = ((__parsec_potrf_L_dense_mp_gpu_potrf_dgemm_task_t *)task)->locals.n.value;
     int k = ((__parsec_potrf_L_dense_mp_gpu_potrf_dgemm_task_t *)task)->locals.k.value;
