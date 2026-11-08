@@ -75,6 +75,7 @@ params_tlr [type = "hicma_parsec_params_t *" ] /**< Algorithm parameters includi
 
 PRI_CHANGE [type = "int" hidden = on default = 0 ] /**< Priority change threshold for task scheduling */
 PRI_MAX    [type = "int" hidden = on default = "(descA->mt * ( 3 + descA->mt * ( 2 + descA->mt )))" ] /**< Maximum priority value */
+convert_at_sender [type = "int" hidden = on default = "(params_tlr->datatype_convert == SENDER_CONVERT)" ] /**< --datatype_convert 1: the sender converts the tiles */
 
 /* Temporary buffers for data type conversion */
 p_work_double        [ type = "parsec_memory_pool_t *" hidden = on default = NULL ] /**< Memory pool for double precision temporary buffers */
@@ -160,9 +161,9 @@ info = 0  /**< Error code for recursive factorization calls */
 
 // Data flow: Read input, write output, trigger dependent tasks
 RW T <- (k == 0) ? A potrf_bind_A(k, k) : T potrf_hsdsyrk(k-1, k)                                                      [ type_remote = DOUBLE ]
-     -> (params_tlr->datatype_convert != SENDER_CONVERT) ? T potrf_hsdtrsm(k+1..descA->mt-1, k)                                       [ type_remote = DOUBLE ]
-     -> ((SENDER_CONVERT == params_tlr->datatype_convert)) ? T potrf_hsdtrsm(k+1..k+params_tlr->band_size_dense_dp-1, k)                     [ type_remote = DOUBLE ]
-     -> ((SENDER_CONVERT == params_tlr->datatype_convert) && k < descA->mt-params_tlr->band_size_dense_dp) ? T0 potrf_hsdpotrf_convert(k)    [ type_remote = DOUBLE ] 
+     -> (!convert_at_sender) ? T potrf_hsdtrsm(k+1..descA->mt-1, k)                                       [ type_remote = DOUBLE ]
+     -> (convert_at_sender) ? T potrf_hsdtrsm(k+1..k+params_tlr->band_size_dense_dp-1, k)                     [ type_remote = DOUBLE ]
+     -> (convert_at_sender && k < descA->mt-params_tlr->band_size_dense_dp) ? T0 potrf_hsdpotrf_convert(k)    [ type_remote = DOUBLE ] 
      -> descA(k, k)                                                             
 
 ; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
@@ -248,10 +249,10 @@ k = 0 .. descA->mt-1-params_tlr->band_size_dense_dp
 :descA(k, k)
 
 // Data flow: Read double precision input, write single precision output
-READ T0 <- (params_tlr->datatype_convert == SENDER_CONVERT) ? T potrf_hsdpotrf(k) : NULL                                            [ type_remote = DOUBLE ]
+READ T0 <- (convert_at_sender) ? T potrf_hsdpotrf(k) : NULL                                            [ type_remote = DOUBLE ]
 
-RW T <- (params_tlr->datatype_convert == SENDER_CONVERT) ? NEW : NULL                                                               [ type = SINGLE ] 
-     -> (params_tlr->datatype_convert == SENDER_CONVERT) ? T potrf_hsdtrsm(k+params_tlr->band_size_dense_dp..descA->mt-1, k)        [ type_remote = SINGLE ]
+RW T <- (convert_at_sender) ? NEW : NULL                                                               [ type = SINGLE ] 
+     -> (convert_at_sender) ? T potrf_hsdtrsm(k+params_tlr->band_size_dense_dp..descA->mt-1, k)        [ type_remote = SINGLE ]
 
 ; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
 
@@ -298,9 +299,9 @@ k = 0 .. m-1          /**< Column index of source diagonal block */
 : descA(m, k)
 
 // Parameters
-READ  T <- (params_tlr->datatype_convert != SENDER_CONVERT) ? T potrf_hsdpotrf(k)                                                      [ type_remote = DOUBLE ]
-        <- ((SENDER_CONVERT == params_tlr->datatype_convert) && m-k < params_tlr->band_size_dense_dp) ? T potrf_hsdpotrf(k)                   [ type_remote = DOUBLE ] 
-        <- ((SENDER_CONVERT == params_tlr->datatype_convert) && m-k >= params_tlr->band_size_dense_dp) ? T potrf_hsdpotrf_convert(k)          [ type_remote = SINGLE ] 
+READ  T <- (!convert_at_sender) ? T potrf_hsdpotrf(k)                                                      [ type_remote = DOUBLE ]
+        <- (convert_at_sender && m-k < params_tlr->band_size_dense_dp) ? T potrf_hsdpotrf(k)                   [ type_remote = DOUBLE ] 
+        <- (convert_at_sender && m-k >= params_tlr->band_size_dense_dp) ? T potrf_hsdpotrf_convert(k)          [ type_remote = SINGLE ] 
 
 RW    C <- (k == 0 && (m-k) < params_tlr->band_size_dense_dp) ? A potrf_bind_A(m, k)                   [ type_remote = DOUBLE ]
         <- (k == 0 && (m-k) >= params_tlr->band_size_dense_dp) ? A potrf_bind_A(m, k)                  [ type_remote = SINGLE ]
@@ -308,9 +309,9 @@ RW    C <- (k == 0 && (m-k) < params_tlr->band_size_dense_dp) ? A potrf_bind_A(m
         <- C potrf_hsdgemm(m, k, k-1)                                                                  [ type_remote = SINGLE ]
         -> ((m-k) < params_tlr->band_size_dense_dp)? A potrf_hsdsyrk(k, m)                             [ type_remote = DOUBLE ]
         -> ((m-k) < params_tlr->band_size_dense_dp)? A potrf_hsdgemm(m, k+1..m-1, k)                   [ type_remote = DOUBLE ]
-        -> ((m-k) < params_tlr->band_size_dense_dp && params_tlr->datatype_convert != SENDER_CONVERT)? B potrf_hsdgemm(m+1..descA->mt-1, m, k)                        [ type_remote = DOUBLE ]
-        -> (m-k < params_tlr->band_size_dense_dp && (SENDER_CONVERT == params_tlr->datatype_convert)) ? B potrf_hsdgemm(m+1 .. m+params_tlr->band_size_dense_dp-1, m, k)     [ type_remote = DOUBLE ]
-        -> (m-k < params_tlr->band_size_dense_dp && (SENDER_CONVERT == params_tlr->datatype_convert)) ? C0 potrf_hsdtrsm_convert(m, k)                                       [ type_remote = DOUBLE ]
+        -> ((m-k) < params_tlr->band_size_dense_dp && !convert_at_sender)? B potrf_hsdgemm(m+1..descA->mt-1, m, k)                        [ type_remote = DOUBLE ]
+        -> (m-k < params_tlr->band_size_dense_dp && convert_at_sender) ? B potrf_hsdgemm(m+1 .. m+params_tlr->band_size_dense_dp-1, m, k)     [ type_remote = DOUBLE ]
+        -> (m-k < params_tlr->band_size_dense_dp && convert_at_sender) ? C0 potrf_hsdtrsm_convert(m, k)                                       [ type_remote = DOUBLE ]
         -> ((m-k) < params_tlr->band_size_dense_dp)? descA(m, k)                                       
         -> ((m-k) >= params_tlr->band_size_dense_dp)? A potrf_hsdsyrk(k, m)                            [ type_remote = SINGLE ]
         -> ((m-k) >= params_tlr->band_size_dense_dp)? A potrf_hsdgemm(m, k+1..m-1, k)                  [ type_remote = SINGLE ]
@@ -393,10 +394,10 @@ k = %{ return parsec_imax(m-params_tlr->band_size_dense_dp+1, 0); %} .. m-1
 // Parallel partitioning
 : descA(m, k)
 
-READ C0 <- (params_tlr->datatype_convert == SENDER_CONVERT) ? C potrf_hsdtrsm(m, k) : NULL                                                                                              [ type_remote = DOUBLE ]
+READ C0 <- (convert_at_sender) ? C potrf_hsdtrsm(m, k) : NULL                                                                                              [ type_remote = DOUBLE ]
 
-RW   C  <- (params_tlr->datatype_convert == SENDER_CONVERT && m+params_tlr->band_size_dense_dp < descA->lmt) ? NEW : NULL                                                               [ type = SINGLE ]
-        -> (params_tlr->datatype_convert == SENDER_CONVERT && m+params_tlr->band_size_dense_dp < descA->lmt) ? B potrf_hsdgemm(m+params_tlr->band_size_dense_dp..descA->mt-1, m, k)     [ type_remote = SINGLE ]
+RW   C  <- (convert_at_sender && m+params_tlr->band_size_dense_dp < descA->lmt) ? NEW : NULL                                                               [ type = SINGLE ]
+        -> (convert_at_sender && m+params_tlr->band_size_dense_dp < descA->lmt) ? B potrf_hsdgemm(m+params_tlr->band_size_dense_dp..descA->mt-1, m, k)     [ type_remote = SINGLE ]
 
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
 
@@ -530,8 +531,8 @@ READ  A <- (m-k < params_tlr->band_size_dense_dp)? C potrf_hsdtrsm(m, k)        
         <- C potrf_hsdtrsm(m, k)                                                                 [ type_remote = SINGLE ]
 
 READ   B <- (n-k < params_tlr->band_size_dense_dp && m-n < params_tlr->band_size_dense_dp) ? C potrf_hsdtrsm(n, k)                                              [ type_remote = DOUBLE ]
-         <- (n-k < params_tlr->band_size_dense_dp && m-n >= params_tlr->band_size_dense_dp && params_tlr->datatype_convert != SENDER_CONVERT) ? C potrf_hsdtrsm(n, k)          [ type_remote = DOUBLE ]
-         <- (n-k < params_tlr->band_size_dense_dp && m-n >= params_tlr->band_size_dense_dp && (SENDER_CONVERT == params_tlr->datatype_convert)) ? C potrf_hsdtrsm_convert(n, k)       [ type_remote = SINGLE ]
+         <- (n-k < params_tlr->band_size_dense_dp && m-n >= params_tlr->band_size_dense_dp && !convert_at_sender) ? C potrf_hsdtrsm(n, k)          [ type_remote = DOUBLE ]
+         <- (n-k < params_tlr->band_size_dense_dp && m-n >= params_tlr->band_size_dense_dp && convert_at_sender) ? C potrf_hsdtrsm_convert(n, k)       [ type_remote = SINGLE ]
          <- C potrf_hsdtrsm(n, k)                                                                [ type_remote = SINGLE ]
 
 RW    C <- (k == 0 && m-n < params_tlr->band_size_dense_dp)? A potrf_bind_A(m, n)                [ type_remote = DOUBLE ]
