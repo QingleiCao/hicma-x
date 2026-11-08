@@ -614,9 +614,10 @@ two runs each; not changed on one configuration.
 - The README had no quick start; `build_release.sh --help` named the wrong
   default build type.
 
-**Not changed, for the maintainer**: the defaults `--gpus 0` and a dense band
-of NT for kinds 1 and 2 (section 7); the default build type, RelWithDebInfo,
-is within 2 % of Release (`-O3`), same source, three interleaved runs each:
+**Not changed**: the defaults `--gpus 0` and a dense band of NT for kinds 1
+and 2 (kept by the maintainer's decision, section 7); the default build type,
+RelWithDebInfo, is within 2 % of Release (`-O3`), same source, three
+interleaved runs each:
 dense FP64 7.1–7.8 s against 7.1–7.6 s, TLR factorization 1.10–1.11 s
 against 1.08–1.10 s, generation equal.
 
@@ -668,6 +669,8 @@ codes, residuals and GEMM precision counts; the HIP tree builds.
    dense unless `--band_dense` is given. Both now print a note. Making
    `--gpus` default to the visible devices, or the TLR kinds default to a
    band of 1, would change the results of existing command lines.
+   **Decided (2026-11-08): keep both defaults; the notes and the corrected
+   `--help` are the change for 0.2.0.**
 
 ## 8. Remaining and future work
 
