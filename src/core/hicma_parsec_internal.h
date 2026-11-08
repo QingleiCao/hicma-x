@@ -76,6 +76,23 @@ typedef unsigned int uint;  /**< Unsigned integer type for compatibility */
 #include <parsec/execution_stream.h>
 #include <parsec/utils/mca_param.h>
 #include <parsec/private_mempool.h>
+
+/**
+ * parsec_private_memory_fini destructs the pooled items without freeing their
+ * storage (parsec_lifo_item_alloc PARSEC_OBJ_CONSTRUCTs them, and releasing a
+ * constructed object does not free it), so every workspace a pool ever handed
+ * out leaked when its taskpool was destroyed: about 170 MB per kind-2
+ * factorization at N=2700 on 36 threads, again at every call. Use this instead.
+ */
+static inline void hicma_parsec_memory_pool_fini(parsec_memory_pool_t *pool)
+{
+    parsec_list_item_t *item;
+    while( NULL != (item = parsec_lifo_pop(&pool->lifo)) ) {
+        PARSEC_OBJ_DESTRUCT(item);
+        parsec_lifo_item_storage_free(item);
+    }
+    parsec_private_memory_fini(pool);
+}
 #include <parsec/data_dist/matrix/sym_two_dim_rectangle_cyclic_band.h>
 #include <dplasma.h>
 #include "hicma_parsec_timing.h"

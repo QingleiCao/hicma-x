@@ -358,8 +358,8 @@ void hicma_parsec_hamming_binary_Destruct( parsec_taskpool_t *tp )
         parsec_del2arena( &gemm_tp->arenas_datatypes[PARSEC_hamming_binary_FULL_I32_ADT_IDX] );
 
         // Clean up private memory pools
-        parsec_private_memory_fini( gemm_tp->_g_p_work_intA );
-        parsec_private_memory_fini( gemm_tp->_g_p_work_intB );
+        hicma_parsec_memory_pool_fini( gemm_tp->_g_p_work_intA );
+        hicma_parsec_memory_pool_fini( gemm_tp->_g_p_work_intB );
         free( gemm_tp->_g_p_work_intA );
         free( gemm_tp->_g_p_work_intB );
 

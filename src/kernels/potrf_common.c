@@ -356,7 +356,7 @@ parsec_memory_pool_t *hicma_potrf_pool_new(size_t bytes)
 void hicma_potrf_pool_free(parsec_memory_pool_t *pool)
 {
     if( NULL == pool ) return;
-    parsec_private_memory_fini(pool);
+    hicma_parsec_memory_pool_fini(pool);
     free(pool);
 }
 

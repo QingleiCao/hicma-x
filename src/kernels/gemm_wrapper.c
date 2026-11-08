@@ -377,7 +377,7 @@ void hicma_parsec_syrk_Destruct( parsec_taskpool_t *tp )
         parsec_del2arena( &gemm_tp->arenas_datatypes[PARSEC_gemm_TN_FULL_I32_ADT_IDX] );
 
         /* Finalize private memory pool */
-        parsec_private_memory_fini( gemm_tp->_g_p_work_int );
+        hicma_parsec_memory_pool_fini( gemm_tp->_g_p_work_int );
         free( gemm_tp->_g_p_work_int );
     }
 

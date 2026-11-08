@@ -215,7 +215,7 @@ void climate_emulator_geqsht_inverse_pre_computed_version_Destruct(parsec_taskpo
     parsec_del2arena(&climate_emulator_geqsht_inverse_pre_computed_version_taskpool->arenas_datatypes[PARSEC_climate_emulator_geqsht_inverse_pre_computed_version_flm_ADT_IDX]);
     
     // Clean up the memory pool
-    parsec_private_memory_fini( climate_emulator_geqsht_inverse_pre_computed_version_taskpool->_g_p_work);
+    hicma_parsec_memory_pool_fini( climate_emulator_geqsht_inverse_pre_computed_version_taskpool->_g_p_work);
     
     // Free the taskpool itself
     parsec_taskpool_free(taskpool);

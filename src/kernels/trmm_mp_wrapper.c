@@ -219,9 +219,9 @@ hicma_parsec_trmm_Destruct( parsec_taskpool_t *tp )
     parsec_del2arena( &otrmm->arenas_datatypes[PARSEC_trmm_mp_LLN_FULL_SP_ADT_IDX] );
     parsec_del2arena( &otrmm->arenas_datatypes[PARSEC_trmm_mp_LLN_FULL_HP_ADT_IDX] );
 
-    parsec_private_memory_fini( otrmm->_g_p_work_full_dp );
-    parsec_private_memory_fini( otrmm->_g_p_work_full_sp );
-    parsec_private_memory_fini( otrmm->_g_p_work_full_hp );
+    hicma_parsec_memory_pool_fini( otrmm->_g_p_work_full_dp );
+    hicma_parsec_memory_pool_fini( otrmm->_g_p_work_full_sp );
+    hicma_parsec_memory_pool_fini( otrmm->_g_p_work_full_hp );
     free( otrmm->_g_p_work_full_dp );
     free( otrmm->_g_p_work_full_sp );
     free( otrmm->_g_p_work_full_hp );

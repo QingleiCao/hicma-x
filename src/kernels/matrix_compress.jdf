@@ -462,10 +462,10 @@ void hicma_parsec_matrix_compress_Destruct(parsec_taskpool_t *taskpool)
     parsec_del2arena(&matrix_compress_taskpool->arenas_datatypes[PARSEC_matrix_compress_UV_ADT_IDX]);
     parsec_del2arena(&matrix_compress_taskpool->arenas_datatypes[PARSEC_matrix_compress_AR_ADT_IDX]);
 
-    parsec_private_memory_fini( matrix_compress_taskpool->_g_uv_work );
-    parsec_private_memory_fini( matrix_compress_taskpool->_g_d_work );
-    parsec_private_memory_fini( matrix_compress_taskpool->_g_rsvd_work );
-    parsec_private_memory_fini( matrix_compress_taskpool->_g_rsvd_iwork );
+    hicma_parsec_memory_pool_fini( matrix_compress_taskpool->_g_uv_work );
+    hicma_parsec_memory_pool_fini( matrix_compress_taskpool->_g_d_work );
+    hicma_parsec_memory_pool_fini( matrix_compress_taskpool->_g_rsvd_work );
+    hicma_parsec_memory_pool_fini( matrix_compress_taskpool->_g_rsvd_iwork );
     free(matrix_compress_taskpool->_g_uv_work);
     free(matrix_compress_taskpool->_g_d_work);
     free(matrix_compress_taskpool->_g_rsvd_work);
