@@ -397,6 +397,12 @@ void float2half_round_GPU( int nrows, int ncols,
  * @param[out] _H Output half precision value
  */
 void float2half_host(const float F, void *_H);
+/* cuBLAS reads alpha and beta in the compute precision: half for
+ * CUBLAS_COMPUTE_16F (--tensor_gemm 0x10), float otherwise. A float read as
+ * half is 0 (the low bytes of 1.0f and -1.0f), so passing &float with FP16
+ * compute silently dropped every update. hbuf is a char buffer of the caller. */
+#define HICMA_GEMM_SCALAR(compute16, fvar, hbuf) \
+    ((compute16) ? (float2half_host((fvar), &(hbuf)[0]), (const void *)&(hbuf)[0]) : (const void *)&(fvar))
 
 /**
  * @brief Convert half precision to single precision on GPU

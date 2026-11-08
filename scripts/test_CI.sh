@@ -113,6 +113,7 @@ if [ "$GPUS" -gt 0 ]; then
     run gpu_band_dp_sp_hp       1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-5
     run gpu_band_dp_sp_hp_sender 1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-5
     run gpu_band_sp_hp          1 $P $G --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5
+    run gpu_band_hp_fp16acc     1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4
     run gpu_trmm_adaptive       1 $T --N 2000 --K 1500 --NB 256 --gpus $GPUS --check 1 --adaptive_decision 1 --fixedacc 1e-4
 else
     print_warning "GPU cases (set HICMA_GPUS=1)"; skipped=$((skipped+1))

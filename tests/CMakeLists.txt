@@ -161,5 +161,7 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
         hicma_add_test(gpu_band_dp_sp_hp     1 ${P} ${G} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-5)
         hicma_add_test(gpu_band_dp_sp_hp_sender 1 ${P} ${G} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-5)
         hicma_add_test(gpu_band_sp_hp        1 ${P} ${G} --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5)
+        # FP16 accumulation (--tensor_gemm 0x10): residual 2.3e-5
+        hicma_add_test(gpu_band_hp_fp16acc   1 ${P} ${G} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4)
     endif()
 endif()

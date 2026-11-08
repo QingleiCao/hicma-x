@@ -4161,6 +4161,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 }
 
 
+
 /**
  * @brief GPU implementation of GEMM for dense result matrix C with low-rank matrix A and dense matrix B
  * 
@@ -4357,23 +4358,23 @@ void hicma_parsec_core_gemm_denseC_lrA_denseB_gpu( parsec_tiled_matrix_t* descA,
         /* tmp_mbr = trans(Av) * trans(B) */
         float alpha = 1.0f;
         float beta = 0.0f;
-
+        const int compute16 = 0 != (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16);
+        char alphah[16], betah[16];
         status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_T,
                 (int64_t)Arank, (int64_t)descA->mb, (int64_t)descA->mb,
-                &alpha, Av,          CUDA_R_16F, (int64_t)descA->mb,
+                HICMA_GEMM_SCALAR(compute16, alpha, alphah), Av, CUDA_R_16F, (int64_t)descA->mb,
                         B_use,       CUDA_R_16F, (int64_t)descA->mb,
-                &beta,  buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
+                HICMA_GEMM_SCALAR(compute16, beta, betah), buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
                 (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         /* C = C - Au * tmp_mbr */
         alpha = -1.0f;
         beta = 1.0f;
-
         status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
                 (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Arank,
-                &alpha, Au,          CUDA_R_16F, (int64_t)descA->mb,
+                HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au, CUDA_R_16F, (int64_t)descA->mb,
                         buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
-                &beta,  C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
+                HICMA_GEMM_SCALAR(compute16, beta, betah), C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
                 (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         /* After last local GEMM convert C from half to single */
@@ -4657,11 +4658,13 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
         /* tmp_rr = trans(Av) * Bv */
         float alpha = 1.0f;
         float beta = 0.0f;
+        const int compute16 = 0 != (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16);
+        char alphah[16], betah[16];
         status = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N,
                 (int64_t)Arank, (int64_t)Brank, (int64_t)descA->mb,
-                &alpha, Av,          CUDA_R_16F, (int64_t)descA->mb,
+                HICMA_GEMM_SCALAR(compute16, alpha, alphah), Av,          CUDA_R_16F, (int64_t)descA->mb,
                         Bv,          CUDA_R_16F, (int64_t)descA->mb,
-                &beta,  buffer_rr,   CUDA_R_16F, (int64_t)Arank,
+                HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_rr,   CUDA_R_16F, (int64_t)Arank,
                 (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         if( Arank > Brank ) {
@@ -4670,9 +4673,9 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
             beta = 0.0f;
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
                     (int64_t)descA->mb, (int64_t)Brank, (int64_t)Arank,
-                    &alpha, Au,          CUDA_R_16F, (int64_t)descA->mb,
+                    HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au,          CUDA_R_16F, (int64_t)descA->mb,
                             buffer_rr,   CUDA_R_16F, (int64_t)Arank,
-                    &beta,  buffer_mbr,  CUDA_R_16F, (int64_t)descA->mb,
+                    HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_mbr,  CUDA_R_16F, (int64_t)descA->mb,
                     (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
             /* C = C - tmp_mbr * trans(Bu) */
@@ -4680,9 +4683,9 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
             beta = 1.0f;
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Brank,
-                    &alpha, buffer_mbr,  CUDA_R_16F, (int64_t)descA->mb,
+                    HICMA_GEMM_SCALAR(compute16, alpha, alphah), buffer_mbr,  CUDA_R_16F, (int64_t)descA->mb,
                             Bu,          CUDA_R_16F, (int64_t)descA->mb,
-                    &beta,  C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
+                    HICMA_GEMM_SCALAR(compute16, beta, betah),  C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
                     (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
         } else {
@@ -4691,9 +4694,9 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
             beta = 0.0f;
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     (int64_t)Arank, (int64_t)descA->mb, (int64_t)Brank,
-                    &alpha, buffer_rr,   CUDA_R_16F, (int64_t)Arank,
+                    HICMA_GEMM_SCALAR(compute16, alpha, alphah), buffer_rr,   CUDA_R_16F, (int64_t)Arank,
                             Bu,          CUDA_R_16F, (int64_t)descA->mb,
-                    &beta,  buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
+                    HICMA_GEMM_SCALAR(compute16, beta, betah),  buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
                     (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
 
             /* C = C - Au * tmp_mbr */
@@ -4701,9 +4704,9 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_gpu( parsec_tiled_matrix_t* descA,
             beta = 1.0f;
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_N,
                     (int64_t)descA->mb, (int64_t)descA->mb, (int64_t)Arank,
-                    &alpha, Au,          CUDA_R_16F, (int64_t)descA->mb,
+                    HICMA_GEMM_SCALAR(compute16, alpha, alphah), Au,          CUDA_R_16F, (int64_t)descA->mb,
                             buffer_mbr,  CUDA_R_16F, (int64_t)Arank,
-                    &beta,  C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
+                    HICMA_GEMM_SCALAR(compute16, beta, betah),  C,           (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C32_OP32)? CUDA_R_32F: CUDA_R_16F, (int64_t)descA->mb,
                     (params_tlr->tensor_gemm & MASK_TF16_A16_B16_C16_OP16)? CUBLAS_COMPUTE_16F: CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
         }
 

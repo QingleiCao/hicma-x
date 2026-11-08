@@ -87,6 +87,7 @@ run gpu_trmm_adapt          1 $T --N 2000 --K 1500 --NB 256 --gpus 1 --check 1 -
 run gpu_band_k3_hp          1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check 1 --check_tol 1e-5 --verbose 2
 run gpu_band_k3_hp_sender   1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check 1 --check_tol 1e-5 --verbose 2
 run gpu_band_k4_hp          1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 4 --band_dense_sp 4 --check 1 --check_tol 1e-5 --verbose 2
+run gpu_band_k3_fp16acc    1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check 1 --check_tol 1e-4 --verbose 2
 run gpu_dense_k5_fp64_np2   2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2 -- --mca device_cuda_memory_use 30
 run gpu_runtime_k10_np2     2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --check 1 --verbose 2 -- --mca device_cuda_memory_use 30
 run gpu_dense_k8_np2        2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 8 --adaptive_decision 1 --check 1 --verbose 2 -- --mca device_cuda_memory_use 30
