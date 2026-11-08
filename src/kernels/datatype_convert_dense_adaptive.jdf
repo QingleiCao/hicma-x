@@ -112,10 +112,6 @@ parsec_datatype_convert_dense_adaptive_New(hicma_parsec_data_t *data,
     // Find and initialize available GPU devices
     hicma_parsec_find_cuda_devices( &dev_index, &nb);
 
-#if !GPU_BUFFER_ONCE
-    // Allocate GPU workspace buffers if not already allocated
-    gpu_temporay_buffer_init( data, params, A->mb, A->nb, 0, params->kind_of_cholesky );
-#endif
 #endif
 
     // Create the taskpool for datatype conversion
@@ -149,10 +145,6 @@ void parsec_datatype_convert_dense_adaptive_Destruct(parsec_taskpool_t *taskpool
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
     /* Clean up GPU resources if devices were used */
     if( datatype_convert_dense_adaptive_taskpool->_g_nb_cuda_devices > 0 ) {
-#if !GPU_BUFFER_ONCE
-        /* Free GPU workspace memory if not managed globally */
-        workspace_memory_free( datatype_convert_dense_adaptive_taskpool->_g_ws_gpu );
-#endif
 
         /* Free GPU device index array */
         if( NULL != datatype_convert_dense_adaptive_taskpool->_g_cuda_device_index )

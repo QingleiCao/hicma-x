@@ -516,10 +516,6 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define HICMA_GEMM_TT        7  /**< GEMM Transpose Transpose (C = A^T * B^T) */
 #define HICMA_GEMM_TT_SUMMA  8  /**< GEMM TT with SUMMA algorithm (scalable with both transposed) */
 
-/* GPU buffer allocation strategy - memory management for GPU operations */
-#ifndef GPU_BUFFER_ONCE
-#define GPU_BUFFER_ONCE 1  /**< Allocate GPU buffer once and reuse (memory efficiency) */
-#endif
 
 /* ============================================================================
  * Utility macros

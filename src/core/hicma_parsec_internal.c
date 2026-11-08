@@ -2467,7 +2467,7 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
     if( 0 == rank && verbose ) { printf("%d: Dense diagonal, U, V, rank Matrices are allocated\n", __LINE__); fflush(stdout); }
 
     /* Allocate memory for GPU workspace */
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))
     gpu_temporay_buffer_init( data, params, NB, NB, params->compmaxrank, params->kind_of_cholesky );
 #endif
 
@@ -2950,7 +2950,7 @@ void hicma_parsec_free_memory( parsec_context_t *parsec,
     params->info_gpu = NULL;
 
     /* GPU workspace */
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE 
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))
     gpu_temporay_buffer_fini( data, params->kind_of_cholesky );
 #endif
 }

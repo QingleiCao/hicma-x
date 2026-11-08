@@ -120,7 +120,7 @@ int main(int argc, char ** argv)
                                M, K, P, nodes/P, KP, KQ, IP, JQ));
 
     /* Allocate memory for GPU workspace */
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))
     gpu_temporay_buffer_init( &data, &params, MB, NB, 0, params.kind_of_cholesky );
 #endif
 
@@ -379,7 +379,7 @@ int main(int argc, char ** argv)
     free(params.norm_tileB);
 
     /* GPU workspace */
-#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)) && GPU_BUFFER_ONCE
+#if (defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT))
     gpu_temporay_buffer_fini( &data, params.kind_of_cholesky );
 #endif
 

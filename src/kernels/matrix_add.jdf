@@ -305,10 +305,6 @@ parsec_taskpool_t* hicma_parsec_matrix_add_New(parsec_tiled_matrix_t* A,
     /** Find all CUDA devices */
     hicma_parsec_find_cuda_devices(&dev_index, &nb);
 
-#if !GPU_BUFFER_ONCE
-    /* Allocate workspace on GPU in not allocated */
-    gpu_temporay_buffer_init( data, params_tlr, A->mb, A->nb, params_tlr->compmaxrank, params_tlr->kind_of_cholesky );
-#endif
 #endif
 
     tp = parsec_matrix_add_new( A, vec, params_tlr);
