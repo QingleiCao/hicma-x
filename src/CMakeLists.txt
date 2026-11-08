@@ -235,6 +235,20 @@ target_link_libraries(hicma_parsec
     PUBLIC parsec dplasma hcore starsh
     ${_hicma_dep_scope} LAPACKE::LAPACKE ${_hicma_gpu_libs} ${MPI_C_LIBRARIES} ${MPI_CXX_LIBRARIES} stdc++)
 
+# Calls inside the library bind to its own functions. The library exports
+# generic names (parse_arguments, and from STARS-H diff, cube, Gaussian, ...);
+# without this, an application function of the same name replaces the one
+# HiCMA-X calls internally (hicma_parsec_init then ran the application's
+# parse_arguments and crashed). Functions only: data symbols such as
+# time_elapsed are shared with the application through the timing macros.
+if(BUILD_SHARED_LIBS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(CheckLinkerFlag)
+    check_linker_flag(C "LINKER:-Bsymbolic-functions" HICMA_HAVE_BSYMBOLIC_FUNCTIONS)
+    if(HICMA_HAVE_BSYMBOLIC_FUNCTIONS)
+        target_link_options(hicma_parsec PRIVATE "LINKER:-Bsymbolic-functions")
+    endif()
+endif()
+
 # Add dependencies for HIP device headers
 if(HICMA_PARSEC_HAVE_HIP)
     add_dependencies(hicma_parsec parsec)

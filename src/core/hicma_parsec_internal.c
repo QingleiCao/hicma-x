@@ -363,7 +363,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
     // Second pass: parse all arguments
     for (int i = 1; i < argc; i++) {
         char *arg = argv[i];
-        char *value = NULL;
+        const char *value = NULL;
         
         // Skip if it's a PaRSEC/MPI argument
         // TODO
@@ -400,11 +400,18 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
                 break;
             }
             
-            char *option_name = arg + 2;
-            char *equals = strchr(option_name, '=');
+            /* Copy the name instead of cutting "--opt=value" in place: argv
+             * belongs to the caller (it may be read-only string literals of
+             * an embedding application) and is printed and parsed again later */
+            char option_name[128];
+            const char *name_start = arg + 2;
+            const char *equals = strchr(name_start, '=');
+            size_t name_len = equals ? (size_t)(equals - name_start) : strlen(name_start);
+            if( name_len >= sizeof(option_name) ) name_len = sizeof(option_name) - 1;
+            memcpy(option_name, name_start, name_len);
+            option_name[name_len] = '\0';
             
             if (equals) {
-                *equals = '\0';
                 value = equals + 1;
             } else if (i + 1 < argc && (argv[i + 1][0] != '-' || is_negative_number(argv[i + 1]))) {
                 value = argv[i + 1];
@@ -567,6 +574,18 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
      * set fields before hicma_parsec_init(); climate_emulator_init sets its
      * overrides after it. */
     memset(params, 0, sizeof(*params));
+
+    /* An application that embeds HiCMA-X may have no command line to pass
+     * (argc 0, argv NULL): give MPI, PaRSEC and the executable-path logic a
+     * program name instead of dereferencing argv[0]. */
+    {
+        static char hicma_program_name[] = "hicma_parsec";
+        static char *hicma_default_argv[] = { hicma_program_name, NULL };
+        if( *_argc < 1 || NULL == *_argv ) {
+            *_argc = 1;
+            *_argv = hicma_default_argv;
+        }
+    }
 
     // Default: assume we did not initialize MPI
     params->mpi_initialized_by_hicma = 0;

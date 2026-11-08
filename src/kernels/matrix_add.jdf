@@ -36,7 +36,7 @@ void parsec_print_tile3(float *A, int m, int n){
  * @param rad Radius parameter for Gaussian kernel
  * @param add_diag Value to add to diagonal elements
  */
-void gaussian_cpu(int m, int n, int nb, int lda, float* A, float rad, float add_diag){
+static void gaussian_cpu(int m, int n, int nb, int lda, float* A, float rad, float add_diag){
     float value;
     float rad2 = (float)rad;
     for( int i =0; i<nb; i++){
@@ -66,7 +66,7 @@ void gaussian_cpu(int m, int n, int nb, int lda, float* A, float rad, float add_
  * @param lda Leading dimension of matrix C
  * @param vec Pointer to source vector
  */
-void fillinC(int m, int n, int tempmm, int tempnn, float *C, int lda, float *vec) {
+static void fillinC(int m, int n, int tempmm, int tempnn, float *C, int lda, float *vec) {
     int i, j;
     for (i=0; i<tempmm; i++) {
         for (j=0; j<tempnn; j++) {
@@ -85,7 +85,7 @@ void fillinC(int m, int n, int tempmm, int tempnn, float *C, int lda, float *vec
  * @param lda Leading dimension of matrix D
  * @param vec Pointer to source vector
  */
-void fillinD(int m, int n, int tempmm, int tempnn, float *D, int lda, float *vec) {
+static void fillinD(int m, int n, int tempmm, int tempnn, float *D, int lda, float *vec) {
     int i, j;
     for (i=0; i<tempmm; i++) {
         for (j=0; j<tempnn; j++) {

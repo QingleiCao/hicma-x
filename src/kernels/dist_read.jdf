@@ -87,7 +87,7 @@ static int dist_read_float(char* path, int num, float *matrix, int N, int SNP) {
  * @param N Number of columns
  * @return Sum of all matrix elements
  */
-float sum_matrix_of_file(float *A, int M, int N) {
+static float sum_matrix_of_file(float *A, int M, int N) {
     float sum = 0.0;
     // Iterate through matrix in column major order
     for(int j = 0; j < N; j++) {
