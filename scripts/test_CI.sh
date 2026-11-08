@@ -71,6 +71,7 @@ run potrf_tlr_mp_adaptive   1 $P $COMMON --kind_of_cholesky 1 --band_dense 1 --a
 run potrf_mp_dense_adaptive 1 $P $COMMON --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7
 run potrf_mp_dense_admem    1 $P $COMMON --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1 --check_tol 1e-7
 run potrf_band_dp_sp        1 $P $COMMON --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-6
+run potrf_band_dp_sp_sender 1 $P $COMMON --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-6
 run potrf_runtime_decision  1 $P $COMMON --adaptive_decision_runtime 1 --check_tol 1e-7
 run potrf_sparse_general    1 $P $COMMON --sparse 1
 run potrf_sparse_balance    1 $P $COMMON --sparse 2
@@ -87,6 +88,8 @@ run trmm_fp64               1 $T --N 2000 --K 1500 --NB 256 --check 1 --adaptive
 run trmm_adaptive           1 $T --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4
 run trmm_adaptive_sr        1 $T --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4 --enable_stochastic_rounding 1
 run trmm_adaptive_np2       2 $T --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4
+run lapack_tile_convert     1 ./tests/testing_lapack_tile
+run lapack_tile_convert_np2 2 ./tests/testing_lapack_tile
 
 # 3-D RBF mesh (needs the SARS-CoV-2 mesh shipped with stars-h)
 if [ -f "$MESH" ]; then
@@ -107,6 +110,9 @@ if [ "$GPUS" -gt 0 ]; then
     run gpu_runtime_admem       1 $P $G --adaptive_decision_runtime 1 --adaptive_memory 1 --check_tol 1e-7
     run gpu_tlr_mp              1 $P $COMMON --gpus $GPUS --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7
     run gpu_tlr_dp_band2        1 $P $COMMON --gpus $GPUS --kind_of_cholesky 2 --band_dense 2
+    run gpu_band_dp_sp_hp       1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-5
+    run gpu_band_dp_sp_hp_sender 1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-5
+    run gpu_band_sp_hp          1 $P $G --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5
     run gpu_trmm_adaptive       1 $T --N 2000 --K 1500 --NB 256 --gpus $GPUS --check 1 --adaptive_decision 1 --fixedacc 1e-4
 else
     print_warning "GPU cases (set HICMA_GPUS=1)"; skipped=$((skipped+1))

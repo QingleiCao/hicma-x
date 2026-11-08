@@ -160,9 +160,9 @@ info = 0  /**< Error code for recursive factorization calls */
 
 // Data flow: Read input, write output, trigger dependent tasks
 RW T <- (k == 0) ? A potrf_bind_A(k, k) : T potrf_hsdsyrk(k-1, k)                                                      [ type_remote = DOUBLE ]
-     -> (params_tlr->datatype_convert == 0) ? T potrf_hsdtrsm(k+1..descA->mt-1, k)                                       [ type_remote = DOUBLE ]
-     -> (params_tlr->datatype_convert) ? T potrf_hsdtrsm(k+1..k+params_tlr->band_size_dense_dp-1, k)                     [ type_remote = DOUBLE ]
-     -> (params_tlr->datatype_convert && k < descA->mt-params_tlr->band_size_dense_dp) ? T0 potrf_hsdpotrf_convert(k)    [ type_remote = DOUBLE ] 
+     -> (params_tlr->datatype_convert != SENDER_CONVERT) ? T potrf_hsdtrsm(k+1..descA->mt-1, k)                                       [ type_remote = DOUBLE ]
+     -> ((SENDER_CONVERT == params_tlr->datatype_convert)) ? T potrf_hsdtrsm(k+1..k+params_tlr->band_size_dense_dp-1, k)                     [ type_remote = DOUBLE ]
+     -> ((SENDER_CONVERT == params_tlr->datatype_convert) && k < descA->mt-params_tlr->band_size_dense_dp) ? T0 potrf_hsdpotrf_convert(k)    [ type_remote = DOUBLE ] 
      -> descA(k, k)                                                             
 
 ; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
@@ -248,10 +248,10 @@ k = 0 .. descA->mt-1-params_tlr->band_size_dense_dp
 :descA(k, k)
 
 // Data flow: Read double precision input, write single precision output
-READ T0 <- (params_tlr->datatype_convert == 1) ? T potrf_hsdpotrf(k) : NULL                                            [ type_remote = DOUBLE ]
+READ T0 <- (params_tlr->datatype_convert == SENDER_CONVERT) ? T potrf_hsdpotrf(k) : NULL                                            [ type_remote = DOUBLE ]
 
-RW T <- (params_tlr->datatype_convert == 1) ? NEW : NULL                                                               [ type = SINGLE ] 
-     -> (params_tlr->datatype_convert == 1) ? T potrf_hsdtrsm(k+params_tlr->band_size_dense_dp..descA->mt-1, k)        [ type_remote = SINGLE ]
+RW T <- (params_tlr->datatype_convert == SENDER_CONVERT) ? NEW : NULL                                                               [ type = SINGLE ] 
+     -> (params_tlr->datatype_convert == SENDER_CONVERT) ? T potrf_hsdtrsm(k+params_tlr->band_size_dense_dp..descA->mt-1, k)        [ type_remote = SINGLE ]
 
 ; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
 
@@ -259,7 +259,7 @@ RW T <- (params_tlr->datatype_convert == 1) ? NEW : NULL                        
 BODY
 {
     /* Convert datatype from double to single precision */
-    if( 1 == params_tlr->datatype_convert ) {
+    if( SENDER_CONVERT == params_tlr->datatype_convert ) {
         if( print_more ) fprintf(stderr, "potrf_convert CPU %d\n", k);
 #if OWN_CONVERTOR
         /* Use custom binary converter for better performance */
@@ -298,9 +298,9 @@ k = 0 .. m-1          /**< Column index of source diagonal block */
 : descA(m, k)
 
 // Parameters
-READ  T <- (params_tlr->datatype_convert == 0) ? T potrf_hsdpotrf(k)                                                      [ type_remote = DOUBLE ]
-        <- (params_tlr->datatype_convert && m-k < params_tlr->band_size_dense_dp) ? T potrf_hsdpotrf(k)                   [ type_remote = DOUBLE ] 
-        <- (params_tlr->datatype_convert && m-k >= params_tlr->band_size_dense_dp) ? T potrf_hsdpotrf_convert(k)          [ type_remote = SINGLE ] 
+READ  T <- (params_tlr->datatype_convert != SENDER_CONVERT) ? T potrf_hsdpotrf(k)                                                      [ type_remote = DOUBLE ]
+        <- ((SENDER_CONVERT == params_tlr->datatype_convert) && m-k < params_tlr->band_size_dense_dp) ? T potrf_hsdpotrf(k)                   [ type_remote = DOUBLE ] 
+        <- ((SENDER_CONVERT == params_tlr->datatype_convert) && m-k >= params_tlr->band_size_dense_dp) ? T potrf_hsdpotrf_convert(k)          [ type_remote = SINGLE ] 
 
 RW    C <- (k == 0 && (m-k) < params_tlr->band_size_dense_dp) ? A potrf_bind_A(m, k)                   [ type_remote = DOUBLE ]
         <- (k == 0 && (m-k) >= params_tlr->band_size_dense_dp) ? A potrf_bind_A(m, k)                  [ type_remote = SINGLE ]
@@ -308,9 +308,9 @@ RW    C <- (k == 0 && (m-k) < params_tlr->band_size_dense_dp) ? A potrf_bind_A(m
         <- C potrf_hsdgemm(m, k, k-1)                                                                  [ type_remote = SINGLE ]
         -> ((m-k) < params_tlr->band_size_dense_dp)? A potrf_hsdsyrk(k, m)                             [ type_remote = DOUBLE ]
         -> ((m-k) < params_tlr->band_size_dense_dp)? A potrf_hsdgemm(m, k+1..m-1, k)                   [ type_remote = DOUBLE ]
-        -> ((m-k) < params_tlr->band_size_dense_dp && params_tlr->datatype_convert == 0)? B potrf_hsdgemm(m+1..descA->mt-1, m, k)                        [ type_remote = DOUBLE ]
-        -> (m-k < params_tlr->band_size_dense_dp && params_tlr->datatype_convert) ? B potrf_hsdgemm(m+1 .. m+params_tlr->band_size_dense_dp-1, m, k)     [ type_remote = DOUBLE ]
-        -> (m-k < params_tlr->band_size_dense_dp && params_tlr->datatype_convert) ? C0 potrf_hsdtrsm_convert(m, k)                                       [ type_remote = DOUBLE ]
+        -> ((m-k) < params_tlr->band_size_dense_dp && params_tlr->datatype_convert != SENDER_CONVERT)? B potrf_hsdgemm(m+1..descA->mt-1, m, k)                        [ type_remote = DOUBLE ]
+        -> (m-k < params_tlr->band_size_dense_dp && (SENDER_CONVERT == params_tlr->datatype_convert)) ? B potrf_hsdgemm(m+1 .. m+params_tlr->band_size_dense_dp-1, m, k)     [ type_remote = DOUBLE ]
+        -> (m-k < params_tlr->band_size_dense_dp && (SENDER_CONVERT == params_tlr->datatype_convert)) ? C0 potrf_hsdtrsm_convert(m, k)                                       [ type_remote = DOUBLE ]
         -> ((m-k) < params_tlr->band_size_dense_dp)? descA(m, k)                                       
         -> ((m-k) >= params_tlr->band_size_dense_dp)? A potrf_hsdsyrk(k, m)                            [ type_remote = SINGLE ]
         -> ((m-k) >= params_tlr->band_size_dense_dp)? A potrf_hsdgemm(m, k+1..m-1, k)                  [ type_remote = SINGLE ]
@@ -352,7 +352,7 @@ BODY
                                 C /*A(m, k)*/, ldam);
     } else {
         /* Far-off-diagonal: Use single precision for better performance */
-        if( 0 == params_tlr->datatype_convert ) {
+        if( SENDER_CONVERT != params_tlr->datatype_convert ) {
             /* Convert diagonal block from double to single precision */
             float *T_s = (float *)parsec_private_memory_pop(p_work_single); 
 #if OWN_CONVERTOR
@@ -393,16 +393,16 @@ k = %{ return parsec_imax(m-params_tlr->band_size_dense_dp+1, 0); %} .. m-1
 // Parallel partitioning
 : descA(m, k)
 
-READ C0 <- (params_tlr->datatype_convert == 1) ? C potrf_hsdtrsm(m, k) : NULL                                                                                              [ type_remote = DOUBLE ]
+READ C0 <- (params_tlr->datatype_convert == SENDER_CONVERT) ? C potrf_hsdtrsm(m, k) : NULL                                                                                              [ type_remote = DOUBLE ]
 
-RW   C  <- (params_tlr->datatype_convert == 1 && m+params_tlr->band_size_dense_dp < descA->lmt) ? NEW : NULL                                                               [ type = SINGLE ]
-        -> (params_tlr->datatype_convert == 1 && m+params_tlr->band_size_dense_dp < descA->lmt) ? B potrf_hsdgemm(m+params_tlr->band_size_dense_dp..descA->mt-1, m, k)     [ type_remote = SINGLE ]
+RW   C  <- (params_tlr->datatype_convert == SENDER_CONVERT && m+params_tlr->band_size_dense_dp < descA->lmt) ? NEW : NULL                                                               [ type = SINGLE ]
+        -> (params_tlr->datatype_convert == SENDER_CONVERT && m+params_tlr->band_size_dense_dp < descA->lmt) ? B potrf_hsdgemm(m+params_tlr->band_size_dense_dp..descA->mt-1, m, k)     [ type_remote = SINGLE ]
 
 ; (m >= (descA->mt - PRI_CHANGE)) ? (descA->mt - m) * (descA->mt - m) * (descA->mt - m) + 3 * ((2 * descA->mt) - k - m - 1) * (m - k) : PRI_MAX
 
 BODY
 {
-    if( m+params_tlr->band_size_dense_dp < descA->lmt && 1 == params_tlr->datatype_convert ) {
+    if( m+params_tlr->band_size_dense_dp < descA->lmt && SENDER_CONVERT == params_tlr->datatype_convert ) {
         int tempmm = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
         if( print_more ) printf("trsm_convert CPU %d %d\n", m, k);
         /* Convert datatype */
@@ -530,15 +530,21 @@ READ  A <- (m-k < params_tlr->band_size_dense_dp)? C potrf_hsdtrsm(m, k)        
         <- C potrf_hsdtrsm(m, k)                                                                 [ type_remote = SINGLE ]
 
 READ   B <- (n-k < params_tlr->band_size_dense_dp && m-n < params_tlr->band_size_dense_dp) ? C potrf_hsdtrsm(n, k)                                              [ type_remote = DOUBLE ]
-         <- (n-k < params_tlr->band_size_dense_dp && m-n >= params_tlr->band_size_dense_dp && params_tlr->datatype_convert == 0) ? C potrf_hsdtrsm(n, k)          [ type_remote = DOUBLE ]
-         <- (n-k < params_tlr->band_size_dense_dp && m-n >= params_tlr->band_size_dense_dp && params_tlr->datatype_convert) ? C potrf_hsdtrsm_convert(n, k)       [ type_remote = SINGLE ]
+         <- (n-k < params_tlr->band_size_dense_dp && m-n >= params_tlr->band_size_dense_dp && params_tlr->datatype_convert != SENDER_CONVERT) ? C potrf_hsdtrsm(n, k)          [ type_remote = DOUBLE ]
+         <- (n-k < params_tlr->band_size_dense_dp && m-n >= params_tlr->band_size_dense_dp && (SENDER_CONVERT == params_tlr->datatype_convert)) ? C potrf_hsdtrsm_convert(n, k)       [ type_remote = SINGLE ]
          <- C potrf_hsdtrsm(n, k)                                                                [ type_remote = SINGLE ]
 
 RW    C <- (k == 0 && m-n < params_tlr->band_size_dense_dp)? A potrf_bind_A(m, n)                [ type_remote = DOUBLE ]
         <- (k == 0 && m-n >= params_tlr->band_size_dense_dp)? A potrf_bind_A(m, n)               [ type_remote = SINGLE ]
         <- (m-n < params_tlr->band_size_dense_dp)? C potrf_hsdgemm(m, n, k-1)                    [ type_remote = DOUBLE ] 
         <- (m-n < params_tlr->band_size_dense_sp)? C potrf_hsdgemm(m, n, k-1)                    [ type_remote = SINGLE ] 
-        <- C potrf_hsdgemm(m, n, k-1)                                              [ type = HALF ] 
+        /* type_remote, not type: "type" asks PaRSEC for a local reshape of the
+         * incoming copy into the HALF layout, a typed copy of the FP32 tile into
+         * a buffer half its size (MPI_ERR_TRUNCATE on every GPU run with a half
+         * precision band). The tile stays FP32-sized; the GPU body converts it
+         * in place for the FP16-accumulation modes. Its producer, the previous
+         * update of the same tile, runs on the same rank. */
+        <- C potrf_hsdgemm(m, n, k-1)                                              [ type_remote = HALF ] 
         -> (n == k+1 && m-n < params_tlr->band_size_dense_dp)? C potrf_hsdtrsm(m, n)             [ type_remote = DOUBLE ]
         -> (n == k+1 && m-n >= params_tlr->band_size_dense_dp)? C potrf_hsdtrsm(m, n)            [ type_remote = SINGLE ]
         -> (n != k+1 && m-n < params_tlr->band_size_dense_dp)? C potrf_hsdgemm(m, n, k+1)        [ type_remote = DOUBLE ]
@@ -609,7 +615,7 @@ BODY [type=CUDA]
                  &beta_double,  (double *)C, ldam );
 
     } else if( m-n < params_tlr->band_size_dense_sp ) {
-        if( n-k < params_tlr->band_size_dense_dp && 0 == params_tlr->datatype_convert ) {
+        if( n-k < params_tlr->band_size_dense_dp && SENDER_CONVERT != params_tlr->datatype_convert ) {
             /* Convert datatype */
             double2float_GPU( descA->mb, descA->nb, B, descA->mb, B_s, descA->mb, parsec_body.stream );
         }
@@ -617,7 +623,7 @@ BODY [type=CUDA]
         status = cublasSgemm( handle, CUBLAS_OP_N, CUBLAS_OP_T,
                  tempmm, descA->mb, descA->mb,
                  &alpha_float, (float *)A, ldam,
-                               (((n-k) < params_tlr->band_size_dense_dp && 0 == params_tlr->datatype_convert )? (float *)B_s: (float *)B), ldan,
+                               (((n-k) < params_tlr->band_size_dense_dp && SENDER_CONVERT != params_tlr->datatype_convert )? (float *)B_s: (float *)B), ldan,
                  &beta_float,  (float *)C, ldam );
 
     } else {
@@ -625,7 +631,7 @@ BODY [type=CUDA]
         float2half_GPU( descA->mb, descA->nb, A, descA->mb, A_h, descA->mb, parsec_body.stream );
 
         /* Convert B from double to half */
-        if( n-k < params_tlr->band_size_dense_dp && 0 == params_tlr->datatype_convert ) {
+        if( n-k < params_tlr->band_size_dense_dp && SENDER_CONVERT != params_tlr->datatype_convert ) {
             /* Convert datatype */
             double2half_GPU( descA->mb, descA->nb, B, descA->mb, B_h, descA->mb, parsec_body.stream );
 
@@ -703,7 +709,7 @@ BODY
         if( n-k >= params_tlr->band_size_dense_dp ) parsec_private_memory_push(p_work_double, B_d);
     } else {
         float *B_s;
-        if( n-k < params_tlr->band_size_dense_dp && 0 == params_tlr->datatype_convert ) {
+        if( n-k < params_tlr->band_size_dense_dp && SENDER_CONVERT != params_tlr->datatype_convert ) {
             B_s = (float *)parsec_private_memory_pop(p_work_single); 
 #if OWN_CONVERTOR
             convert_d2s_binary_CPU(B_s, B, descA->mb, descA->nb);
@@ -715,10 +721,10 @@ BODY
         CORE_sgemm(PlasmaNoTrans, PlasmaTrans,
                    tempmm, descA->mb, descA->mb,
                    (float)-1.0,  A                          /*A(m, k)*/, ldam,
-                                ((n-k < params_tlr->band_size_dense_dp && 0 == params_tlr->datatype_convert)? B_s: B) /*A(n, k)*/, ldan,
+                                ((n-k < params_tlr->band_size_dense_dp && SENDER_CONVERT != params_tlr->datatype_convert)? B_s: B) /*A(n, k)*/, ldan,
                    (float) 1.0, C /*A(m, n)*/, ldam);
 
-        if( n-k < params_tlr->band_size_dense_dp && 0 == params_tlr->datatype_convert ) parsec_private_memory_push(p_work_single, B_s);
+        if( n-k < params_tlr->band_size_dense_dp && SENDER_CONVERT != params_tlr->datatype_convert ) parsec_private_memory_push(p_work_single, B_s);
     }
 
     printlog("CORE_dgemm( %d, %d, %d )\n\t( %s, %s, %d, %d, %d, %f, A(%d,%d)[%p], %d, A(%d,%d)[%p], %d, %f, A(%d,%d)[%p], %d)\n",

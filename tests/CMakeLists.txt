@@ -118,6 +118,7 @@ hicma_add_test(potrf_tlr_mp_adaptive   1 ${P} ${COMMON} --kind_of_cholesky 1 --b
 hicma_add_test(potrf_mp_dense_adaptive 1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7)
 hicma_add_test(potrf_mp_dense_admem    1 ${P} ${COMMON} --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --adaptive_memory 1 --check_tol 1e-7)
 hicma_add_test(potrf_band_dp_sp        1 ${P} ${COMMON} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-6)
+hicma_add_test(potrf_band_dp_sp_sender 1 ${P} ${COMMON} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-6)
 hicma_add_test(potrf_runtime_decision  1 ${P} ${COMMON} --adaptive_decision_runtime 1 --check_tol 1e-7)
 hicma_add_test(potrf_sparse_general    1 ${P} ${COMMON} --sparse 1)
 hicma_add_test(potrf_sparse_balance    1 ${P} ${COMMON} --sparse 2)
@@ -155,5 +156,10 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
         # kinds 1 and 2 have CUDA bodies only
         hicma_add_test(gpu_tlr_mp        1 ${P} ${COMMON} --gpus 1 --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7)
         hicma_add_test(gpu_tlr_dp_band2  1 ${P} ${COMMON} --gpus 1 --kind_of_cholesky 2 --band_dense 2)
+        # kinds 3 and 4 with a half-precision band (GPU only), and kind 3 with
+        # the conversion done by the sender; residuals 8.5e-7 (HP band) and 5e-8
+        hicma_add_test(gpu_band_dp_sp_hp     1 ${P} ${G} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --check_tol 1e-5)
+        hicma_add_test(gpu_band_dp_sp_hp_sender 1 ${P} ${G} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-5)
+        hicma_add_test(gpu_band_sp_hp        1 ${P} ${G} --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5)
     endif()
 endif()
