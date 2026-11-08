@@ -150,12 +150,13 @@ void climate_emulator_write(parsec_context_t *parsec,
             (size_t)parsec_datadist_getsizeoftype(A->mtype));
 
     /* Convert from PaRSEC tiled format to Lapack format */
-    if(symm)
+    if(symm) {
         /* Handle symmetric matrices */
         if( 0 != hicma_parsec_Tile_to_Lapack_sym( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P) ) exit(1);  /* message printed by the conversion */
-    else
+    } else {
         /* Handle general matrices */
         if( 0 != hicma_parsec_Tile_to_Lapack( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P) ) exit(1);  /* message printed by the conversion */
+    }
     /* Write data to file using MPI-IO */
     MPI_Writing_dfile(filename, rank, DA, A->llm*A->lln, MPI_DOUBLE, darrayA);
     
@@ -174,12 +175,13 @@ void climate_emulator_write(parsec_context_t *parsec,
                                     (size_t)parsec_datadist_getsizeoftype(A->mtype));
 
     /* Convert from PaRSEC tiled format to Lapack format */
-    if(symm)
+    if(symm) {
         /* Handle symmetric matrices */
         if( 0 != hicma_parsec_Tile_to_Lapack_sym( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P) ) exit(1);  /* message printed by the conversion */
-    else
+    } else {
         /* Handle general matrices */
         if( 0 != hicma_parsec_Tile_to_Lapack( parsec, (parsec_tiled_matrix_t *)A, DA, P, nodes/P) ) exit(1);  /* message printed by the conversion */
+    }
     /* Write data to binary file */
     writeMatrixToBinaryFile(filename, N, N, DA);
 

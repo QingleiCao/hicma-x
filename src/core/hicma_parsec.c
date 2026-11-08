@@ -809,10 +809,11 @@ void hicma_parsec_writeB(parsec_context_t *parsec,
                                     (size_t)parsec_datadist_getsizeoftype(B->mtype));
 
     /* Convert from tile format to LAPACK format in single precision */
-    if(symm)
+    if(symm) {
         if( 0 != hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
-    else
+    } else {
         if( 0 != hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
+    }
     
     /* Write matrix using MPI-IO with float precision */
     MPI_Writing_sfile(filename, rank, DB, B->llm*B->lln, MPI_FLOAT, darrayB);
@@ -825,10 +826,11 @@ void hicma_parsec_writeB(parsec_context_t *parsec,
                                     (size_t)parsec_datadist_getsizeoftype(B->mtype));
 
     /* Convert from tile format to LAPACK format in single precision */
-    if(symm)
+    if(symm) {
         if( 0 != hicma_parsec_Tile_to_Lapack_sym_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
-    else
+    } else {
         if( 0 != hicma_parsec_Tile_to_Lapack_single( parsec, (parsec_tiled_matrix_t *)B, DB, P, nodes/P) ) exit(1);  /* message printed by the conversion */
+    }
 
     /* Write matrix directly to binary file */
     FILE *FY;
