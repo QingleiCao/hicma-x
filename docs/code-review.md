@@ -1291,7 +1291,7 @@ Findings and what was done (minimal changes):
    JDF, `USE_OPENMP` and `DYNAMIC_MEMORY_ALLOCATION` in the sparse analysis,
    `CLIMATE_EMULATOR_*`) were not reviewed in depth.
 
-## 9. Fourth pass: macros and data structures (2026-11-08)
+## 9. Fifth pass: macros and data structures (2026-11-08)
 
 Scope: every `#define` in `src/` and `tests/`, and every field of the structs
 in the library headers, counted against their uses (scripted inventory, then
