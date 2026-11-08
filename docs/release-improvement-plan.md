@@ -157,3 +157,9 @@ after the library changes.
   BLAS thread-safety fixture for every HiCMA case, runner CPU/BLAS printed,
   `OPENBLAS_NUM_THREADS=1`. See `release-readiness.md` section 5.10.
 
+- 2026-11-08 (sixth pass, on request): external-user pass (fresh clone,
+  README/TESTS walkthrough, DPLASMA comparison). Fixed: `--nruns` crash in
+  TLR runs, wrong help defaults, duplicate and uninitialized summary line,
+  missing revision, two zero exit codes; notes for `--gpus 0` with visible
+  GPUs, fully dense TLR kinds, and launcher bindings. See
+  `release-readiness.md` section 5.11.

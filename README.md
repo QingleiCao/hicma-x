@@ -3,6 +3,7 @@
 ## Table of Contents
 - [Overview](#overview)
 - [Features](#features)
+- [Quick start](#quick-start)
 - [Building](#building)
 - [Testing](#testing)
 - [Release notes](#release-notes)
@@ -39,6 +40,42 @@ HiCMA-X, formerly HiCMA-PaRSEC, i.e., Hierarchical Computations on Manycore Arch
 - **Genomics**: Genetic analysis
 - **Hamming Distance**: Hamming distance computations
 - **Scientific Computing**: 3D unstructured mesh deformation (e.g., SARS-CoV-2 modeling)
+
+## Quick start
+
+MPI and a BLAS/LAPACKE that is safe to call from several threads (MKL
+sequential, or OpenBLAS with `OPENBLAS_NUM_THREADS=1`) come from the system;
+PaRSEC, DPLASMA, STARS-H and HCORE are built from the submodules.
+
+```bash
+git clone --recursive https://github.com/ecrc/hicma-x.git
+cd hicma-x
+cmake -S . -B build -G Ninja        # add -DHICMA_PARSEC_HAVE_CUDA=ON for NVIDIA GPUs
+cmake --build build
+ctest --test-dir build -L hicma -LE gpu
+```
+
+A tile low-rank Cholesky in FP64, checked; add `--gpus 1` on a GPU build,
+which otherwise runs on the CPU:
+
+```bash
+build/tests/testing_potrf_tlr --N 8192 --NB 512 --kind_of_problem 2 --kind_of_cholesky 2 --band_dense 1 --fixedacc 1e-8 --maxrank 150 --check 1
+```
+
+`--band_dense 1` keeps only the diagonal tiles dense; without it every tile is
+dense. With several processes, give each one the cores it should use: PaRSEC runs
+its threads only on the cores the launcher binds the process to, and Open MPI
+binds each process to a single core by default. With Open MPI, one process per
+node:
+
+```bash
+mpirun -n <nodes> --map-by ppr:1:node --bind-to none build/tests/testing_potrf_tlr ...
+```
+
+or one process per socket of 18 cores: `--map-by ppr:1:package:pe=18`.
+
+`--help` lists the options; [TESTS.md](TESTS.md) explains them and gives
+tuning notes.
 
 ## Building
 

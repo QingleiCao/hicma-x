@@ -148,6 +148,8 @@ CUDA build; see `BUILD.md`.
 - `--tensor_gemm 0x80` (FP16 C, FP32 accumulation) is implemented in the TRMM
   only.
 - `--datatype_convert 2` needs GPUs.
+- On CPUs other than the A64FX (Fugaku), FP16 tiles are emulated: they model
+  the accuracy of half precision, without a speed-up.
 - One process per node is the fastest layout; several ranks per GPU work but
   need `-- --mca device_cuda_memory_use <percent>` (`device_hip_memory_use`
   on AMD GPUs) so that each rank reserves only a share of the device memory.
@@ -200,8 +202,8 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 
 | Option | Type | Description |
 |---|---|---|
-| `--cores` | int | Number of concurrent threads (default: number of physical hyper-threads) |
-| `--gpus` | int | Number of GPUs (default: 0) |
+| `--cores` | int | Number of compute threads per process (default: number of physical cores) |
+| `--gpus` | int | Number of GPUs per process (default: 0, CPU only) |
 | `--P` | int | Rows (P) in the PxQ process grid (default: NP) |
 | `--Q` | int | Columns (Q) in the PxQ process grid (default: NP/P) |
 | `--grid_rows` | int | Same as --P |
@@ -209,10 +211,10 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--KP` | int | Block rows (KP) in the PxQ process grid (default: 1) |
 | `--KQ` | int | Block columns (KQ) in the PxQ process grid (default: 1) |
 | `--M` | int | Row dimension (M) of the matrices; must equal N (default: N) |
-| `--N` | int | Column dimension (N) of the matrices (required) |
+| `--N` | int | Column dimension (N) of the matrices (default: 2048) |
 | `--K` | int | Columns (K) of B in the TRMM (default: N) |
 | `--MB` | int | Row tile size; must equal NB (default: NB) |
-| `--NB` | int | Tile size (required) |
+| `--NB` | int | Tile size (default: 2048) |
 | `--KB` | int | Tile size along K; must equal NB (default: NB) |
 | `--check` | flag | Verify the results (--check, or --check 0\|1) |
 | `--check_tol` | double | Residual bound \|\|LL^T-A\|\|_F/\|\|A\|\|_F accepted by --check (default: fixedacc) |
@@ -233,7 +235,7 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--band_dense_dp` | int | Dense band double precision |
 | `--band_dense_sp` | int | Dense band single precision |
 | `--band_dense_hp` | int | Dense band half precision |
-| `--band_dense` | int | Dense band size, default 1: only diagonal is dense |
+| `--band_dense` | int | Dense band size in tiles (default: NT, every tile dense; 1: only the diagonal dense, the other tiles low-rank) |
 | `--band_low_rank_dp` | int | Low rank band double precision |
 | `--band_dist` | int | If 0: normal two_dim_block_cyclic; if >0: with band distribution |
 | `--band_p` | int | Row process grid on band, default 1 |
@@ -255,7 +257,7 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--band_size_termination` | double | Band size auto-tuning termination on GPU, default 3.0 |
 | `--left_looking` | int | Modified left-looking Cholesky (row) |
 | `--enable_stochastic_rounding` | int | Stochastic rounding for the down-conversions (0 or 1); not with FP8 GEMMs |
-| `--nruns` | int | The number of runs of Cholesky |
+| `--nruns` | int | Number of Cholesky runs (default: 1); more than one needs the dense layout without --check, --auto_band, --adaptive_memory or --sparse |
 | `--accumulation_fp32` | int | TRMM: store the FP16 tiles of B in FP32 and accumulate their GEMMs in FP32 (0 or 1) |
 | `--time_slots` | int | Time slots in kernels |
 | `--sigma` | double | Sigma in kernels |
@@ -265,7 +267,7 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--nu_time` | double | Nu time in kernels |
 | `--nonsep_param` | double | Nonsep param in kernels |
 | `--noise` | double | Noise in kernels |
-| `--HNB` | int | Inner NB used for recursive algorithms (default: MB) |
+| `--HNB` | int | Inner NB used for recursive algorithms (default: 300) |
 | `--nsnp` | int | Number of SNPs (number of snps for each individual) |
 | `--numobj` | int | Number of objects (number of viruses within a population) |
 | `--latitude` | int | Latitude parameter for climate modeling |
@@ -286,4 +288,26 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
    200 for 6 with `--radius 3.7e-03`.
 6. One process per node; with one process per NUMA domain or GPU, bind the
    processes explicitly (for example with Slurm's `--cpu_bind` and
-   `--gpu-bind`).
+   `--gpu-bind`). PaRSEC starts its threads only on the cores a process is
+   bound to, and Open MPI binds each process to one core by default (`cores=1`
+   in the parameter printout, and rank 0 warns when the processes of its node
+   use half of its cores or fewer). With Open MPI, run one process per node
+   with `--map-by ppr:1:node --bind-to none`, or one per socket with
+   `--map-by ppr:1:package:pe=<cores per socket>` (Open MPI 5 refuses a
+   binding that spans sockets). With two processes on a two-socket, 36-core
+   node, a TLR factorization at N=16384 takes 11.5 s with the default binding
+   and 1.04 s with `--map-by ppr:1:package:pe=18`.
+7. A GPU build runs on the CPU unless `--gpus` is given (rank 0 says so when
+   GPUs are visible). The dense FP64 Cholesky at N=30720 runs at 9.2 Tflop/s
+   on one A100 (`--gpus 1 --NB 1024`) and at 1.3 Tflop/s on the node's 36 CPU
+   cores (`--NB 512`).
+8. `--nruns n` factorizes the same matrix n times only in the dense layout
+   (`--band_dense` ≥ NT) without `--check`, `--auto_band`, `--adaptive_memory`
+   or `--sparse`, where A is regenerated between runs. Elsewhere a later run
+   would factorize the previous factor, so one run is done and a warning says
+   so: launch the driver once per measurement. `--verbose 1` prints the
+   decisions taken at set-up (band sizes, lookahead, memory layout).
+9. The Tflops of the `hicma_parsec_cholesky` line is the dense FP64 count
+   (N³/3) divided by the factorization time. For TLR and mixed-precision runs
+   it is an equivalent rate that can exceed the machine's peak;
+   `Operation_counts` reports the operations performed.

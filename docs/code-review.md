@@ -1383,3 +1383,35 @@ each of its values compiles (and runs, where a test reaches it).
 
    Not changed: `hicma_parsec_params_t` holds 196 fields in one struct;
    splitting it would change the API.
+
+## 10. Sixth pass: external user, usability and performance (2026-11-08)
+
+A fresh clone built by following `BUILD.md`, then the drivers run the way
+`README.md` and `TESTS.md` describe, with DPLASMA's `testing_dpotrf` as the
+performance reference. Measurements are in `release-readiness.md` section
+5.11.
+
+1. **`--nruns` crashed in TLR runs** (`tests/testing_potrf.c`). Where A
+   cannot be regenerated, run 2 factorized run 1's factor; in TLR its ranks
+   outgrow the tile buffers (segfault in `dgemm` at N=30720). Regenerating a
+   TLR matrix in place would need the compression's per-tile allocations
+   freed first, so these configurations now do one run with a warning.
+2. **Silent performance traps.** A GPU build runs on the CPU without
+   `--gpus`; kinds 1 and 2 run fully dense without `--band_dense` (the
+   default band is NT, while `--help` said 1); Open MPI binds each process
+   to one core, and PaRSEC then starts one worker. Each now gets one note on
+   rank 0 (`hicma_parsec_internal.c`); the defaults are unchanged.
+3. **Wrong help text**: `--band_dense`, `--N`, `--NB`, `--HNB`, `--cores`.
+4. **Output**: the summary line was printed twice per run, the first copy
+   before the post-analysis; dense runs printed uninitialized analysis
+   counters in it (the drivers declared the analysis without initializing
+   it, and `hicma_parsec_fini` reads it even without a pre-analysis);
+   `GITHASH` was never defined, so the revision always read `N/A`; eight
+   internal set-up notes printed in colour on every run.
+5. **Exit status**: `--left_looking` < 0 and BF16 GEMMs with low-rank tiles
+   exited 0.
+
+Checked and fine: the dense FP64 Cholesky matches DPLASMA on CPU and is
+faster on the A100; RelWithDebInfo and Release builds run at the same speed;
+only the sequential MKL reaches the binaries although a submodule's BLAS
+search also finds the threaded one; the submodules clone anonymously.

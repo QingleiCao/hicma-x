@@ -22,6 +22,8 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `4560e88` External-user pass: --nruns crash, help defaults, summary line, performance notes
+- `c912875` Documentation for the BLAS fixture and the CI hardening
 - `35b1007` Check the BLAS for concurrent calls before the HiCMA tests; harden CPU CI
 - `2617921` Documentation for the #if block cleanup
 - `7d21454` Resolve the 28 unnamed #if 0 / #if 1 blocks
@@ -566,6 +568,62 @@ runner, which the log does not name.
 On methane, CTest passes 26 / 26 (CPU) and 40 / 40 (CUDA), the fixture
 included.
 
+### 5.11 Sixth pass: external user, usability and performance (methane)
+
+**Fresh clone.** The pushed branch (`c912875`) cloned with `--recursive`
+(every submodule clones anonymously) and built by following `BUILD.md`'s
+Quick Start with `-DHICMA_PARSEC_HAVE_CUDA=ON`: configure 32 s, build 33 s
+(24 jobs), `ctest -L hicma` 40 / 40. Only the sequential MKL reaches the
+binaries, although one submodule's BLAS search also reports the threaded one.
+CI on `c912875` passed (AMD EPYC 7763 runner, pthread OpenBLAS).
+
+**Performance**, one process, factorization time only, DPLASMA's
+`testing_dpotrf` as the reference (same PaRSEC, same BLAS):
+
+| Case | DPLASMA | HiCMA-X |
+|---|---|---|
+| 36 CPU cores, dense FP64, N=30720, NB=512, three interleaved runs | 7.24–7.54 s (1.28–1.34 Tflop/s) | 7.21–7.37 s (1.31–1.34 Tflop/s) |
+| One A100, dense FP64, N=30720, NB=1024, two runs | 1.42 s (5.7 Tflop/s) | 1.05 s (9.2 Tflop/s) |
+| 36 CPU cores, TLR FP64 (`--kind_of_cholesky 2 --band_dense 1 --fixedacc 1e-8 --maxrank 150`), N=30720, NB=512 | | 1.10 s |
+
+On the A100, mixed precision (`--adaptive_decision 1`) reached 9.6 Tflop/s
+and the runtime decision (kind 10) 9.3; the FP64 GEMMs already run on the
+tensor cores. Lookahead 0 was 2 % faster than the default (1) on one GPU, in
+two runs each; not changed on one configuration.
+
+**Found and fixed** (`code-review.md` section 10):
+
+- `--nruns 2` with a TLR kind segfaulted in run 2, which factorized run 1's
+  factor. Configurations whose matrix cannot be regenerated now do one run
+  and warn.
+- Three silent performance traps, each now reported by one note on rank 0:
+  - a GPU build without `--gpus` runs on the CPU (1.3 instead of 9.2 Tflop/s
+    above);
+  - kinds 1 and 2 without `--band_dense` factorize every tile dense (7.2 s
+    instead of 1.1 s at N=30720), while `--help` gave the default as 1;
+  - Open MPI binds each process to one core, so PaRSEC starts one worker
+    each. With two processes on one node, TLR at N=16384 took 11.5 s with
+    the default binding, 1.28 s with `--bind-to none` and 1.04 s with
+    `--map-by ppr:1:package:pe=18` (one process: 1.09 s). Open MPI 5 refuses
+    `ppr:1:node:pe=36` here (a binding across sockets).
+- Wrong help defaults (`--band_dense`, `--N`, `--NB`, `--HNB`, `--cores`).
+- The summary line printed twice per run, the first copy incomplete; dense
+  runs printed uninitialized analysis counters in it; the revision always
+  read `N/A`. Eight internal notes printed in colour on every run; they now
+  need `--verbose 1`. Two invalid-option exits returned 0.
+- The README had no quick start; `build_release.sh --help` named the wrong
+  default build type.
+
+**Not changed, for the maintainer**: the defaults `--gpus 0` and a dense band
+of NT for kinds 1 and 2 (section 7); the default build type, RelWithDebInfo,
+is within 2 % of Release (`-O3`), same source, three interleaved runs each:
+dense FP64 7.1–7.8 s against 7.1–7.6 s, TLR factorization 1.10–1.11 s
+against 1.08–1.10 s, generation equal.
+
+After the changes: CTest 26 / 26 (CPU) and 40 / 40 (CUDA); the validation
+matrix (31 CPU and 50 GPU-tree cases) is identical to the third pass in exit
+codes, residuals and GEMM precision counts; the HIP tree builds.
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -584,6 +642,7 @@ included.
 | Third pass: matrix sum, macro review, sanitizers (section 5.7) | done; pool leak, `GPU_BUFFER_ONCE`, strategy 4 fixed |
 | Fourth pass: build scripts (section 5.8) | done; CUDA default architectures and kind-3 guard messages fixed |
 | Fifth pass: macros and data structures (section 5.9) | done; unused names removed, switches settable, two climate debug paths fixed |
+| Sixth pass: external user, usability and performance (section 5.11) | done; `--nruns` crash, help defaults, summary line fixed; notes for three performance traps |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
@@ -604,6 +663,11 @@ included.
 5. **Hardware not available here**: AMD GPUs, H100 (FP8), multi-node. A run of
    `scripts/validation_matrix.sh <build> <label> gpu` on those systems before
    tagging is recommended.
+6. **Defaults that cost performance** (section 5.11): a GPU build runs on the
+   CPU unless `--gpus` is given, and kinds 1 and 2 (tile low-rank) are fully
+   dense unless `--band_dense` is given. Both now print a note. Making
+   `--gpus` default to the visible devices, or the TLR kinds default to a
+   band of 1, would change the results of existing command lines.
 
 ## 8. Remaining and future work
 

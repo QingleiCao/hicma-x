@@ -103,6 +103,21 @@ before/after timing comparison.
   STARS-H and HCORE separately or write `env_hicma_parsec.sh`. The scripts of
   retired machines and the ExaGeoStat builds (`scripts/machines/legacy/`) are
   removed.
+- `testing_potrf_tlr --nruns n` repeats the factorization only where A can be
+  regenerated (the dense layout without `--check`, `--auto_band`,
+  `--adaptive_memory` or `--sparse`); elsewhere it does one run and warns.
+  0.1.0 factorized the previous run's factor, which timed a different problem
+  and crashed in TLR runs.
+- One run prints one `R-LO` line (0.1.0 printed a second, incomplete one
+  first); with `--nruns n`, one per run plus the final one. Its `GITHASH`
+  column holds `git describe` of the source at configure time, and the
+  parameter summary starts with the version.
+- The set-up notes (band sizes, lookahead, memory layout, FP16 emulation,
+  tile-size advice) print only with `--verbose 1`. New notes: GPUs visible
+  but `--gpus 0`; a TLR kind (1, 2) with every tile dense; a launcher binding
+  that leaves the processes of a node half of its cores or fewer.
+- `--left_looking` < 0 and BF16 GEMMs with low-rank tiles exit with status 1
+  (they exited 0).
 
 ## 0.1.0
 

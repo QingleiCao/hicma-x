@@ -247,6 +247,27 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - `.gitignore` covers build trees, logs and editor state; LICENSE placeholder
   removed.
 
+### Usability (external-user pass)
+
+- `--nruns n` crashed in TLR runs: run 2 factorized run 1's factor, whose
+  ranks outgrow the tile buffers. Where A cannot be regenerated in place,
+  one run is done and a warning says why.
+- Notes for three silent performance traps: GPUs visible in a GPU build run
+  without `--gpus` (7x slower on an A100); kinds 1 and 2 without
+  `--band_dense`, where every tile is dense (6.5x slower at N=30720); a
+  launcher binding each process to one core, the Open MPI default (10x
+  slower with two processes on a 36-core node).
+- `--help` and `TESTS.md` gave wrong defaults: `--band_dense` defaults to
+  NT (every tile dense), not 1; `--N` and `--NB` default to 2048, not
+  "required"; `--HNB` to 300; `--cores` counts physical cores.
+- One `R-LO` line per run, without the uninitialized analysis counters of
+  dense runs (the drivers zero-initialize the analysis); the version and the
+  `git describe` revision are printed (`GITHASH` was never set).
+- Internal set-up notes print with `--verbose 1` only; two invalid-option
+  exits returned 0.
+- `README.md` has a quick start; `scripts/build_release.sh --help` states
+  its default build type (RelWithDebInfo).
+
 ### Documentation
 
 - `TESTS.md` regenerated from the option table; `BUILD.md`, `README.md` and

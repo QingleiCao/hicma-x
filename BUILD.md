@@ -166,6 +166,9 @@ Points to know when embedding it:
   application's own options first; arguments after `--` go to PaRSEC.
 - If the application initialized MPI, HiCMA-X leaves it initialized at
   `hicma_parsec_fini`; otherwise it initializes and finalizes MPI itself.
+- Zero-initialize the `hicma_parsec_matrix_analysis_t` (`= {0}`):
+  `hicma_parsec_fini` prints its counters and frees from it, and the dense
+  path of `hicma_parsec_matrix_pre_analysis` leaves the sparse counters unset.
 - Invalid parameters terminate the process with a message (`exit(1)` on every
   rank), as in the drivers.
 - The matrices are PaRSEC tiled descriptors. `hicma_parsec_lapack_tile_convert`
