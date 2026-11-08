@@ -1112,6 +1112,15 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
                              dplasma_create_cuda_handles, NULL,
                              NULL);
 #endif
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT) && defined(DPLASMA_HAVE_HIP)
+        /* The DPLASMA routines called with GPUs enabled (dplasma_dtrmm in
+         * --check, for one) take their hipBLAS handle from this key; without
+         * it parsec_info_get returns NULL in their HIP bodies. */
+        parsec_info_register(&parsec_per_stream_infos, "DPLASMA::HIP::HANDLES",
+                             dplasma_destroy_hip_handles, NULL,
+                             dplasma_create_hip_handles, NULL,
+                             NULL);
+#endif
 
         // Check GPU architecture compatibility
         hicma_parsec_check_gpu_arch( params );
@@ -1123,17 +1132,22 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
     }
     params->gpus = hicma_parsec_min(nb_gpus_check, params->gpus);
     /* The precision decisions and the collectives in hicma_parsec_potrf depend
-     * on gpus > 0, and every rank must take the same branches: use the
-     * smallest count found on any rank (a rank with no visible device makes
-     * the whole run CPU-only). */
+     * on gpus > 0, and every rank must take the same branches, so every rank
+     * must use the same count. Lowering params->gpus here is not enough:
+     * PaRSEC enabled this rank's devices in parsec_init, and the wrappers and
+     * GPU bodies keep using them (load balancing modulo params->gpus, the
+     * per-device statistics). Refuse a mismatch on every rank instead. */
     {
-        int gpus_min = params->gpus;
-        MPI_Allreduce(MPI_IN_PLACE, &gpus_min, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-        if( gpus_min != params->gpus && params->verbose ) {
-            fprintf(stderr, RED "Rank %d: another rank has only %d usable GPUs, using %d instead of %d\n" RESET,
-                    params->rank, gpus_min, gpus_min, params->gpus);
+        int gpus_range[2] = { params->gpus, -params->gpus };   /* min, -max */
+        MPI_Allreduce(MPI_IN_PLACE, gpus_range, 2, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        if( gpus_range[0] != -gpus_range[1] ) {
+            if( 0 == params->rank ) {
+                fprintf(stderr, RED "The processes see between %d and %d usable GPUs; every process must use the same number: "
+                        "run with --gpus %d or make the same devices visible to every process\n" RESET,
+                        gpus_range[0], -gpus_range[1], gpus_range[0]);
+            }
+            exit(1);
         }
-        params->gpus = gpus_min;
     }
 
     /* cores and gpus are final: allocate the per-worker statistics once */
@@ -1207,6 +1221,19 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
     if( ADAPTIVE_CONVERT == params->datatype_convert && 0 == params->gpus ) {
         if( 0 == params->rank ) {
             fprintf(stderr, RED "--datatype_convert 2 needs GPUs: setting datatype_convert= 0\n" RESET);
+        }
+        params->datatype_convert = RECEIVER_CONVERT;
+    }
+
+    /* Kind 3 does not implement the sender-side conversion of mode 2: its JDF
+     * treats any mode but 1 as the receiver mode and always sends the FP64
+     * diagonal factor, while the adaptive send decisions can mark that factor
+     * FP32 (no FP64 tile below it, e.g. --band_dense_dp 1), and the GPU TRSM
+     * would then read FP64 data as FP32. Run it in the receiver mode. */
+    if( ADAPTIVE_CONVERT == params->datatype_convert && DENSE_MP_BAND == params->kind_of_cholesky ) {
+        if( 0 == params->rank ) {
+            fprintf(stderr, RED "--datatype_convert 2 is not implemented for kind_of_cholesky %d: setting datatype_convert= 0\n" RESET,
+                    params->kind_of_cholesky);
         }
         params->datatype_convert = RECEIVER_CONVERT;
     }
@@ -1299,6 +1326,10 @@ void hicma_parsec_cleanup_parsec(parsec_context_t* parsec, hicma_parsec_params_t
     parsec_info_unregister(&parsec_per_stream_infos, CuHI, NULL);
     /* Note: cublasShutdown() is deprecated in newer cuBLAS versions.
        cuBLAS is now cleaned up automatically by the CUDA runtime. */
+#endif
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT) && defined(DPLASMA_HAVE_HIP)
+    parsec_info_id_t HipHI = parsec_info_lookup(&parsec_per_stream_infos, "DPLASMA::HIP::HANDLES", NULL);
+    parsec_info_unregister(&parsec_per_stream_infos, HipHI, NULL);
 #endif
 
     // Finalize PaRSEC runtime system - releases all PaRSEC resources
