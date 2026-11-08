@@ -39,6 +39,13 @@
 #define PRINT_THREAD_EXE_TIME 0
 #endif
 
+/* SYRK of the genomics drivers: 0 computes it with hicma_parsec_syrk (the GEMM
+ * taskpools, full product); 1 with dplasma_isyrk (lower triangle, 8-bit
+ * integer isyrk_LT.jdf) */
+#ifndef GENOMICS_SYRK_ISYRK
+#define GENOMICS_SYRK_ISYRK 0
+#endif
+
 /* =============================================================================
  * Core Function Implementations
  * ============================================================================= */
@@ -914,12 +921,6 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
 #endif
     SYNC_TIME_PRINT(params->rank, ("sqr_sum_vec\n"));
 
-#if 0
-    for(int i = 0; i < params->N; i++) {
-        if(vec[i] != vec1[i]) printf("ERROR %d %f %f\n", i, vec[i], vec1[i]);
-    } 
-#endif
-
     //float totalA1 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
     //       (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
     //if( 0 == params->rank ) {
@@ -948,19 +949,17 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
         gettimeofday(&tstart, NULL);
         params->start_time_syrk = tstart.tv_sec + tstart.tv_usec / 1.0e6;
 
-#if 1
+#if GENOMICS_SYRK_ISYRK
+        dplasma_isyrk(parsec, params->uplo, PlasmaTrans,
+                -2.0, (parsec_tiled_matrix_t *)&A,
+                0.0,  (parsec_tiled_matrix_t *)AA, 8,
+                params, data);
+#else
         hicma_parsec_syrk(parsec,
                 PlasmaTrans, PlasmaNoTrans,
                 -2.0, (parsec_tiled_matrix_t *)&A,
                 (parsec_tiled_matrix_t *)&A,
                 0.0,  (parsec_tiled_matrix_t *)AA, params, data);
-#else
-    dplasma_isyrk(parsec, params->uplo, PlasmaTrans,
-               -2.0,
-               (parsec_tiled_matrix_t *)&A,
-               0.0,
-               (parsec_tiled_matrix_t *)AA, 8,
-               params, data);
 #endif
       //parsec_print_cm_sym(parsec, AA,  params->nodes,  params->P, params->Q);
 
@@ -1163,17 +1162,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
 #endif
     SYNC_TIME_PRINT(params->rank, ("sqr_sum_vec\n"));
 
-#if 0
-    for(int i = 0; i < params->N; i++) {
-        if(vec[i] != vec1[i]) printf("ERROR %d %f %f\n", i, vec[i], vec1[i]);
-    } 
-#endif
-
-#if 0
-    for(int i = 0; i < params->N; i++) {
-        printf("%f ", vec[i]);
-    }
-#endif
     //float totalA1 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
     //       (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
     //if( 0 == params->rank ) {
@@ -1185,14 +1173,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
     parsec_convert_s2i(parsec, (parsec_tiled_matrix_t *)&A, 8);
     SYNC_TIME_PRINT(params->rank, ("s2i\n"));
 #endif
-    #if 0
-    if(params->gpus > 0) {
-        SYNC_TIME_START();
-        hicma_parsec_potrf_L_warmup( parsec, (parsec_tiled_matrix_t *)&A, params, 0);
-        hicma_parsec_potrf_L_warmup( parsec, (parsec_tiled_matrix_t *)AA, params, 1);
-        SYNC_TIME_PRINT(params->rank, ("warmup\n"));
-    }
-    #endif
 
     struct timeval tstart;
     struct timeval tend;
@@ -1203,19 +1183,17 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         gettimeofday(&tstart, NULL);
         params->start_time_syrk = tstart.tv_sec + tstart.tv_usec / 1.0e6;
 
-#if 1
+#if GENOMICS_SYRK_ISYRK
+        dplasma_isyrk(parsec, params->uplo, PlasmaTrans,
+                -2.0, (parsec_tiled_matrix_t *)&A,
+                0.0,  (parsec_tiled_matrix_t *)AA, 8,
+                params, data);
+#else
         hicma_parsec_syrk(parsec,
                 PlasmaTrans, PlasmaNoTrans,
                 -2.0, (parsec_tiled_matrix_t *)&A,
                 (parsec_tiled_matrix_t *)&A,
                 0.0,  (parsec_tiled_matrix_t *)AA, params, data);
-#else
-    dplasma_isyrk(parsec, params->uplo, PlasmaTrans,
-               -2.0,
-               (parsec_tiled_matrix_t *)&A,
-               0.0,
-               (parsec_tiled_matrix_t *)AA, 8,
-               params, data);
 #endif
 
         /* Timer ends */

@@ -333,7 +333,6 @@ BODY [type=CUDA]
     // Convert scaling factors to integer for mixed-precision computation
     int ialpha=(int)lalpha;
     int ibeta=(int)lbeta;
-#if 1
     // Convert C from float to int32 on first iteration
     if(k == 0) float_2int_array_unary(tempmm, tempnn, C, ldcm, cuda_stream->cuda_stream);
     
@@ -356,7 +355,6 @@ BODY [type=CUDA]
                 B, ldbk,                          /**< B as float */
                 &lbeta,  C, ldcm );               /**< C as float */
     }
-#endif
 
 }
 END
@@ -395,7 +393,6 @@ BODY [type=HIP]
     // Convert scaling factors to integer for mixed-precision computation
     int ialpha=(int)lalpha;
     int ibeta=(int)lbeta;
-#if 1
     // Convert C from float to int32 on first iteration
     if(k == 0) float_2int_array_unary(tempmm, tempnn, C, ldcm, cuda_stream->cuda_stream);
     
@@ -418,7 +415,6 @@ BODY [type=HIP]
                 B, ldbk,                          /**< B as float */
                 &lbeta,  C, ldcm );               /**< C as float */
     }
-#endif
 
 }
 END

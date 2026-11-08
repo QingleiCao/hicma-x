@@ -3635,17 +3635,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
             HICMA_GPU_TIME_RETURN;
         }
 
-#if 0
-        /* First local GEMM convert C from single to half */
-        if( 0 == k ) {
-            /* Convert datatype */
-            float2half_GPU( descA->mb, descA->nb, C, descA->mb, C_h, descA->mb, cuda_stream->cuda_stream );
-
-            /* Copy C_h to C */
-            memcpy_half_GPU( descA->mb, descA->nb, C_h, C, cuda_stream->cuda_stream );
-        }
-#endif
-
         cublasLtHandle_t lightHandle = stream_found->lightHandle; 
         cublasLtMatmulDesc_t matmulDesc = stream_found->matmulDesc_scaled;
         cublasLtMatrixLayout_t Adesc = stream_found->Adesc;
@@ -3674,17 +3663,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_gpu( parsec_tiled_matrix_t* des
         }
 
         //printf("FP8_GEMM %d %d %d\n", m, n, k);
-
-#if 0
-        /* After last local GEMM convert C from half to single */
-        if( n-1 == k ) {
-            /* Convert datatype */
-            half2float_GPU( descA->mb, descA->nb, C, descA->mb, C_s, descA->mb, cuda_stream->cuda_stream );
-
-            /* Copy C_s to C */
-            memcpy_float_GPU( descA->mb, descA->nb, C_s, C, cuda_stream->cuda_stream );
-        }
-#endif
 
 #endif // HAVE_FP8
     }
@@ -4142,7 +4120,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         params_tlr->decisions_gemm_last[idx_C] = new_decision;
     }
 
-#if 1
     /* After the last GEMM that writes C, optionally store C in SP.
      * handle_cublas is HOST pointer mode (synchronous nrm2 result).
      * handle_cublas_deviceptr cannot write into a host stack address. */
@@ -4165,7 +4142,6 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
             params_tlr->decisions[idx_C] = DENSE_SP;
         }
     }
-#endif
 
 }
 

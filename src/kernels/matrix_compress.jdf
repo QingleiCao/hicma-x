@@ -280,39 +280,8 @@ BODY
             norm[tid] = 0.0;
     }
 
-	// Check whether all values are zero
-    int flag = 0;
-    for(int j = 0; j < descA->nb; j++) {
-            for(int i = 0; i < descA->mb; i++) {
-                    if( ((double *)tmp_D)[j*descA->mb+i] > 1.0e-14 ) {
-                            flag = 1;
-                            break;
-                    }
-            }
-    }
-
-#if 1
-    if( 1 || flag != 0 ) {
-	    starsh_dense_dlrrsdd(tempmm, tempnn, tmp_D, tempmm, U, ldU, V, ldV, &rank,
-			    params_tlr->maxrank, rsvd_oversample, params_tlr->fixedacc, work, rsvd_lwork, iwork);
-    } else {
-	    rank = 0;
-	    printf("%d %d rank_is_0\n", m, n);
-    }
-#else
-    int maxrank_used = hicma_parsec_min(100, params_tlr->maxrank);
-    while( 1 ) {
-        starsh_dense_dlrrsdd(tempmm, tempnn, tmp_D, tempmm, U, ldU, V, ldV, &rank,
-                maxrank_used, rsvd_oversample, params_tlr->fixedacc, work, rsvd_lwork, iwork);
-        maxrank_used *= 2;
-        maxrank_used = hicma_parsec_min( descA->nb / 2, maxrank_used );
-        if( rank != -1 || maxrank_used > descA->nb / 2 ) break;
-        params_kernel->kernel(tempmm, tempnn, params_kernel->index + m*descA->mb,
-                params_kernel->index + n*descA->mb, params_kernel->data, params_kernel->data, tmp_D,
-                tempmm);
-        printf("%d %d: maxrank_used %d rank %d\n", m, n, maxrank_used, rank);
-    } 
-#endif
+    starsh_dense_dlrrsdd(tempmm, tempnn, tmp_D, tempmm, U, ldU, V, ldV, &rank,
+            params_tlr->maxrank, rsvd_oversample, params_tlr->fixedacc, work, rsvd_lwork, iwork);
 
     if(rank == -1) {
         printf("Tile(%d, %d) is dense, try increasing NB or params_tlr->maxrank \n", m, n);
