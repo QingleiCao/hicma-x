@@ -53,6 +53,14 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   (it is a TRMM-only mode).
 - CPU low-rank TRSM solves with the size of the diagonal block, not the row
   count of the C tile; CPU TRSM treats FP8-decided tiles like SP/HP ones.
+- Memory leak: `parsec_private_memory_fini` destructs pooled items without
+  freeing their storage, so every workspace a taskpool's pools handed out was
+  lost when the taskpool was destroyed: 167 MB per kind-2 factorization at
+  N=2700 with 36 threads, about 100 MB per kind-10 factorization at N=8192,
+  again at every call (`--nruns`, applications that factorize repeatedly).
+  `hicma_parsec_memory_pool_fini` frees the storage first and replaces the 22
+  calls in HiCMA-X; peak memory of eight kind-10 runs went from 1238 MB to
+  605 MB. Found with AddressSanitizer's leak checker.
 - Kind 3 (DENSE_MP_BAND) on GPUs: every run with a half-precision band died
   with `MPI_ERR_TRUNCATE` (a `[type = HALF]` dependency made PaRSEC reshape the
   FP32 tile into a buffer half its size), and `--datatype_convert 1`, a
@@ -113,6 +121,19 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 
 ### Build, install, tests
 
+- `hicma_parsec_matrix_sum(parsec, A, Ar, decisions, lower)`: the sum of a
+  tiled matrix whose tiles are stored in different precisions (FP64/FP32 per
+  decision, low-rank U and V with their ranks), identical on every process and
+  for every process grid; replaces the single-precision `matrix_dsum` and
+  `matrix_ssum`, whose tile task never stored its partial sum. Test
+  `testing_matrix_sum` (CTest `matrix_sum`, `matrix_sum_np2`).
+- The compile-time switches of `hicma_parsec_internal.h` can be set with
+  `-DNAME=value` in `CMAKE_C_FLAGS` (20 had no `#ifndef`); every non-default
+  value was compiled on the CPU and CUDA trees; the dead `CHOLESKY_CPU_ONLY`,
+  `PERFORMANCE_BAND_BOUND` and `WRITE_A` are gone; the bound-measurement
+  switches `TLR_BOUND_WITHOUT_OFFBAND_*` warn at compile time; `_GNU_SOURCE`
+  and `_POSIX_C_SOURCE` are no longer redefined. See `docs/code-review.md`,
+  section 8.
 - Embedding: `hicma_parsec_init` crashed when given `argc = 0, argv = NULL`
   and when the argument strings were read-only (`--opt=value` was cut in
   place); both work now and `argv` is only read. `libhicma_parsec.so` is

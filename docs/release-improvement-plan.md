@@ -130,4 +130,12 @@ after the library changes.
   `release-readiness.md` section 5.6. Final tree: CTest 23/23 (CPU) and 37/37
   (CUDA, methane and guyot), matrix 31 + 50 cases identical to the baseline
   except the mesh fix, HIP compiles.
+- 2026-11-08 (third pass, on request): `TODOs` item 3 done (one
+  multi-precision `hicma_parsec_matrix_sum`); macro design of
+  `hicma_parsec_internal.h` reviewed (`code-review.md` section 8): switches
+  settable with -D, dead ones removed, every value compiled and run,
+  `GPU_BUFFER_ONCE` removed (broken and slower), workload-balance strategy 4
+  heap corruption fixed; AddressSanitizer runs found the pool-storage leak
+  (fixed: kind-10 memory over 8 runs 1238 -> 605 MB). See
+  `release-readiness.md` section 5.7.
 

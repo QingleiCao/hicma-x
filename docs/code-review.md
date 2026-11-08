@@ -1208,3 +1208,85 @@ CHECKSOLVE && GENOMICS` vs `#if PREDICTION || CHECKSOLVE`, the climate emulator'
 - `.gitmodules` relative URLs resolve from any `github.com/<org>/hicma-x` clone.
 - `GNUMakeRulesOverwrite.cmake` (`-MD` → `-MMD` for Ninja) is harmless and useful on
   module-based systems.
+
+## 8. Third pass: compile-time switches in `hicma_parsec_internal.h` (2026-11-08)
+
+Requested: check the design of the macros in `hicma_parsec_internal.h` for
+correctness and performance, without adding CMake options. The header defines
+about 120 macros; by role:
+
+| Group | Macros | Assessment |
+|---|---|---|
+| Constants | decision codes (`DENSE_DP` ... `DENSE_FP8`), Cholesky kinds, `MASK_*` GEMM modes, `HICMA_PARSEC_FP64` ... datatype ids, conversion modes, colours, `EPS_*` | Appropriate as macros. `EPS_SP` 2^-24, `EPS_HP` 2^-11 and `EPS_FP8` 2^-4 are the unit roundoffs used by the precision decisions; `EPS_HP_GPU` (0.888) is an empirical bound for FP16 accumulation, read only when `ENABLE_TF16_A16_B16_C16_OP16` is on. A few enumeration entries are unused (`HICMA_PARSEC_INT4`, `_ONE_BIT`, `_SPARSE`, `EPS_DP`); kept as parts of their lists. |
+| Diagnostics | `DEBUG_INFO`, `PRINT_RANK`, `PRINT_KERNEL_TIME`, `PRINT_CRITICAL_PATH_TIME`, `ENABLE_PROFILING` | Zero cost at their default 0: `DEBUG_INFO` is used as `if (DEBUG_INFO)` and folded by the compiler, the others guard code with `#if`. |
+| Algorithm and feature switches | `HAVE_HP`, `ENABLE_TF16_A16_B16_C16_OP16`, `GENERATE_RANDOM_DATA`, `BAND_MEMORY_CONTIGUOUS`, `WORKLOAD_BALANCE` (strategy 1 to 4), `GPU_BUFFER_ONCE` (removed, item 5), `GEMM_SUMMA`, `FOR_CLIMATE_EMULATOR`, genomics switches (`GENOMICS_ALLOCATE_*`, `DISTFILE`, `SINGLEFILE`, `MPIIO`, `CHECKSOLVE`, `PREDICTION`, `DATATYPE`) | Defaults are the tested configuration. `HAVE_HP=1` lets the decisions choose FP16 on GPUs. |
+| Experiments | `TLR_BOUND_WITHOUT_OFFBAND_GEMM`, `_TRSM` | Skip off-band updates to measure a performance bound: the factorization is wrong by construction. |
+| Derived from the build | `HAVE_FP8`, `HAVE_I8` (CUDA), `HAVE_HP_CPU` and `#define main MAIN__` (`ON_FUGAKU`) | Not tuning switches. |
+| Tunables | `FLUCTUATION`, `PORTION_NORM`, `THRESHOLD_MEMORY_PER_NODE`, `RANK_MAP_*` | Constants of the band auto-tuning, the norm and the memory check. |
+
+Findings and what was done (minimal changes):
+
+1. **Only 3 of the switches could be set without editing the installed
+   header** (`GENOMICS`, `PRINT_KERNEL_TIME`, `PRINT_CRITICAL_PATH_TIME` had an
+   `#ifndef`). The other 20 tuning, diagnostic and genomics switches are now
+   guarded too (`GPU_BUFFER_ONCE` was later removed, item 5), so
+   `-DNAME=value` in `CMAKE_C_FLAGS` sets them; no CMake
+   option was added. None of them changes an installed struct layout or a
+   function signature, so an application compiled with the defaults stays
+   compatible with a library built with other values.
+2. **Every non-default value compiles.** Each switch was flipped alone
+   (`DEBUG_INFO`, `ENABLE_PROFILING`, `GENERATE_RANDOM_DATA`,
+   `BAND_MEMORY_CONTIGUOUS`, `WORKLOAD_BALANCE` 0/2/3/4, `GPU_BUFFER_ONCE=0`,
+   `HAVE_HP=0`, `ENABLE_TF16_A16_B16_C16_OP16`, both `TLR_BOUND_*`,
+   `PRINT_RANK`, `PRINT_KERNEL_TIME`, `PRINT_CRITICAL_PATH_TIME`,
+   `FOR_CLIMATE_EMULATOR`, `GEMM_SUMMA`, `DISTFILE`, `SINGLEFILE`, `MPIIO`,
+   `CHECKSOLVE`, `PREDICTION`, `GENOMICS_ALLOCATE_SP`, `_INT`) and every
+   library source of the CPU and CUDA trees recompiled with it: no failure.
+   (The harness was checked to report failures with a breaking definition.)
+3. **Dead switches removed**: `CHOLESKY_CPU_ONLY`, `PERFORMANCE_BAND_BOUND`,
+   `WRITE_A` (their code no longer exists); the genomics and general blocks
+   that defined the same four values twice are one block.
+4. **The bound-measurement switches now warn at compile time**
+   (`#warning ... results are wrong`), so such a build is not mistaken for a
+   production one.
+5. **`GPU_BUFFER_ONCE=0` compiled but crashed, and was slower; removed.** It
+   made the TRMM, `matrix_add` and the adaptive conversion allocate the GPU
+   workspace per taskpool. The conversion allocated into the shared
+   `data->ws_gpu` and freed it in its destructor, so the Cholesky that follows
+   looked up freed memory (segmentation fault on every run of kind 5 with
+   `--datatype_convert 2` on 8 A100s); `matrix_add` overwrote the shared
+   workspace. The TRMM took 11.88 s against 11.31 s with the workspace
+   allocated once (N=40960, 8 A100s, 3 runs each; equal on one GPU). The switch
+   and its branches are gone; the workspace is always allocated once.
+   Compiling every value (item 2) is not enough, so every remaining value was
+   also run: a separate build per value, the 25 CPU CTest cases each.
+   `DEBUG_INFO`, `PRINT_RANK`, `PRINT_KERNEL_TIME`,
+   `PRINT_CRITICAL_PATH_TIME`, `ENABLE_PROFILING`, `HAVE_HP=0`,
+   `BAND_MEMORY_CONTIGUOUS=1` and `WORKLOAD_BALANCE` 2 and 3 pass all cases.
+   `WORKLOAD_BALANCE=4` corrupted the heap in the balanced sparse kind (its
+   per-process quotas were one tile short when `band_size_dist` < 2; fixed,
+   then all cases pass). `GENERATE_RANDOM_DATA=1` is a dense-only synthetic
+   mode: it disables `--check` itself, and the low-rank and sparse kinds stop
+   at compression ("Tile is dense") because random tiles are not low rank; the
+   dense kinds pass. `ENABLE_TF16_A16_B16_C16_OP16=1` (GPU) was compiled, not
+   run.
+6. **A switch whose non-default path was broken at run time**:
+   `ENABLE_TF16_A16_B16_C16_OP16=1` sends small tiles to FP16-accumulation
+   GEMMs, which received zero `alpha`/`beta` until commit `5b80e98`; enabling
+   it would have silently dropped those updates.
+7. **Feature-test macros**: `_GNU_SOURCE` and `_POSIX_C_SOURCE` were defined
+   unconditionally in an installed header (redefinition warnings for
+   applications built with `-D_GNU_SOURCE`); now guarded.
+8. **Performance**: at their defaults the switches add no work. The task
+   timing hooks of `potrf_common.c` call `MPI_Wtime` a few times per task
+   whatever the switches, as the 0.1.0 wrappers did (measured neutral in
+   `release-readiness.md`, section 5.3).
+9. **Not changed (recorded for a later release)**: the installed header
+   defines generic names (`RED` ... `RESET`, `str`, `xstr`, `DATATYPE`,
+   `MPIIO`, `PREDICTION`, `DEBUG_INFO`, `IS_DENSE`, ...) that collide with
+   identifiers of an application including `hicma_parsec.h`, and on Fugaku
+   `#define main MAIN__` renames the application's `main`. Prefixing them or
+   moving them to a non-installed header touches several hundred lines.
+   Macros with the same role outside this header (`OWN_CONVERTOR` in the kind-3
+   JDF, `USE_OPENMP` and `DYNAMIC_MEMORY_ALLOCATION` in the sparse analysis,
+   `CLIMATE_EMULATOR_*`) were not reviewed in depth.

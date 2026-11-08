@@ -47,6 +47,9 @@ Besides the factorization and TRMM cases, `lapack_tile_convert` and
 `lapack_tile_convert_np2` run `testing_lapack_tile`, the round-trip check of
 the tile/LAPACK-layout conversion (`hicma_parsec_lapack_tile_convert`) over
 every element type, both directions and every process grid of the run.
+`matrix_sum` and `matrix_sum_np2` run `testing_matrix_sum`, which checks
+`hicma_parsec_matrix_sum` exactly over FP64, FP32 and mixed tiles (dense and
+low-rank) and a NaN, on every process grid of the run.
 
 The stand-alone script runs the same cases plus the data-dependent ones:
 

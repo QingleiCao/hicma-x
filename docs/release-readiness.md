@@ -22,6 +22,13 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `e1a381a` Fix the heap corruption of workload-balance strategy 4
+- `c55d6a1` Remove GPU_BUFFER_ONCE: keep the GPU workspace allocated once
+- `fcf311d` Compile-time switches: settable with -D, dead ones removed
+- `68578bc` Free the storage of pooled workspaces when a taskpool is destroyed
+- `f6703d3` One matrix sum for tiles stored in different precisions
+- `f63e5a3` Release readiness: fresh-clone check and CI of the second pass
+- `ffd71fe` Documentation for the second pass: external use, corner cases, guyot
 - `5b80e98` Pass half-precision alpha and beta to FP16-compute GEMMs
 - `53edbb3` Accept hex integer options; const-correct GPU evaluate hooks
 - `6493db1` Fix kind 3 (DENSE_MP_BAND) on GPUs and its sender-conversion mode
@@ -53,7 +60,7 @@ SONAME `libhicma_parsec.so.0`.
 (This documentation commit follows.) Each commit is self-contained in intent;
 the trees that were built and tested are the one after the documentation
 commit `8f7cb5e` (section 5.3), the one after the CI fixes (section 5.5) and
-the final one (sections 4, 5.1, 5.2 and 5.6).
+the final one (sections 4, 5.1, 5.2, 5.6 and 5.7).
 Intermediate commits were not built individually.
 
 ## 3. Validation environment
@@ -92,8 +99,8 @@ reproducible with `scripts/validation_matrix.sh`).
 
 | Tree | Command | Result |
 |---|---|---|
-| CPU | `ctest -L hicma -LE gpu --output-on-failure` | 23 / 23 passed (17 single-rank, 6 two-rank) on methane |
-| CUDA | `ctest -L hicma --output-on-failure` | 37 / 37 passed on methane (one A100) and on guyot (A100-SXM4): the 23 CPU cases plus `gpu_dense_fp64`, `gpu_dense_adaptive`, `gpu_dense_band2`, `gpu_fp8_static`, `gpu_fp8_sp`, `gpu_runtime_decision`, `gpu_runtime_admem`, `gpu_trmm_adaptive`, `gpu_tlr_mp`, `gpu_tlr_dp_band2`, `gpu_band_dp_sp_hp`, `gpu_band_dp_sp_hp_sender`, `gpu_band_sp_hp`, `gpu_band_hp_fp16acc` |
+| CPU | `ctest -L hicma -LE gpu --output-on-failure` | 25 / 25 passed (18 single-rank, 7 two-rank) on methane, and 25 / 25 in an AddressSanitizer build |
+| CUDA | `ctest -L hicma --output-on-failure` | 39 / 39 passed on methane (one A100) and on guyot (A100-SXM4): the 25 CPU cases plus `gpu_dense_fp64`, `gpu_dense_adaptive`, `gpu_dense_band2`, `gpu_fp8_static`, `gpu_fp8_sp`, `gpu_runtime_decision`, `gpu_runtime_admem`, `gpu_trmm_adaptive`, `gpu_tlr_mp`, `gpu_tlr_dp_band2`, `gpu_band_dp_sp_hp`, `gpu_band_dp_sp_hp_sender`, `gpu_band_sp_hp`, `gpu_band_hp_fp16acc` |
 
 Every registered case runs with `--check 1`; the mixed-precision cases state
 their accepted bound with `--check_tol` (1e-6 for the SP band on CPU, 1e-5
@@ -384,6 +391,54 @@ one-rank test started without `mpirun`, as CTest does) waits forever on the
 step's PMIx server; the guyot runs clear the `SLURM_*`/`PMIX_*` variables. Not
 a HiCMA-X issue, but worth knowing when running CTest inside an allocation.
 
+### 5.7 Third pass: matrix sum, compile-time switches, sanitizers (methane, guyot)
+
+Requested: merge the matrix sums for multiple precisions (`TODOs` item 3),
+check the design of the macros in `hicma_parsec_internal.h` for correctness
+and performance without adding CMake options, keep the code changes minimal,
+test on guyot.
+
+**Matrix sum.** `hicma_parsec_matrix_sum` (`matrix_sum.jdf`) replaces the
+removed FP64-only and FP32-only sums, whose tile task never stored its partial
+sum. It reads each tile in its storage precision (decision map, or the
+descriptor's type) including low-rank factors, and returns the same value on
+every process and grid. `testing_matrix_sum` passes exactly on 1 to 8
+processes; on generated kind-1, 2 and 5 matrices the sums are bitwise equal on
+1, 2 and 4 processes.
+
+**Compile-time switches** (`code-review.md`, section 8): switches settable with
+`-DNAME=value`; every value compiled and run; dead ones removed; two broken
+non-default paths found. `GPU_BUFFER_ONCE=0` crashed (it freed the shared GPU
+workspace) and was slower: TRMM N=40960 on 8 A100s 11.88 s against 11.31 s
+(3 runs each), so the switch was removed. `WORKLOAD_BALANCE=4` corrupted the
+heap; fixed.
+
+**Sanitizers.** An AddressSanitizer build (`-DENABLE_SANITIZER=ON`) ran the 25
+CPU CTest cases and the 61-case CPU corner sweep with no report. Its leak
+checker found that PaRSEC's `parsec_private_memory_fini` frees no pooled
+workspace: every factorization lost its pools (167 MB for kind 2 at N=2700, 24
+MB for kind 10). HiCMA-X now frees them itself (`hicma_parsec_memory_pool_fini`);
+afterwards nothing leaked is allocated by HiCMA-X code (what remains belongs to
+MPI and PaRSEC), and repeated factorizations no longer grow:
+
+| Kind 10, N=8192, CPU | 1 run | 4 runs | 8 runs |
+|---|---|---|---|
+| Peak memory before | 532 MB | 839 MB | 1238 MB |
+| Peak memory after | 525 MB | 568 MB | 605 MB |
+
+Remaining one-off leak: the TRMM driver ends with
+`hicma_parsec_cleanup_parsec`, which does not free 3.8 KB of statistics
+arrays (the Cholesky path does).
+
+**Validation of the final tree.** methane: CTest 25 / 25 (CPU) and 39 / 39
+(CUDA); the 31 CPU and 50 GPU-tree matrix cases identical to the previous run
+(residuals and GEMM counts; times within noise); install consumers and the
+embedding applications pass. guyot: CTest 39 / 39 (twice); `testing_matrix_sum`
+and `testing_lapack_tile` on 8 ranks; after the `GPU_BUFFER_ONCE` removal, the
+TRMM (N=40960, 8 GPUs; 8 ranks; memory pressure), kind 5 with adaptive
+conversion on 8 GPUs and on 8 ranks (also 3 repeated runs), and kind 10 with 3
+repeated runs on 8 ranks all pass. HIP compiles.
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -399,6 +454,7 @@ a HiCMA-X issue, but worth knowing when running CTest inside an allocation.
 | P1 items | done except: per-call status checks in the non-FP8 GPU kernels (P1-6, partial), warning-flags option (P1-11) |
 | P2 items | done except P2-6, P2-9, P2-12 (deferred) and the remaining parts of P2-5, P2-7, P2-8 |
 | Second pass: conversion merge, external-user walkthrough, guyot sweeps (section 5.6) | done; 11 problems fixed |
+| Third pass: matrix sum, macro review, sanitizers (section 5.7) | done; pool leak, `GPU_BUFFER_ONCE`, strategy 4 fixed |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 

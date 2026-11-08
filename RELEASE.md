@@ -61,6 +61,11 @@ before/after timing comparison.
 
 ### Upgrading from 0.1.0
 
+- New: `hicma_parsec_matrix_sum` (mixed-precision checksum). The build-time
+  switches of `hicma_parsec_internal.h` (`PRINT_RANK`, `DEBUG_INFO`,
+  `GPU_BUFFER_ONCE`, ...) are set with `-DNAME=value` in `CMAKE_C_FLAGS`
+  instead of editing the header.
+
 - `hicma_parsec_lapack_tile_convert` replaces the eight tile/LAPACK
   conversion taskpools; the named `hicma_parsec_{Tile_to_Lapack,Lapack_to_Tile}*`
   functions remain and now return -1 (on every rank, nothing copied) when the
