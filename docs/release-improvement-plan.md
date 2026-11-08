@@ -146,4 +146,9 @@ after the library changes.
 - 2026-11-08 (on request): GEMM reordering (`reorder_gemm.jdf`,
   `hicma_parsec_reorder_gemm`) restored for future use, not wired in; its
   launch compiles, its sort and pool leak are fixed.
+- 2026-11-08 (fifth pass, on request): macros and data structures
+  inventoried and reviewed (`code-review.md` section 9): unused macros and
+  fields removed, local and climate switches settable with -D, two climate
+  debug paths fixed; matrix identical to the third pass. See
+  `release-readiness.md` section 5.9.
 

@@ -124,6 +124,16 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   `climate_emulator_print_double`), two unbuilt test sources,
   `hamming.jl`, ~40 uncalled functions, 14 declared-but-undefined prototypes,
   and the `#if 0` blocks around them.
+- Macros and data structures reviewed (`docs/code-review.md`, section 9).
+  Unused names removed from the installed headers: 16 datatype identifiers,
+  three tile formats, three sparse modes, `DATATYPE_USE`, `EPS_DP`,
+  `THRESHOLD_MEMORY_PER_NODE` (its check could not fire), `str`/`xstr`, 29
+  HIP aliases, and the fields `HMB`, `start_time_kernel_sqr_sum_vec` and
+  `str_problem` of `hicma_parsec_params_t`. `SYNC_TIME_PRINT` is defined once.
+  The local switches of the sources (`CALL_HCORE_DSYRK`, `ACC_DP`,
+  `OWN_CONVERTOR`, `USE_OPENMP`, ...) and of the climate emulator are
+  settable with `-D`, and each value compiles; two climate debug paths did
+  not, fixed. The climate header no longer `#undef`s the genomics switches.
 - GEMM reordering (`reorder_gemm.jdf`, `hicma_parsec_reorder_gemm`) is kept for
   future use, still not called. Its launch was an `#if 0` block that did not
   compile; it is now real code on the gathered rank array, so the build

@@ -67,6 +67,13 @@ before/after timing comparison.
   `WORKLOAD_BALANCE`, ...) are set with `-DNAME=value` in `CMAKE_C_FLAGS`
   instead of editing the header. `GPU_BUFFER_ONCE` is gone: the GPU
   workspace is always allocated once.
+- Removed from the installed headers because nothing used them: the macros
+  `HICMA_PARSEC_FP64` ... `HICMA_PARSEC_ONE_BIT`, `HICMA_PARSEC_DENSE`,
+  `HICMA_PARSEC_LOW_RANK`, `HICMA_PARSEC_SPARSE`, `DATATYPE_USE`,
+  `NOT_SPARSE`, `SPARSE_NORMAL`, `SPARSE_BALANCE`, `EPS_DP`,
+  `THRESHOLD_MEMORY_PER_NODE`, `str`, `xstr`, and the
+  `hicma_parsec_params_t` fields `HMB`, `start_time_kernel_sqr_sum_vec`,
+  `str_problem`.
 - CUDA builds without `CMAKE_CUDA_ARCHITECTURES` (or `CUDAARCHS`) compile for
   70 80 90 90a (80 90 90a with CUDA 13). 0.1.0 documented this default but
   compiled for the compiler's default, sm_52 with CUDA 12.

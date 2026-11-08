@@ -1290,3 +1290,73 @@ Findings and what was done (minimal changes):
    Macros with the same role outside this header (`OWN_CONVERTOR` in the kind-3
    JDF, `USE_OPENMP` and `DYNAMIC_MEMORY_ALLOCATION` in the sparse analysis,
    `CLIMATE_EMULATOR_*`) were not reviewed in depth.
+
+## 9. Fourth pass: macros and data structures (2026-11-08)
+
+Scope: every `#define` in `src/` and `tests/`, and every field of the structs
+in the library headers, counted against their uses (scripted inventory, then
+read case by case). Criterion: a macro or field stays if something uses it and
+its form is right; a compile-time switch is settable with `-DNAME=value` and
+each of its values compiles (and runs, where a test reaches it).
+
+1. **Removed, no use anywhere**: the 16 datatype identifiers
+   `HICMA_PARSEC_FP64` ... `HICMA_PARSEC_ONE_BIT`, the tile-format macros
+   `HICMA_PARSEC_DENSE/LOW_RANK/SPARSE`, `DATATYPE_USE`, `NOT_SPARSE`,
+   `SPARSE_NORMAL`, `SPARSE_BALANCE` (the code tests `params->sparse` as 0, 1
+   and > 1; the field comment now says so), `EPS_DP`, the `A/B/C_SHAPE`
+   macros of four genomics JDFs, `NUM_FILES` in a test, and 29 HIP aliases of
+   `hicma_parsec_hip_cuda.h` (seven of them, `CUBLAS_DIAG_NON_UNIT_OP_N` and
+   the like, were not CUDA names at all), plus two extra copies of the
+   `cudaHostRegister*` aliases. Fields: `HMB` and `start_time_kernel_sqr_sum_vec` of the
+   parameters (the banner printed "HMB x HNB" with `HNB` twice), the
+   per-run copy `params->str_problem` of the global name table (the prints use
+   the table), and twelve fields of `climate_emulator_struct_t` (raw pointers
+   next to the descriptors that hold the data, and `mse`, `perf_*`).
+2. **Removed, could not fire**: `THRESHOLD_MEMORY_PER_NODE` (`INT_MAX`, in GB)
+   and the check `memory_per_node > 0.7 * INT_MAX` that used it.
+3. **Duplicated**: `SYNC_TIME_PRINT` was defined in `hicma_parsec_timing.h` and
+   again, after an `#undef`, in `hicma_parsec_internal.h`; one definition now.
+   `VERBOSE_PRINT` no longer `#undef`s first (nothing else defines it).
+4. **Generic function-like names in the installed header**: `str(a)` and
+   `xstr(a)` replaced a function `str()` of any application including
+   `hicma_parsec.h`; they are gone from the header (one use, now a local
+   `HICMA_XSTR`).
+5. **Local switches** (the ones section 8 left out): `CALL_HCORE_DSYRK` (was
+   `call_hcore_dsyrk`, defined twice inside function bodies) and `ACC_DP`
+   (defined in the middle of a function) are defined once at the top of
+   `hicma_parsec_core.c`; they, `OWN_CONVERTOR`, `TEST_CPU`, `USE_OPENMP`,
+   `DYNAMIC_MEMORY_ALLOCATION`, `PRINT_ANALYSED_RESULT`,
+   `PRINT_REDEFINED_DISTRIBUTION`, `PRINT_PROCESS_EXE_TIME` and
+   `PRINT_THREAD_EXE_TIME` are `#ifndef`-guarded. A CPU and a CUDA tree with
+   every one flipped (`USE_OPENMP=1` needs `-fopenmp`) pass CTest 25/25 and
+   39/39; the flipped prints appear; `TEST_CPU=1` (MKL's integer GEMM)
+   compiles. `PRINT_ANALYSED_RESULT` only matters with `WORKLOAD_BALANCE=2`;
+   the OpenMP branch of the analysis only runs beyond 10000 tile rows.
+6. **Climate emulator header**: it `#undef`d `MPIIO`, `CHECKSOLVE` and
+   `PREDICTION` (genomics switches it does not use), overriding a user's `-D`
+   in every file that included it; removed. Its switches are `#ifndef`-guarded
+   and the four short aliases (`READ_FROM_FILE`, `ENABLE_INVERSE`,
+   `WRITE_TO_FILE`, `DEBUG_INFO_CLIMATE_EMULATOR`) give way to the one name
+   each. Every value of every climate switch now compiles; two did not
+   (`CLIMATE_EMULATOR_DEBUG_INFO=1`: an undeclared variable in the complex CSV
+   reader, and with `CLIMATE_EMULATOR_MPIIO=0` a descriptor passed by value to
+   `parsec_print_cm_sym`); fixed. Not run: the emulator needs its data set.
+7. **Kept, with the reason**:
+   - `IS_DENSE(m, n)` and `IS_ALLOCATE_DP(m, n)` read the caller's
+     `params_tlr` and `descA`. They are used 214 times, mostly in JDF
+     dependency guards, where `params_tlr` and `descA` are JDF globals by
+     convention.
+   - The colour codes, `DATATYPE`, `PRINT_RANK`, `MPIIO` and other generic
+     object-like names in the installed header (section 8, item 9).
+   - `PORTION_NORM` (1 keeps the full band) and `INT_EACH_TIME_PER_TILE` are
+     tuning constants.
+   - `dcRank` is a descriptor whose tiles exist only with `PRINT_RANK`.
+   - `time_init`, `time_regenerate` and `gflops` are results that are printed
+     or readable by an application.
+8. **Not changed**: 28 unnamed `#if 0` / `#if 1` blocks remain, mostly in the
+   genomics, climate and TRMM kernels: debug prints, earlier implementations
+   (cuBLASLt integer SYRK, `cublasSgemmex`), and alternative TRMM calls behind
+   `#if 1 ... #else`. They do not change the compiled code. Naming or deleting
+   them needs a decision per block, and most of those kernels have no test.
+   `hicma_parsec_params_t` holds 196 fields in one struct; splitting it would
+   change the API.

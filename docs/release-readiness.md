@@ -22,6 +22,10 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `491b44c` Climate emulator: one name per switch, settable with -D
+- `a0a8d8e` Make the local compile-time switches settable with -D
+- `d28c2e0` Remove unused macros and parameter fields; one SYNC_TIME_PRINT
+- `508466d` Release readiness: GEMM reordering kept for future use
 - `8d9777d` Keep GEMM reordering for future use
 - `a4dacb1` Documentation for the build-script pass
 - `f448fd3` Rewrite the build scripts for the single-configure build
@@ -501,6 +505,35 @@ and sorted, with the same counts on every process count. CTest: 25 / 25
 (CPU) and 39 / 39 (CUDA). Wiring it into the Cholesky is future work
 (`reorder_gemm.jdf` lists the steps).
 
+### 5.9 Fifth pass: macros and data structures (methane)
+
+Requested: check that the macros and data structures are well designed and
+necessary; guyot not used. `code-review.md`, section 9, has the findings.
+
+- **Removed as unused.** 16 datatype identifiers, three tile formats, three
+  sparse modes, `DATATYPE_USE`, `EPS_DP`, the generic `str`/`xstr`, 29 HIP
+  aliases, the JDF `*_SHAPE` macros, and five struct fields (`HMB`,
+  `start_time_kernel_sqr_sum_vec`, `str_problem`, and in the climate
+  emulator twelve more). A memory check that could not fire is also gone.
+- **Fixed.** `SYNC_TIME_PRINT` was defined twice. The local switches of the
+  sources and of the climate emulator could not be set with `-D`. The
+  climate header `#undef`d three genomics switches, and its switches had two
+  names each. Two climate debug paths did not compile.
+
+| Check | Result |
+|---|---|
+| CPU, CUDA and HIP trees | build, no new warnings |
+| CTest | 25 / 25 (CPU), 39 / 39 (CUDA) |
+| Validation matrix against the third pass | 31 CPU and 50 GPU-tree cases: identical exit codes, residuals and GEMM counts |
+| Every local switch flipped (CPU and CUDA trees) | CTest 25 / 25 and 39 / 39; flipped prints appear |
+| Every climate switch value | compiles in both trees (16 sources) |
+| Install consumers, `LD_LIBRARY_PATH` unset | build and pass |
+
+Left as they are, with the reasons in section 9 of the review: the
+implicit-capture macros `IS_DENSE`/`IS_ALLOCATE_DP`, the generic object-like
+names of the installed header, 28 unnamed `#if 0`/`#if 1` blocks, and the
+196-field parameter struct.
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -518,6 +551,7 @@ and sorted, with the same counts on every process count. CTest: 25 / 25
 | Second pass: conversion merge, external-user walkthrough, guyot sweeps (section 5.6) | done; 11 problems fixed |
 | Third pass: matrix sum, macro review, sanitizers (section 5.7) | done; pool leak, `GPU_BUFFER_ONCE`, strategy 4 fixed |
 | Fourth pass: build scripts (section 5.8) | done; CUDA default architectures and kind-3 guard messages fixed |
+| Fifth pass: macros and data structures (section 5.9) | done; unused names removed, switches settable, two climate debug paths fixed |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
