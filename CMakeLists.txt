@@ -257,6 +257,10 @@ if(HICMA_BLAS_RUNTIME_DIRS)
     # targets created above, in the submodules, that load BLAS themselves
     set_property(TARGET hcore dplasma APPEND PROPERTY BUILD_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
     set_property(TARGET hcore dplasma APPEND PROPERTY INSTALL_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+    # DPLASMA's BLAS thread-safety test, the CTest fixture of every HiCMA case
+    if(TARGET testing_blas_threadsafety)
+        set_property(TARGET testing_blas_threadsafety APPEND PROPERTY BUILD_RPATH ${HICMA_BLAS_RUNTIME_DIRS})
+    endif()
 endif()
 unset(_items)
 unset(_loc)

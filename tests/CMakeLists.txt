@@ -106,7 +106,12 @@ function(hicma_add_test name nproc)
         list(APPEND labels gpu)
     endif()
     add_test(NAME ${name} COMMAND ${launch} ${ARGN})
-    set_tests_properties(${name} PROPERTIES TIMEOUT 900 LABELS "${labels}")
+    # Every case calls the BLAS from several PaRSEC worker threads at once.
+    # DPLASMA's dplasma_blas_threadsafety checks that the BLAS survives that;
+    # as a fixture, ctest runs it first (also with -L hicma) and skips these
+    # cases if it fails, instead of reporting wrong residuals everywhere.
+    set_tests_properties(${name} PROPERTIES TIMEOUT 900 LABELS "${labels}"
+                         FIXTURES_REQUIRED DPLASMA_BLAS_THREADSAFE)
 endfunction()
 
 set(P $<TARGET_FILE:testing_potrf_tlr>)
