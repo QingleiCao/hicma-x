@@ -47,14 +47,24 @@ BODY
                                      : (PARSEC_MATRIX_FLOAT == descA->mtype);
     int rows = (m == descA->mt-1) ? descA->m - m * descA->mb : descA->mb;
     int cols = (n == descA->nt-1) ? descA->n - n * descA->nb : descA->nb;
-    if( LOW_RANK_DP == d || LOW_RANK_SP == d )
-        cols = (NULL != R) ? 2 * ((int *)R)[0] : 0;
     int ld = BLKLDD(descA, m);
+    /* Blocks summed: a dense tile is one rows x cols block; a low-rank tile is
+     * U (rows x rank) followed, mb*rank elements later, by V (cols x rank),
+     * both with leading dimension ld (as in matrix_uncompress) */
+    size_t off[2] = { 0, 0 };
+    int nrow[2] = { rows, 0 }, ncol[2] = { cols, 0 };
+    if( LOW_RANK_DP == d || LOW_RANK_SP == d ) {
+        int rank = (NULL != R) ? ((int *)R)[0] : 0;
+        ncol[0] = rank;
+        off[1] = (size_t)descA->mb * rank; nrow[1] = cols; ncol[1] = rank;
+    }
     double s = 0.0;
-    for( int j = 0; j < cols; j++ )
-        for( int i = 0; i < rows; i++ )
-            s += single ? (double)((const float *)A)[(size_t)j * ld + i]
-                        : ((const double *)A)[(size_t)j * ld + i];
+    for( int b = 0; b < 2; b++ )
+        for( int j = 0; j < ncol[b]; j++ )
+            for( int i = 0; i < nrow[b]; i++ ) {
+                size_t idx = off[b] + (size_t)j * ld + i;
+                s += single ? (double)((const float *)A)[idx] : ((const double *)A)[idx];
+            }
     if( !isfinite(s) )
         fprintf(stderr, "hicma_parsec_matrix_sum: NaN or Inf in tile (%d, %d)\n", m, n);
     tile_sums[(size_t)n * descA->mt + m] = s;

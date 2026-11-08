@@ -38,21 +38,29 @@ static double fill(parsec_tiled_matrix_t *A, parsec_tiled_matrix_t *Ar, const ui
             uint16_t d = dec ? dec[n * A->lmt + m] : 0;
             int fp32 = dec ? (DENSE_SP == d || DENSE_HP == d || DENSE_FP8 == d || LOW_RANK_SP == d) : single;
             int mine = A->super.rank_of(&A->super, m, n) == (uint32_t)A->super.myrank;
+            /* dense: one rows x cols block; low rank: U (rows x rank), then V
+             * (cols x rank) mb*rank elements later, leading dimension mb. In the
+             * last tile row V has more rows than U. */
+            size_t off[2] = { 0, 0 };
+            int nrow[2] = { rows, 0 }, ncol[2] = { cols, 0 };
             if( LOW_RANK_DP == d || LOW_RANK_SP == d ) {
                 int rank = (m + n) % 3;
-                cols = 2 * rank;
                 if( mine ) *(int *)tile(Ar, m, n) = rank;
+                ncol[0] = rank;
+                off[1] = (size_t)A->mb * rank; nrow[1] = cols; ncol[1] = rank;
             }
             void *t = mine ? tile(A, m, n) : NULL;
-            for( int j = 0; j < cols; j++ )
-                for( int i = 0; i < rows; i++ ) {
-                    int v = f(m * A->mb + i, n * A->nb + j);
-                    expected += v;
-                    if( t ) {
-                        if( fp32 ) ((float *)t)[(size_t)j * A->mb + i] = (float)v;
-                        else      ((double *)t)[(size_t)j * A->mb + i] = (double)v;
+            for( int b = 0; b < 2; b++ )
+                for( int j = 0; j < ncol[b]; j++ )
+                    for( int i = 0; i < nrow[b]; i++ ) {
+                        int v = f(m * A->mb + i, n * A->nb + b * A->nb / 2 + j);
+                        size_t idx = off[b] + (size_t)j * A->mb + i;
+                        expected += v;
+                        if( t ) {
+                            if( fp32 ) ((float *)t)[idx] = (float)v;
+                            else      ((double *)t)[idx] = (double)v;
+                        }
                     }
-                }
         }
     return expected;
 }
