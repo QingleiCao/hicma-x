@@ -1,14 +1,24 @@
-#/bin/bash
+#!/bin/bash -l
+# Build HiCMA-X on Polaris (ALCF; NVIDIA A100).
+#   scripts/machines/install_polaris.sh [build-dir] [extra CMake options]
+# The build directory defaults to build/ in the repository. CMake also builds
+# DPLASMA, PaRSEC, STARS-H and HCORE from the submodules (BUILD.md);
+# "cmake --install <build-dir>" then installs into <build-dir>/installdir.
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+BUILD=$(realpath -m "${1:-$ROOT/build}"); shift || true
 
-module list -l
+module list
+set -e
 
-home=$PWD
+# A LAPACKE installation (scripts/build_hicma_with_lapack.sh builds one)
+export LAPACKE_ROOT=${LAPACKE_ROOT:-/home/cql0536/software/lapack/build/installdir}
 
-echo "update submodules"
-git submodule update --init --recursive
-
-cd  $home && mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE="Release" -DDPLASMA_PRECISIONS="s;d" -DCMAKE_INSTALL_PREFIX=`pwd`/installdir -DPARSEC_MAX_DEP_OUT_COUNT=16 -DCMAKE_PREFIX_PATH=/home/cql0536/software/lapack/build/installdir/lib64 -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc -DCMAKE_Fortran_COMPILER=gfortran -DCMAKE_EXE_LINKER_FLAGS="-L${CRAY_NVIDIA_PREFIX}/math_libs/lib64" -DHICMA_PARSEC_HAVE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="80;90"
-#cmake .. -DCMAKE_BUILD_TYPE="Release" -DDPLASMA_PRECISIONS="s;d" -DBUILD_SHARED_LIBS=ON -DPARSEC_GPU_WITH_CUDA=ON -DPARSEC_HAVE_DEV_CUDA_SUPPORT=ON -DCMAKE_INSTALL_PREFIX=`pwd`/installdir -DPARSEC_GPU_WITH_HIP=OFF -DPARSEC_HAVE_DEV_HIP_SUPPORT=OFF  -DPARSEC_MAX_DEP_OUT_COUNT=16 -DCMAKE_PREFIX_PATH=/home/cql0536/software/lapack/build/installdir/lib64 -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER=gcc -DCMAKE_Fortran_COMPILER=gfortran
-#cmake .. -DCMAKE_BUILD_TYPE="Release" -DDPLASMA_PRECISIONS="s;d" -DBUILD_SHARED_LIBS=ON -DPARSEC_GPU_WITH_CUDA=ON -DPARSEC_HAVE_DEV_CUDA_SUPPORT=ON -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_INSTALL_PREFIX=`pwd`/installdir -G Ninja -DPARSEC_PROF_TRACE=ON -DPARSEC_PROF_GRAPHER=ON
-make -j 10
+cmake -S "$ROOT" -B "$BUILD" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$BUILD/installdir" \
+    -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_Fortran_COMPILER=gfortran \
+    -DDPLASMA_PRECISIONS="s;d" \
+    -DHICMA_PARSEC_HAVE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="80;90" \
+    -DCMAKE_EXE_LINKER_FLAGS="-L${CRAY_NVIDIA_PREFIX}/math_libs/lib64" \
+    "$@"
+cmake --build "$BUILD" -j "${JOBS:-16}"

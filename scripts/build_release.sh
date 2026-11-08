@@ -221,7 +221,6 @@ CMAKE_ARGS=(
     -DON_FUGAKU="$ENABLE_FUGAKU"
     -DENABLE_SANITIZER="$ENABLE_SANITIZER"
     -DENABLE_CUTLASS="$ENABLE_CUTLASS"
-    -DPARSEC_MAX_DEP_OUT_COUNT=16
 )
 
 # Add CUDA-specific options
@@ -254,7 +253,7 @@ print_success "CMake configuration completed"
 
 # Build
 print_status "Building with $JOBS parallel jobs..."
-make -j"$JOBS"
+cmake --build . -j "$JOBS"
 
 if [[ $? -ne 0 ]]; then
     print_error "Build failed"
@@ -284,7 +283,7 @@ fi
 # Install if requested
 if [[ "$INSTALL" == "true" ]]; then
     print_status "Installing to $PREFIX..."
-    make install
+    cmake --install .
     
     if [[ $? -ne 0 ]]; then
         print_error "Installation failed"

@@ -1,28 +1,7 @@
-#/bin/bash
-
-module list -l
-
-home=$PWD
-
-echo "update submodules"
-#git submodule update --init --recursive
-
-echo "Install starsh"
-cd $home/stars-h && mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE="Debug" -DCMAKE_INSTALL_PREFIX=`pwd`/installdir -DMPI=OFF -DSTARPU=OFF -DCUDA=OFF -DOPENMP=OFF -DGSL=ON
-make -j 8 install
-echo "export PKG_CONFIG_PATH=$home/stars-h/build/installdir/lib/pkgconfig:\$PKG_CONFIG_PATH" >> $home/env_hicma_parsec.sh
-export PKG_CONFIG_PATH=$home/stars-h/build/installdir/lib/pkgconfig:$PKG_CONFIG_PATH
-
-echo "Install hcore"
-cd $home/hcore && mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE="Debug" -DCMAKE_INSTALL_PREFIX=`pwd`/installdir
-make -j 8 install
-echo "export PKG_CONFIG_PATH=$home/hcore/build/installdir/lib/pkgconfig:\$PKG_CONFIG_PATH" >> $home/env_hicma_parsec.sh
-export export PKG_CONFIG_PATH=$home/hcore/build/installdir/lib/pkgconfig:$PKG_CONFIG_PATH
-
-echo "Install hicma_parsec"
-cd  $home && mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE="Debug" -DDPLASMA_PRECISIONS="s;d" -DBUILD_SHARED_LIBS=ON -DHICMA_PARSEC_HAVE_CUDA=ON -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_INSTALL_PREFIX=`pwd`/installdir -G Ninja -DPARSEC_MAX_DEP_OUT_COUNT=16 -DPARSEC_DEBUG_MEM_ADDR=ON
-#cmake .. -DCMAKE_BUILD_TYPE="Release" -DDPLASMA_PRECISIONS="s;d" -DBUILD_SHARED_LIBS=ON -DPARSEC_GPU_WITH_CUDA=ON -DPARSEC_HAVE_DEV_CUDA_SUPPORT=ON -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_INSTALL_PREFIX=`pwd`/installdir -G Ninja -DPARSEC_PROF_TRACE=ON -DPARSEC_PROF_GRAPHER=ON
-ninja
+#!/bin/bash
+# Debug build on the ICL machines: install_icl.sh with CMAKE_BUILD_TYPE=Debug
+# and PaRSEC's memory-address checks, in build-debug/ by default.
+#   scripts/machines/install_icl_debug.sh [build-dir] [extra CMake options]
+DIR=$(cd "$(dirname "$0")" && pwd)
+BUILD=${1:-$DIR/../../build-debug}; shift || true
+exec "$DIR/install_icl.sh" "$BUILD" -DCMAKE_BUILD_TYPE=Debug -DPARSEC_DEBUG_MEM_ADDR=ON "$@"
