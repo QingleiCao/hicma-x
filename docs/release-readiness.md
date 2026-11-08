@@ -673,7 +673,19 @@ separate agent, `code-review.md` section 11):
   46 / 46 (CUDA); the validation matrix identical to the third pass; the HIP
   tree builds.
 
-@@ROUND3@@
+**Round 3** (the pushed result, from outside): a fresh clone of `3fd5cda`
+built as `README.md` says, with CUDA, passes `ctest -L hicma` 46 / 46; the
+installed tree builds `tests/install_consumer`, whose drivers pass with
+`LD_LIBRARY_PATH` unset (`--tensor_gemm_hp 0x20` included) and print
+`HiCMA-X 0.2.0, revision v0.1.0-130-g3fd5cda`. CI passed on `3fd5cda`.
+Performance at N=30720, two runs each, against the sixth pass (section
+5.11): one A100, FP64 9.3 and 9.1 Tflop/s (9.2), adaptive 9.5 and 9.5
+(9.6), kind 10 9.1 and 9.0 (9.3); 36 CPU cores, FP64 1.36 and 1.35
+(1.31-1.34), TLR 1.08 s (1.10 s): unchanged within noise, with the node's
+load average at 50 to 230 from other jobs. The variants on the A100 (FP64
+and FP32 bands of 2 tiles, the rest FP16): 0.70 s with 0x8, 0.66 s with
+0x10, 0.66 to 0.69 s with 0x20, 0.77 s with 0x40; an FP32 band instead takes
+0.56 s with TF32 and 0.90 s without.
 
 ## 6. Release checklist
 

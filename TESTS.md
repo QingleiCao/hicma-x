@@ -223,7 +223,10 @@ The TRMM keeps C in FP32 with `--accumulation_fp32` and in FP16 otherwise,
 and computes in FP16 except with 0x80. Measured on one A100 (kind 5, N=8192,
 NB=1024, FP64/FP32/FP16 bands of 2/2/4 tiles), ||LL^T-A||/||A||: 8.5e-7 with
 0x8, 2.3e-5 with 0x10, 6.7e-6 with 0x20, 1.0e-4 with 0x40; an FP64/FP32 band
-of 2/6 tiles gives 5.1e-8 in FP32 and 5.1e-6 with TF32.
+of 2/6 tiles gives 5.1e-8 in FP32 and 5.1e-6 with TF32. Factorization times
+at N=30720 on the A100, FP64/FP32 bands of 2/2 tiles and the rest FP16:
+0.70 s (0x8), 0.66 s (0x10), 0.66 to 0.69 s (0x20), 0.77 s (0x40); an FP32
+band instead: 0.90 s, 0.56 s with TF32 (FP64 throughout: 1.05 s).
 
 ## Options
 
