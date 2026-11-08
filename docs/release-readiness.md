@@ -666,9 +666,8 @@ separate agent, `code-review.md` section 11):
   with the message.
 - Found: a static FP16 or FP8 band with low-rank tiles fails on GPUs in kinds
   1 and 5 (segfault in cuBLAS, or residual 59), also with 0.1.0's code;
-  FP64 allocation does not avoid it, adaptive decisions do. Refused before
-  the factorization (section 7, item 7); CTest case
-  `gpu_tlr_hp_band_refused`.
+  FP64 allocation does not avoid it, adaptive decisions do. First refused
+  before the factorization, then root-caused and fixed (below).
 - AddressSanitizer build: CTest 27 / 27 (CPU). CTest 27 / 27 (CPU) and
   46 / 46 (CUDA); the validation matrix identical to the third pass; the HIP
   tree builds.
@@ -686,6 +685,22 @@ load average at 50 to 230 from other jobs. The variants on the A100 (FP64
 and FP32 bands of 2 tiles, the rest FP16): 0.70 s with 0x8, 0.66 s with
 0x10, 0.66 to 0.69 s with 0x20, 0.77 s with 0x40; an FP32 band instead takes
 0.56 s with TF32 and 0.90 s without.
+
+**The FP16-band failure, root-caused** (on request): a debug build with the
+refusal disabled crashed inside cuBLAS's host-side heuristics at a different
+GEMM from run to run; at N=4096 the result was deterministically wrong
+(residual 22 at every `--fixedacc`, ranks not growing), and a per-tile
+comparison with the dense reference factor put the first wrong tiles at the
+FP16 tiles whose first update is low-rank x low-rank. The FP16 branch of
+`hicma_parsec_core_gemm_denseC_lrA_lrB_gpu` converted that low-rank B as a
+dense tile (`code-review.md` section 11). With B converted as U and V, every
+failing layout passes: residuals 1.8e-5 to 7.9e-5 at `--fixedacc 1e-4`
+(FP32 band 2.1e-5, the same layout on the CPU 3.5e-5), 1.7e-4 with 0x10,
+two ranks equal to one, kind 1 equal to kind 5. The refusal is removed and
+CTest runs the layout in kinds 5 and 1 (`gpu_tlr_hp_band`,
+`gpu_tlr_mp_hp_band`). CTest 27 / 27 (CPU) and 47 / 47 (CUDA), the
+validation matrix identical to the third pass, AddressSanitizer 27 / 27, the
+HIP tree builds.
 
 ## 6. Release checklist
 
@@ -706,7 +721,7 @@ and FP32 bands of 2 tiles, the rest FP16): 0.70 s with 0x8, 0.66 s with
 | Fourth pass: build scripts (section 5.8) | done; CUDA default architectures and kind-3 guard messages fixed |
 | Fifth pass: macros and data structures (section 5.9) | done; unused names removed, switches settable, two climate debug paths fixed |
 | Sixth pass: external user, usability and performance (section 5.11) | done; `--nruns` crash, help defaults, summary line fixed; notes for three performance traps |
-| Seventh pass: GPU GEMM variants and three rounds of checks (section 5.12) | done; `--tensor_gemm_hp`/`_sp`, five wrong-result or crash paths closed; static FP16 band with low-rank tiles refused on GPUs (cause open, section 7) |
+| Seventh pass: GPU GEMM variants and three rounds of checks (section 5.12) | done; `--tensor_gemm_hp`/`_sp`, five wrong-result or crash paths closed; static FP16 band with low-rank tiles on GPUs fixed (low-rank B converted as dense) |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
@@ -734,11 +749,10 @@ and FP32 bands of 2 tiles, the rest FP16): 0.70 s with 0x8, 0.66 s with
    band of 1, would change the results of existing command lines.
    **Decided (2026-11-08): keep both defaults; the notes and the corrected
    `--help` are the change for 0.2.0.**
-7. **Static FP16 band with low-rank tiles on GPUs** (section 5.12): kinds 1
-   and 5 segfault in cuBLAS or return a wrong result, as 0.1.0 did; the
-   cause is not established, and the layout is now refused before the
-   factorization. Supporting it needs that cause found; adaptive decisions
-   with FP16 tiles and an FP32 band are not affected.
+7. **Static FP16 band with low-rank tiles on GPUs** (section 5.12):
+   **resolved.** Kinds 1 and 5 returned wrong results or crashed, as 0.1.0
+   did: the FP16 branch of the low-rank x low-rank GPU GEMM converted its
+   low-rank B as a dense tile. Fixed; the layout runs and is in CTest.
 
 ## 8. Remaining and future work
 

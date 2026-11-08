@@ -148,11 +148,6 @@ CUDA build; see `BUILD.md`.
 - The GPU GEMM variants other than the default are not implemented
   everywhere ("GPU GEMM variants" below); the drivers refuse the others at
   start-up.
-- On GPUs, a static FP16 or FP8 band (`--band_dense_sp` < `--band_dense`)
-  together with low-rank tiles is refused before the factorization: in kinds
-  1 and 5 it crashed (in cuBLAS, or on NaNs in HCORE) or gave a wrong result,
-  with 0.1.0's code as well; the cause is not established. The same layouts
-  work on the CPU, with an FP32 band, and with `--adaptive_decision`.
 - `--datatype_convert 2` needs GPUs.
 - On CPUs other than the A64FX (Fugaku), FP16 tiles are emulated: they model
   the accuracy of half precision, without a speed-up.

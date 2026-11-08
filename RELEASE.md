@@ -44,9 +44,6 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
   not for kinds 8 to 10 and not together with FP8 GEMMs.
 - `--tensor_gemm` variants other than 0x8 are not implemented on every path
   (`TESTS.md`, "GPU GEMM variants"); `--datatype_convert 2` needs GPUs.
-- On GPUs, a static FP16 or FP8 band with low-rank tiles is refused: it
-  crashed or gave wrong results in kinds 1 and 5 (also in 0.1.0), cause not
-  established. An FP32 band, `--adaptive_decision`, or a CPU run work.
 - In runtime-decision mode the CPU GEMM keeps FP16 updates into an FP32 tile in
   FP64 while the GPU GEMM keeps FP32; CPU-only and GPU runs of kind 10 therefore
   differ in their storage precisions (results are within tolerance in both).
@@ -137,6 +134,10 @@ before/after timing comparison.
   `--tensor_gemm_hp` and check the value too. Also refused: BF16 with
   `--datatype_convert 2` (wrong results), and 0x10 when a low-rank tile has
   rank 0.
+- GPU runs of kinds 1 and 5 with a static FP16 band and low-rank tiles
+  (`--band_dense_sp` < `--band_dense` < NT) return correct results; 0.1.0
+  gave wrong results (residuals 10 to 59) or crashed. Results of such runs
+  change.
 
 ## 0.1.0
 

@@ -1469,14 +1469,21 @@ the contract, not these conclusions), confirmed by runs where possible:
    accepts every variant (the rule was too strict). Error messages name the
    option that is wrong.
 
-**Found in round 2** (two ranks): a static FP16 or FP8 band with low-rank
-tiles fails on the GPU in kinds 1 and 5, with every variant and with 0.1.0's
-code: a segfault in cuBLAS (`cublasLtHSHMatmulAlgoGetHeuristic`) followed by
-NaNs in HCORE's QR, or a wrong result (residual 59). The same layouts pass on
-the CPU, with an FP32 band, and with `--adaptive_decision` (FP16 tiles
-included), and FP64 allocation (`--adaptive_memory 1`) does not help. The
-cause is not established; `hicma_parsec_matrix_pre_analysis` refuses the
-layout on GPUs (release-readiness section 7).
+**Found in round 2** (two ranks), then root-caused on request: a static FP16
+band with low-rank tiles failed on the GPU in kinds 1 and 5, with every
+variant and with 0.1.0's code, as a segfault inside cuBLAS's host-side
+heuristics (at a different GEMM from run to run), NaNs in HCORE's QR, or a
+wrong result (residuals 10 to 59). A per-tile comparison of L with the dense
+reference factor showed the first wrong tiles to be the FP16 tiles whose
+first update has both operands low-rank, (6,4) and (7,4) at NT=8 with a band
+of 4; the passing adaptive runs had FP16 tiles, but none with such an
+update. In the FP16 branch of `hicma_parsec_core_gemm_denseC_lrA_lrB_gpu`
+the low-rank B was converted with the code of the dense-B function: a full
+mb x nb tile, as FP32 unless the tile was `DENSE_DP`, so a `LOW_RANK_DP` B's
+U and V were read as FP32 and past their buffer. It is converted as U and V
+of rank Brank now, like A and like the FP64 and FP32 branches. Every layout
+that failed passes, kinds 1 and 5, one and two ranks, with 0x8, 0x10 and
+TF32 (residuals 4.3e-5 to 1.7e-4); the temporary refusal is removed.
 
 **Not changed**: the `MASK_*` names and values (installed header); the TRMM's
 numerics (FP16 compute for FP16 C whatever the variant, except 0x80);

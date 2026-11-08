@@ -272,13 +272,17 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   the dense GEMMs do, and keep an FP8 C in FP32; 0x10 is refused when a
   low-rank tile has rank 0 (its skipped update would skip C's conversion);
   kind 10 accepts every variant unless the decisions are made at run time.
-- On GPUs, a static FP16 or FP8 band with low-rank tiles is refused before
-  the factorization: in kinds 1 and 5 it segfaulted (in cuBLAS) or gave a
-  wrong result (residual 59), also with 0.1.0's code; the cause is not
-  established (`docs/release-readiness.md`, section 7).
+- GPU runs with a static FP16 band and low-rank tiles (kinds 1 and 5) gave
+  wrong results (residuals 10 to 59) or segfaulted, also with 0.1.0's code.
+  In the FP16 branch of `hicma_parsec_core_gemm_denseC_lrA_lrB_gpu` the
+  low-rank B (U and V of rank Brank) was converted as a dense mb x nb tile,
+  reading a LOW_RANK_DP B's FP64 bytes as FP32 and past its buffer; every
+  FP16 tile with a low-rank x low-rank update received garbage. It is now
+  converted as U and V, like A; residuals 4.3e-5 (FP32 band: 2.1e-5, CPU:
+  3.5e-5), and two ranks agree with one.
 - New CTest cases: BF16 with FP32 and with BF16 C, TF32, adaptive TLR with
-  FP16 C, the refused FP16 band with low-rank tiles (GPU), and the start-up
-  refusal of `0x18` (CPU).
+  FP16 C, a static FP16 band with low-rank tiles in kinds 5 and 1 (GPU), and
+  the start-up refusal of `0x18` (CPU).
 
 ### Usability (external-user pass)
 

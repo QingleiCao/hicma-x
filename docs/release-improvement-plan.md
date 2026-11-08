@@ -168,3 +168,7 @@ after the library changes.
   results and crashes with several masks; an independent review and rounds
   of checks closed five more paths; a static FP16 band with low-rank tiles
   is refused on GPUs (cause open). See `release-readiness.md` section 5.12.
+- 2026-11-08 (on request): the GPU failure with a static FP16 band and
+  low-rank tiles root-caused and fixed: the FP16 branch of the low-rank x
+  low-rank GPU GEMM converted its low-rank B as a dense tile. The refusal is
+  removed; CTest runs the layout in kinds 5 and 1.
