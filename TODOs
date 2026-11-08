@@ -9,5 +9,5 @@
 9. Merge GENOMICS and remove the redundant macros
 10. Fix hicma_parsec_init for external users (0.2.0: accepts argc 0 / argv NULL and read-only argv, leaves an application's MPI initialized, and its internal calls can no longer be replaced by application functions of the same name; still open: setting the parameters without an argument vector)
 11. Add additional params and redesign the structure
-12. Redesign tensor_gemm to tensor_gemm_sp, tensor_gemm_hp, ...
+12. Redesign tensor_gemm to tensor_gemm_sp, tensor_gemm_hp, ... (0.2.0: --tensor_gemm_hp and --tensor_gemm_sp, checked at start-up; --tensor_gemm kept as the combined form; TESTS.md "GPU GEMM variants")
 13. Mememory register vs allocate host for adaptive_decision

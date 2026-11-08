@@ -42,7 +42,11 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
   half path; without GPUs the single-precision band is widened to the matrix).
 - `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the TRMM,
   not for kinds 8 to 10 and not together with FP8 GEMMs.
-- `--tensor_gemm 0x80` is a TRMM-only mode; `--datatype_convert 2` needs GPUs.
+- `--tensor_gemm` variants other than 0x8 are not implemented on every path
+  (`TESTS.md`, "GPU GEMM variants"); `--datatype_convert 2` needs GPUs.
+- On GPUs, a static FP16 or FP8 band with low-rank tiles is refused: it
+  crashed or gave wrong results in kinds 1 and 5 (also in 0.1.0), cause not
+  established. An FP32 band, `--adaptive_decision`, or a CPU run work.
 - In runtime-decision mode the CPU GEMM keeps FP16 updates into an FP32 tile in
   FP64 while the GPU GEMM keeps FP32; CPU-only and GPU runs of kind 10 therefore
   differ in their storage precisions (results are within tolerance in both).
@@ -118,6 +122,21 @@ before/after timing comparison.
   that leaves the processes of a node half of its cores or fewer.
 - `--left_looking` < 0 and BF16 GEMMs with low-rank tiles exit with status 1
   (they exited 0).
+- New `--tensor_gemm_hp` (GPU GEMM variant of the FP16 tiles) and
+  `--tensor_gemm_sp` (FP32 or TF32). `--tensor_gemm` sets both: one FP16
+  variant (0x8, 0x10, 0x20, 0x40 or 0x80), plus 0x4 for TF32; 0x1 and 0x2
+  are accepted and ignored, so the values 0.1.0 handled correctly keep their
+  meaning, except with `--adaptive_decision` (below). Refused
+  at start-up: no variant or several (0.1.0 gave wrong results in kind 3 and
+  aborted mid-run in kind 5), BF16 with low-rank tiles or in kind 3 (wrong
+  results), a variant other than 0x8 in kind 10 (ignored before), 0x80
+  in the Cholesky (exited 0 without factorizing), BF16 in the TRMM.
+  `--adaptive_decision` uses the chosen variant and TF32; it always used 0x8
+  without TF32, and with 0x10 its dense and low-rank GEMMs disagreed on the
+  type of C (NaNs, then a crash). The TRMM drivers now read
+  `--tensor_gemm_hp` and check the value too. Also refused: BF16 with
+  `--datatype_convert 2` (wrong results), and 0x10 when a low-rank tile has
+  rank 0.
 
 ## 0.1.0
 

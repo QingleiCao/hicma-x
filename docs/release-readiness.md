@@ -22,6 +22,9 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `317e171` GPU GEMM variants: --tensor_gemm_hp and --tensor_gemm_sp, one checked variant
+- `070c85a` release-readiness: record the decision to keep the --gpus and TLR band defaults
+- `d5a519a` Documentation for the external-user pass
 - `4560e88` External-user pass: --nruns crash, help defaults, summary line, performance notes
 - `c912875` Documentation for the BLAS fixture and the CI hardening
 - `35b1007` Check the BLAS for concurrent calls before the HiCMA tests; harden CPU CI
@@ -625,6 +628,53 @@ After the changes: CTest 26 / 26 (CPU) and 40 / 40 (CUDA); the validation
 matrix (31 CPU and 50 GPU-tree cases) is identical to the third pass in exit
 codes, residuals and GEMM precision counts; the HIP tree builds.
 
+### 5.12 Seventh pass: GPU GEMM variants, then three rounds of checks (methane)
+
+`--tensor_gemm` redesigned (`code-review.md` section 11): `--tensor_gemm_hp`
+and `--tensor_gemm_sp`, one check at start-up, one variant read by every GEMM
+body. Before the change, on one A100: kind 3 gave residual 43 with `0x3`,
+`0x18`, `0x20` and `0x40`; kind 5 aborted mid-run with `0x3` and `0x18`;
+adaptive TLR with `0x10` segfaulted. After it, those values are refused at
+start-up (the adaptive TLR case passes, 2.2e-5), and the variants measure as
+in `TESTS.md` ("GPU GEMM variants").
+
+**Round 1** (regression): CTest 27 / 27 (CPU) and 45 / 45 (CUDA), with the
+new cases; the validation matrix identical to the third pass, so the default
+computes as before. Every option form checked: `--tensor_gemm_hp` and
+`--tensor_gemm_sp` override the parts of `--tensor_gemm`, invalid values are
+refused with the option named; on the CPU, where the variants do not apply,
+valid values pass and refused ones are refused alike.
+
+**Round 2** (robustness, and an independent review of the change by a
+separate agent, `code-review.md` section 11):
+
+- The review found five more paths where the variant was unchecked or two
+  GEMMs disagreed. Confirmed by runs and fixed: BF16 with
+  `--datatype_convert 2` (residual 84, now refused); the TRMM drivers skipped
+  the value check and ignored `--tensor_gemm_hp 0x80` (the merge moved into
+  `parse_arguments`); FP8 C under 0x10 (kind 8, compute capability 8.9 or
+  more, not run here); the `ENABLE_TF16_A16_B16_C16_OP16` build switch;
+  rank-0 operands under 0x10. Two of its notes did not hold: FP8 is decided
+  after kind 10 is set, and `--datatype_convert 2` in kinds 1 and 4 gave the
+  residuals of `--datatype_convert 0` (8.5e-7, 9.1e-7). Its note that
+  `hicma_parsec_params_init` checks the HIP kinds before `--auto_band`
+  changes the kind needs an AMD GPU.
+- Two ranks sharing the GPU (`--map-by ppr:1:package:pe=18`, 20 % of the
+  device memory each): kinds 3, 4, 5 and 10 with every variant they
+  implement, adaptive dense and TLR, and the TRMM with 0x80, 0x8 and 0x10
+  plus `--accumulation_fp32` all pass `--check`; the refused values exit 1
+  with the message.
+- Found: a static FP16 or FP8 band with low-rank tiles fails on GPUs in kinds
+  1 and 5 (segfault in cuBLAS, or residual 59), also with 0.1.0's code;
+  FP64 allocation does not avoid it, adaptive decisions do. Refused before
+  the factorization (section 7, item 7); CTest case
+  `gpu_tlr_hp_band_refused`.
+- AddressSanitizer build: CTest 27 / 27 (CPU). CTest 27 / 27 (CPU) and
+  46 / 46 (CUDA); the validation matrix identical to the third pass; the HIP
+  tree builds.
+
+@@ROUND3@@
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -644,6 +694,7 @@ codes, residuals and GEMM precision counts; the HIP tree builds.
 | Fourth pass: build scripts (section 5.8) | done; CUDA default architectures and kind-3 guard messages fixed |
 | Fifth pass: macros and data structures (section 5.9) | done; unused names removed, switches settable, two climate debug paths fixed |
 | Sixth pass: external user, usability and performance (section 5.11) | done; `--nruns` crash, help defaults, summary line fixed; notes for three performance traps |
+| Seventh pass: GPU GEMM variants and three rounds of checks (section 5.12) | done; `--tensor_gemm_hp`/`_sp`, five wrong-result or crash paths closed; static FP16 band with low-rank tiles refused on GPUs (cause open, section 7) |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
@@ -671,6 +722,11 @@ codes, residuals and GEMM precision counts; the HIP tree builds.
    band of 1, would change the results of existing command lines.
    **Decided (2026-11-08): keep both defaults; the notes and the corrected
    `--help` are the change for 0.2.0.**
+7. **Static FP16 band with low-rank tiles on GPUs** (section 5.12): kinds 1
+   and 5 segfault in cuBLAS or return a wrong result, as 0.1.0 did; the
+   cause is not established, and the layout is now refused before the
+   factorization. Supporting it needs that cause found; adaptive decisions
+   with FP16 tiles and an FP32 band are not affected.
 
 ## 8. Remaining and future work
 
@@ -679,7 +735,8 @@ matrices, `matrix_uncompress` flows), P2-9 (one JDF for the integer
 conversions), P2-12 (statistics communicator hygiene), P3-1 to P3-3, the
 remaining parts of P1-6, P1-11, P2-5, P2-7, P2-8. The project's own `TODOs`
 backlog (API, Python/Julia bindings, merging the potrf JDFs, hcore removal,
-tensor_gemm redesign) was out of scope by request; item 1 (merge the
+tensor_gemm redesign) was out of scope by request; item 12 (tensor_gemm)
+was done on request in the seventh pass (section 5.12), item 1 (merge the
 tile/LAPACK conversions) was done on request in the second pass, and item 10
 (external users) partly (section 5.6).
 

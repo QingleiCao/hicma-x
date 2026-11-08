@@ -163,3 +163,8 @@ after the library changes.
   missing revision, two zero exit codes; notes for `--gpus 0` with visible
   GPUs, fully dense TLR kinds, and launcher bindings. See
   `release-readiness.md` section 5.11.
+- 2026-11-08 (seventh pass, on request): `--tensor_gemm` redesigned
+  (`--tensor_gemm_hp`, `--tensor_gemm_sp`, `TODOs` item 12) after wrong
+  results and crashes with several masks; an independent review and rounds
+  of checks closed five more paths; a static FP16 band with low-rank tiles
+  is refused on GPUs (cause open). See `release-readiness.md` section 5.12.

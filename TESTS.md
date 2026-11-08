@@ -145,8 +145,14 @@ CUDA build; see `BUILD.md`.
 - Kinds 1 to 4 have CUDA bodies only; on HIP they run on the CPU (`--gpus 0`).
 - `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the TRMM,
   not for kinds 8 to 10, and not together with FP8 GEMMs.
-- `--tensor_gemm 0x80` (FP16 C, FP32 accumulation) is implemented in the TRMM
-  only.
+- The GPU GEMM variants other than the default are not implemented
+  everywhere ("GPU GEMM variants" below); the drivers refuse the others at
+  start-up.
+- On GPUs, a static FP16 or FP8 band (`--band_dense_sp` < `--band_dense`)
+  together with low-rank tiles is refused before the factorization: in kinds
+  1 and 5 it crashed (in cuBLAS, or on NaNs in HCORE) or gave a wrong result,
+  with 0.1.0's code as well; the cause is not established. The same layouts
+  work on the CPU, with an FP32 band, and with `--adaptive_decision`.
 - `--datatype_convert 2` needs GPUs.
 - On CPUs other than the A64FX (Fugaku), FP16 tiles are emulated: they model
   the accuracy of half precision, without a speed-up.
@@ -193,6 +199,31 @@ CUDA build; see `BUILD.md`.
 For kinds 0, 1, 5, 6 and 7 the STARS-H kernel places `--adddiag` on the
 diagonal itself; for the others HiCMA-X adds it after generation. Either way
 the shift is applied once and the reference matrix of `--check` carries it too.
+
+## GPU GEMM variants (`--tensor_gemm_hp`, `--tensor_gemm_sp`)
+
+`--tensor_gemm_hp` chooses how the GPU computes the GEMMs of FP16 tiles, and
+`--tensor_gemm_sp 0x4` runs those of FP32 tiles in TF32 (default 0x2, FP32).
+`--tensor_gemm`, the 0.1.0 option, sets both in one value: one FP16 variant
+plus 0x4 for TF32; its 0x1 and 0x2 change nothing, so the default `0xb`
+means 0x8 in FP32. The two new options override its parts. Values with no
+FP16 variant or several (`--tensor_gemm 0x3`, `0x18`), and variants a path
+does not implement, are refused at start-up.
+
+| `--tensor_gemm_hp` | A, B | C | Compute | Implemented in |
+|---|---|---|---|---|
+| 0x8 (default) | FP16 | FP32 | FP32 | everywhere |
+| 0x10 | FP16 | FP16 | FP16 | every Cholesky kind, not with `--adaptive_decision_runtime`; the TRMM (same as 0x8 there) |
+| 0x20 | BF16 | FP32 | FP32 | dense layout (`--band_dense` ≥ NT), kinds other than 3, not with `--datatype_convert 2` or `--adaptive_decision_runtime` |
+| 0x40 | BF16 | BF16 | FP32 | as 0x20 |
+| 0x80 | FP16 | FP16 | FP32 | the TRMM only |
+| `--tensor_gemm_sp 0x4` | FP32 GEMMs in TF32 | | | kinds 1, 2, 4, 5, 8, 9, 10; ignored in kind 3, with `--adaptive_decision_runtime`, in the TRMM and on HIP |
+
+The TRMM keeps C in FP32 with `--accumulation_fp32` and in FP16 otherwise,
+and computes in FP16 except with 0x80. Measured on one A100 (kind 5, N=8192,
+NB=1024, FP64/FP32/FP16 bands of 2/2/4 tiles), ||LL^T-A||/||A||: 8.5e-7 with
+0x8, 2.3e-5 with 0x10, 6.7e-6 with 0x20, 1.0e-4 with 0x40; an FP64/FP32 band
+of 2/6 tiles gives 5.1e-8 in FP32 and 5.1e-6 with TF32.
 
 ## Options
 
@@ -252,7 +283,9 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--radius` | double | Radius of influential nodes |
 | `--order` | int | No, Morton, or Hilbert ordering (0, 1, or 2, respectively) |
 | `--density` | double | Density of sphere packing for rbf application. Use -1 for random distribution |
-| `--tensor_gemm` | int | Bitmask of GEMM compute modes: 0x1=FP64, 0x2=FP32, 0x4=TF32, 0x8=TF16 A16_B16_C32_OP32, 0x10=TF16 A16_B16_C16_OP16, 0x20=BF16 A16_B16_C32_OP32, 0x40=BF16 A16_B16_C16_OP16, 0x80=TF16 A16_B16_C16_OP32 |
+| `--tensor_gemm_hp` | int | GPU GEMMs of the FP16 tiles, one of: 0x8=FP16 A and B, FP32 C and compute (default); 0x10=FP16 A, B, C and compute; 0x20=BF16 A and B, FP32 C and compute; 0x40=BF16 A, B and C, FP32 compute; 0x80=FP16 A, B and C, FP32 compute (TRMM only) |
+| `--tensor_gemm_sp` | int | GPU GEMMs of the FP32 tiles: 0x2=FP32 (default), 0x4=TF32 |
+| `--tensor_gemm` | int | Both in one value (0.1.0): a --tensor_gemm_hp variant, plus 0x4 for TF32; 0x1 and 0x2 are accepted and ignored (default: 0xb). --tensor_gemm_hp and --tensor_gemm_sp override its parts |
 | `--datatype_convert` | int | Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive |
 | `--band_size_termination` | double | Band size auto-tuning termination on GPU, default 3.0 |
 | `--left_looking` | int | Modified left-looking Cholesky (row) |

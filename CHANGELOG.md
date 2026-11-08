@@ -247,6 +247,39 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - `.gitignore` covers build trees, logs and editor state; LICENSE placeholder
   removed.
 
+### GPU GEMM variants (`--tensor_gemm`)
+
+- The option was a bitmask of mutually exclusive choices that each GEMM body
+  read bit by bit, unchecked. On a GPU: no FP16 variant (`0x3`) or two
+  (`0x18`) gave wrong results in kind 3 (residual 43) and aborted kind 5
+  mid-run; BF16 gave wrong results in kind 3; with `--adaptive_decision`
+  the option was ignored, and with `0x10` in a TLR run the dense and the
+  low-rank GEMMs of one tile disagreed on the type of C (NaNs, then a
+  crash); `0x80` in the Cholesky exited 0 without factorizing.
+- `--tensor_gemm_hp` names the variant of the FP16 tiles and
+  `--tensor_gemm_sp` FP32 or TF32 for the FP32 tiles (`TODOs` item 12);
+  `--tensor_gemm` remains the combined form (one FP16 variant, plus 0x4 for
+  TF32; 0x1 and 0x2 accepted, no effect), and the new options override its
+  parts. `hicma_parsec_init` refuses malformed values and the variants a
+  path does not implement; the GEMM bodies derive operand, C and compute
+  types from the one variant (`HICMA_FP16_GEMM`); the adaptive decisions use
+  it and TF32. The default computes as before (validation matrix identical).
+- An independent review of the change found more paths that disagreed or
+  were unchecked, now handled: BF16 with `--datatype_convert 2` read the
+  FP16 tiles it sends as BF16 (residual 84); the TRMM drivers skipped the
+  value check, so `--tensor_gemm_hp 0x80` was ignored there; the low-rank
+  GEMMs now take the variant of their C tile from `decisions_gemm_gpu`, as
+  the dense GEMMs do, and keep an FP8 C in FP32; 0x10 is refused when a
+  low-rank tile has rank 0 (its skipped update would skip C's conversion);
+  kind 10 accepts every variant unless the decisions are made at run time.
+- On GPUs, a static FP16 or FP8 band with low-rank tiles is refused before
+  the factorization: in kinds 1 and 5 it segfaulted (in cuBLAS) or gave a
+  wrong result (residual 59), also with 0.1.0's code; the cause is not
+  established (`docs/release-readiness.md`, section 7).
+- New CTest cases: BF16 with FP32 and with BF16 C, TF32, adaptive TLR with
+  FP16 C, the refused FP16 band with low-rank tiles (GPU), and the start-up
+  refusal of `0x18` (CPU).
+
 ### Usability (external-user pass)
 
 - `--nruns n` crashed in TLR runs: run 2 factorized run 1's factor, whose

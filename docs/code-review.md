@@ -35,7 +35,7 @@ Out of scope by instruction: the `TODOs` backlog (merging the Cholesky JDFs, mer
 the `Lapack_to_Tile`/`Tile_to_Lapack` families, hiding the tile size, API redesign,
 Python/Julia bindings, removing hcore, recursive-device fixes, merging the GENOMICS
 macros, making `hicma_parsec_init` usable for external users, restructuring the
-parameter struct, redesigning `tensor_gemm`, memory register vs. allocate). Also kept
+parameter struct, redesigning `tensor_gemm` (done later on request, section 11), memory register vs. allocate). Also kept
 by maintainer decision: separate CUDA and HIP `BODY` sections in the JDFs, the single
 runtime-decision GPU GEMM function, and static (pre-factorization) decisions in kinds
 8 and 9. These are recorded in section 6 where they came up.
@@ -1161,7 +1161,7 @@ CHECKSOLVE && GENOMICS` vs `#if PREDICTION || CHECKSOLVE`, the climate emulator'
 |---|---|
 | Merging the Cholesky JDFs (70-85% identical) and the HCORE two-step GEMM block pasted 20× across the TLR JDFs | TODO backlog; task-graph rewrite |
 | Merging the `Lapack_to_Tile`/`Tile_to_Lapack` family (9 JDFs) | TODO backlog |
-| GENOMICS macro consolidation, params restructure, public/internal header split, API redesign, hcore removal, Python/Julia, tensor_gemm redesign | TODO backlog |
+| GENOMICS macro consolidation, params restructure, public/internal header split, API redesign, hcore removal, Python/Julia | TODO backlog (the tensor_gemm redesign was done on request, section 11) |
 | Single-source CUDA/HIP kernels (D12) | cannot be validated on AMD hardware here; documented with the drift table |
 | CPU kernel de-duplication (D13), CPU/GPU runtime policy alignment (D6) | body rewrites with numerical consequences; need GPU and CPU result comparisons at scale |
 | TERMINATE/sink-task races (B4, C2) | never observed; task-graph change in nine JDFs with a `PARSEC_DEBUG_PARANOID` validation recipe |
@@ -1415,3 +1415,71 @@ Checked and fine: the dense FP64 Cholesky matches DPLASMA on CPU and is
 faster on the A100; RelWithDebInfo and Release builds run at the same speed;
 only the sequential MKL reaches the binaries although a submodule's BLAS
 search also finds the threaded one; the submodules clone anonymously.
+
+## 11. Seventh pass: the GPU GEMM variants, `--tensor_gemm` (2026-11-08, on request)
+
+**Diagnosis.** `--tensor_gemm` encoded mutually exclusive choices (the GEMM
+variant of FP16 tiles) as independent bits, with two bits (0x1, 0x2) that
+did nothing. Nothing checked the value, and each GEMM body read the bits on
+its own: the low-rank GEMMs and the kind-3 band kernel decided "convert C to
+FP16", "type of C" and "compute type" from three different bits; the dense
+FP16 GEMM read a per-tile copy (`decisions_gemm_gpu`) that the adaptive
+decisions filled with a hard-coded 0x8 and no TF32. Measured on the A100:
+
+| Value | Kind 3 | Kind 5 |
+|---|---|---|
+| `0x3` (no variant), `0x18` (two) | residual 43, exit 1 with `--check`, silent without | abort mid-run |
+| `0x20`, `0x40` (BF16) | residual 43 | correct (BF16 implemented there) |
+| `0x10` with `--adaptive_decision` and low-rank tiles | | NaNs in HCORE, segfault: the low-rank GEMMs kept C in FP16, the dense GEMMs of the same tile read it as FP32 |
+| `0x80` | | exited 0 without factorizing (the return value of `hicma_parsec_potrf` was ignored) |
+
+**Design** (the direction of `TODOs` item 12):
+
+- `--tensor_gemm_hp` names the variant of the FP16 tiles, `--tensor_gemm_sp`
+  FP32 or TF32 for the FP32 tiles. `--tensor_gemm` stays as the combined form
+  (0.1.0's values, the `R-LO` column); the new options override its parts.
+- One check in `hicma_parsec_init` refuses malformed values and every
+  variant a path does not implement; `hicma_parsec_potrf` refuses 0x80 and
+  `hicma_parsec_trmm_New` BF16, both like other invalid parameters.
+- The GEMM bodies take operand, C and compute types from one variant,
+  `HICMA_FP16_GEMM(params)`; the static and both adaptive decisions write that
+  variant and TF32 into `decisions_gemm_gpu`.
+- The default computes as before: the validation matrix is identical.
+
+**Independent review** of the change (a separate agent given the code and
+the contract, not these conclusions), confirmed by runs where possible:
+
+1. BF16 with `--datatype_convert 2`: the FP16 tiles it sends were read as
+   BF16, residual 84. Refused.
+2. The TRMM drivers call `parse_arguments` and `hicma_parsec_params_init`
+   but not `hicma_parsec_params_check`, so they skipped the merge and the
+   check: `--tensor_gemm_hp 0x80` was ignored by the one path implementing
+   it. The merge and the value check moved into `parse_arguments`; the
+   rules that depend on the kind stay in `hicma_parsec_params_check`.
+3. FP8 C (kind 8, GPUs of compute capability 8.9 or more) under 0x10: the
+   low-rank GEMMs kept it in FP16, the FP8 GEMMs read it as FP32. The
+   low-rank GEMMs now keep only an FP16 C in FP16. Not run here (A100).
+4. `ENABLE_TF16_A16_B16_C16_OP16=1` gives some tiles 0x10 per tile while the
+   low-rank GEMMs read the global variant. They now read the C tile's
+   `decisions_gemm_gpu` like the dense GEMMs.
+5. A rank-0 low-rank operand skips its update, and with it the conversion of
+   C to FP16 or back under 0x10. Refused after compression when a low-rank
+   tile has rank 0.
+6. Kind 10 without `--adaptive_decision_runtime` uses the dense GEMMs and
+   accepts every variant (the rule was too strict). Error messages name the
+   option that is wrong.
+
+**Found in round 2** (two ranks): a static FP16 or FP8 band with low-rank
+tiles fails on the GPU in kinds 1 and 5, with every variant and with 0.1.0's
+code: a segfault in cuBLAS (`cublasLtHSHMatmulAlgoGetHeuristic`) followed by
+NaNs in HCORE's QR, or a wrong result (residual 59). The same layouts pass on
+the CPU, with an FP32 band, and with `--adaptive_decision` (FP16 tiles
+included), and FP64 allocation (`--adaptive_memory 1`) does not help. The
+cause is not established; `hicma_parsec_matrix_pre_analysis` refuses the
+layout on GPUs (release-readiness section 7).
+
+**Not changed**: the `MASK_*` names and values (installed header); the TRMM's
+numerics (FP16 compute for FP16 C whatever the variant, except 0x80);
+`ENABLE_TF16_A16_B16_C16_OP16`; the legacy compute-type argument of the
+kind-3 band kernel's `cublasGemmEx`; TF32 stays ignored where the FP32 GEMMs
+do not take it (kind 3, run-time decisions, the TRMM, HIP).
