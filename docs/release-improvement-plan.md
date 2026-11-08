@@ -143,4 +143,7 @@ after the library changes.
   found that CUDA builds without an explicit architecture compiled for sm_52
   only (fixed) and that the kind-3 guards made the JDF compiler print fatal
   errors (fixed). See `release-readiness.md` section 5.8.
+- 2026-11-08 (on request): GEMM reordering (`reorder_gemm.jdf`,
+  `hicma_parsec_reorder_gemm`) restored for future use, not wired in; its
+  launch compiles, its sort and pool leak are fixed.
 

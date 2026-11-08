@@ -22,6 +22,8 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `8d9777d` Keep GEMM reordering for future use
+- `a4dacb1` Documentation for the build-script pass
 - `f448fd3` Rewrite the build scripts for the single-configure build
 - `7841d07` Kind 3: test the sender conversion through a JDF global
 - `2de52d2` Apply the documented default CUDA architectures
@@ -488,6 +490,16 @@ own modules need.
   code was right. A hidden JDF global replaces it. The CTest kind-3 cases pass,
   and so do 2 ranks with `--datatype_convert` 0, 1 and 2, with and without
   the GPU.
+
+**GEMM reordering kept (on request).** `reorder_gemm.jdf` and
+`hicma_parsec_reorder_gemm`, removed as dead code in `bac0083`, are back and
+still not called. Their launch now compiles, the sort compares the keys it
+moves, and the work pool is freed. A scratch driver ran it after the
+pre-analysis in 19 configurations (1, 2 and 4 ranks; reorder 1, 2, 4; band
+1 and 3; CPU and CUDA trees). In each, all 741 order chains were complete
+and sorted, with the same counts on every process count. CTest: 25 / 25
+(CPU) and 39 / 39 (CUDA). Wiring it into the Cholesky is future work
+(`reorder_gemm.jdf` lists the steps).
 
 ## 6. Release checklist
 
