@@ -458,6 +458,24 @@ void double2half_GPU( int nrows, int ncols,
                 void *_H, int ldh,
                 cudaStream_t stream );
 
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+/**
+ * @brief H = half(scale * F), FP64 or FP32 F (HIP only)
+ *
+ * For the FP16 GEMMs on gfx90a, whose matrix instructions flush FP16
+ * subnormal inputs to zero: scale is a power of two that keeps the operand in
+ * the FP16 normal range, and the caller divides the GEMM's alpha by it.
+ */
+void double2half_scaled_GPU( int nrows, int ncols,
+                const double *F, int ldf,
+                void *H, int ldh, float scale,
+                cudaStream_t stream );
+void float2half_scaled_GPU( int nrows, int ncols,
+                const float *F, int ldf,
+                void *H, int ldh, float scale,
+                cudaStream_t stream );
+#endif
+
 /**
  * @brief Convert double precision to half precision using stochastic rounding on GPU
  *

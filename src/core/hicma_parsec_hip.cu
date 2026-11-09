@@ -1241,6 +1241,47 @@ void double2half_GPU( int nrows, int ncols,
     double2half_GPU_kernel<<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf, H, ldh);
 }
 
+/****************************************************************************************************/
+
+/*
+ * H = half(scale * F) for FP64 or FP32 F. The FP16 matrix instructions of
+ * gfx90a flush FP16 subnormal inputs (|x| < 6.1e-5) to zero; callers pass a
+ * power of two (exact) that keeps the operand in the normal range and divide
+ * the GEMM's alpha by it.
+ */
+template <typename T>
+__global__ void to_half_scaled_GPU_kernel( int nrows, int ncols,
+                const T *F, int ldf, __half *H, int ldh, double scale ) {
+    const int idx = hipBlockIdx_x * hipBlockDim_x + hipThreadIdx_x;
+    const int idy = hipBlockIdx_y * hipBlockDim_y + hipThreadIdx_y;
+    if( idx >= nrows || idy >= ncols ) {
+        return;
+    }
+    H[idy * ldh + idx] = __float2half_rn( (float)((double)F[idy * ldf + idx] * scale) );
+}
+
+extern "C"
+void double2half_scaled_GPU( int nrows, int ncols,
+                const double *F, int ldf,
+                void *H, int ldh, float scale,
+                hipStream_t stream ) {
+    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+    dim3 dimGrid((nrows + CHUNKSIZE - 1) / CHUNKSIZE, (ncols + CHUNKSIZE - 1) / CHUNKSIZE);
+    to_half_scaled_GPU_kernel<double><<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf,
+                                                                        (__half *)H, ldh, (double)scale);
+}
+
+extern "C"
+void float2half_scaled_GPU( int nrows, int ncols,
+                const float *F, int ldf,
+                void *H, int ldh, float scale,
+                hipStream_t stream ) {
+    dim3 dimBlock(CHUNKSIZE, CHUNKSIZE);
+    dim3 dimGrid((nrows + CHUNKSIZE - 1) / CHUNKSIZE, (ncols + CHUNKSIZE - 1) / CHUNKSIZE);
+    to_half_scaled_GPU_kernel<float><<<dimGrid, dimBlock, 0, stream>>>(nrows, ncols, F, ldf,
+                                                                       (__half *)H, ldh, (double)scale);
+}
+
 
 /****************************************************************************************************/
 

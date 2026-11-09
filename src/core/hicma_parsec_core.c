@@ -72,6 +72,33 @@ static void hicma_gpu_read_norm_meta(parsec_potrf_stream_workspace_t *ws,
     if( NULL != A_norm ) *A_meta = host[0];
     if( NULL != B_norm ) *B_meta = host[1];
 }
+
+/* FP16 operands of the run-time-decision GEMM. The decision picks FP16 when
+ * ||A||*||B|| is small, so most entries of A and B can be FP16 subnormals
+ * (|x| < 6.1e-5). NVIDIA tensor cores keep those, but the FP16 matrix
+ * instructions of gfx90a flush them to zero, which lost such updates entirely
+ * (kind 10 residual 1.3e-6 instead of 4e-9 on an MI210). On HIP, scale each
+ * operand by the power of two that maps its Frobenius norm, a bound on every
+ * entry, to 2^14: exact, no overflow, and entries down to about 2^-28 of the
+ * norm stay normal; the GEMM's alpha is divided by the two scales. */
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+static float hicma_fp16_operand_scale(double fnorm)
+{
+    if( !(fnorm > 0.0) || !isfinite(fnorm) ) {
+        return 1.0f;
+    }
+    /* clamp in double: 16384/fnorm is +inf for fnorm below ~1e-304 */
+    double e = floor(log2(16384.0 / fnorm));
+    e = !(e < 60.0) ? 60.0 : (e < -60.0 ? -60.0 : e);
+    return ldexpf(1.0f, (int)e);
+}
+#define HICMA_D2H_SCALED(m, n, F, ldf, H, ldh, s, st) double2half_scaled_GPU(m, n, F, ldf, H, ldh, s, st)
+#define HICMA_S2H_SCALED(m, n, F, ldf, H, ldh, s, st) float2half_scaled_GPU(m, n, F, ldf, H, ldh, s, st)
+#else
+#define hicma_fp16_operand_scale(fnorm) 1.0f
+#define HICMA_D2H_SCALED(m, n, F, ldf, H, ldh, s, st) double2half_GPU(m, n, F, ldf, H, ldh, st)
+#define HICMA_S2H_SCALED(m, n, F, ldf, H, ldh, s, st) float2half_GPU(m, n, F, ldf, H, ldh, st)
+#endif
 #endif
 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
@@ -3966,15 +3993,19 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         }
 
     } else if( DENSE_HP == new_decision ){
+        /* 1 except on HIP, see hicma_fp16_operand_scale */
+        const float scale_A = hicma_fp16_operand_scale(Anorm);
+        const float scale_B = hicma_fp16_operand_scale(Bnorm);
+        const float unscale = 1.0f / (scale_A * scale_B);
 
         /* Convert datatype, A */
         if( DENSE_DP == Aprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2half_GPU( tempmm, tempnn, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_D2H_SCALED( tempmm, tempnn, A, descA->mb, A_h, descA->mb, scale_A, cuda_stream->cuda_stream );
             A_use = A_h;
         } else if( DENSE_SP == Aprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU( tempmm, tempnn, A, descA->mb, A_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_S2H_SCALED( tempmm, tempnn, A, descA->mb, A_h, descA->mb, scale_A, cuda_stream->cuda_stream );
             A_use = A_h;
         } else {
             fprintf(stderr, "Precision A is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Aprecision);
@@ -3984,11 +4015,11 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
         /* Convert datatype, B */
         if( DENSE_DP == Bprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            double2half_GPU( tempmm, tempnn, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_D2H_SCALED( tempmm, tempnn, B, descA->mb, B_h, descA->mb, scale_B, cuda_stream->cuda_stream );
             B_use = B_h;
         } else if( DENSE_SP == Bprecision ) {
             hicma_parsec_count_datatype_conversion(params_tlr, counter_id);
-            float2half_GPU( tempmm, tempnn, B, descA->mb, B_h, descA->mb, cuda_stream->cuda_stream );
+            HICMA_S2H_SCALED( tempmm, tempnn, B, descA->mb, B_h, descA->mb, scale_B, cuda_stream->cuda_stream );
             B_use = B_h;
         } else {
             fprintf(stderr, "Precision B is not correct: %d %d %d (%u)!\n", m, n, k, (unsigned)Bprecision);
@@ -3997,7 +4028,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 
         /* HGEMM */
         if( DENSE_DP == params_tlr->decisions[idx_C] ) {
-            float alpha = 1.0f, beta = 0.0f;
+            float alpha = unscale, beta = 0.0f;
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     tempmm, tempnn, descA->mb,
                     &alpha, A_use, CUDA_R_16F, ldam,
@@ -4011,7 +4042,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu( void *thi
 
             sub_float_from_double_GPU(tempmm, tempnn, C_s, C, cuda_stream->cuda_stream);
         } else {
-            float alpha = -1.0f, beta = 1.0f;
+            float alpha = -unscale, beta = 1.0f;
             status = cublasGemmEx(handle, CUBLAS_OP_N, CUBLAS_OP_T,
                     tempmm, tempnn, descA->mb,
                     &alpha, A_use, CUDA_R_16F, ldam,
