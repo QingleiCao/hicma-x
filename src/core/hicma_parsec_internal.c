@@ -1139,7 +1139,12 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
             }
             if( params->cores * local_ranks <= node_cores / 2 )
                 fprintf(stderr, YEL "The %d process(es) on this node use %d of its %d cores: the launcher's binding limits "
-                        "the worker threads (Open MPI: --bind-to none, or --map-by ppr:<processes per socket>:package:pe=<cores per process>; "
+                        "the worker threads (Open MPI: --bind-to none for one process per node, else --map-by "
+                        "ppr:<processes per socket>:package:pe=<cores per process>; Slurm: --cpus-per-task)\n" RESET,
+                        local_ranks, params->cores * local_ranks, node_cores);
+            else if( node_cores > 0 && params->cores * local_ranks > node_cores )
+                fprintf(stderr, YEL "The %d processes on this node start %d worker threads for its %d cores: give each process "
+                        "its share (Open MPI: --map-by ppr:<processes per socket>:package:pe=<cores per process>; "
                         "Slurm: --cpus-per-task)\n" RESET, local_ranks, params->cores * local_ranks, node_cores);
         }
     }
@@ -1196,8 +1201,14 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
     }
 
 #endif
-    if(params->verbose > 1 && nb_gpus_check !=  params->gpus) {
-        fprintf(stderr, RED "Rank %d: Update nb_gpus from input %d to real %d\n" RESET, params->rank, params->gpus, hicma_parsec_min(nb_gpus_check, params->gpus));
+    /* Fewer usable GPUs than --gpus asks for: say so (the run continues with them) */
+    if( nb_gpus_check < params->gpus && (0 == params->rank || params->verbose > 1) ) {
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        fprintf(stderr, YEL "Rank %d: --gpus %d, but %d GPU(s) are usable: using %d\n" RESET,
+                params->rank, params->gpus, nb_gpus_check, nb_gpus_check);
+#else
+        fprintf(stderr, YEL "--gpus %d, but this build has no GPU support: running on the CPU\n" RESET, params->gpus);
+#endif
     }
     params->gpus = hicma_parsec_min(nb_gpus_check, params->gpus);
     /* The precision decisions and the collectives in hicma_parsec_potrf depend
