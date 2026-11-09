@@ -244,7 +244,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         // PaRSEC specific options
         {"cores", "Number of compute threads per process (default: number of physical cores)", 0, &params->cores},
         {"gpus", "Number of GPUs per process (default: 0, CPU only)", 0, &params->gpus},
-        {"P", "Rows (P) in the PxQ process grid (default: NP)", 0, &params->P},
+        {"P", "Rows (P) in the PxQ process grid (default: the squarest grid, P >= Q)", 0, &params->P},
         {"Q", "Columns (Q) in the PxQ process grid (default: NP/P)", 0, &params->Q},
         {"grid_rows", "Same as --P", 0, &params->P},
         {"grid_cols", "Same as --Q", 0, &params->Q},

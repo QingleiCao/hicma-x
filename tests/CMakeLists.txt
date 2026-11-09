@@ -200,5 +200,12 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
                        --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256 --check_tol 3e-4)
         hicma_add_test(gpu_tlr_mp_hp_band    1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --kind_of_cholesky 1
                        --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256 --check_tol 3e-4)
+        # Kind 8 with an FP8 band (FP16 where the GPUs lack FP8) and low-rank
+        # tiles: FP8 operands, stored as FP32, were read as FP64 by the
+        # low-rank GEMMs (residual 1.5e-2 on an H100, 1.6e-5 fixed). --adddiag
+        # keeps the matrix positive definite under FP8 so close to the diagonal
+        hicma_add_test(gpu_tlr_fp8_band      1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --kind_of_cholesky 8
+                       --band_dense 6 --band_dense_dp 1 --band_dense_sp 2 --band_dense_hp 3 --adddiag 100 --fixedacc 1e-4 --maxrank 256
+                       --check_tol 3e-4)
     endif()
 endif()

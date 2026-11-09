@@ -72,6 +72,17 @@ run() {
     fi
 }
 
+# A case that must be refused: passes when the output contains the message
+run_refused() {
+    local name=$1 message=$2; shift 2
+    print_status "$name (refused): $*"
+    if "$@" 2>&1 | grep -q "$message"; then
+        print_success "$name"; passed=$((passed+1))
+    else
+        print_error "$name (not refused)"; failed=$((failed+1))
+    fi
+}
+
 P=./tests/testing_potrf_tlr
 T=./tests/testing_trmm_mp
 COMMON="--kind_of_problem 2 --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --check 1"
@@ -106,6 +117,7 @@ run lapack_tile_convert     1 ./tests/testing_lapack_tile
 run lapack_tile_convert_np2 2 ./tests/testing_lapack_tile
 run matrix_sum              1 ./tests/testing_matrix_sum
 run matrix_sum_np2          2 ./tests/testing_matrix_sum
+run_refused tensor_gemm_invalid "give exactly one FP16 GEMM variant" $P $COMMON --tensor_gemm 0x18
 
 # 3-D RBF mesh (needs the SARS-CoV-2 mesh shipped with stars-h)
 if [ -f "$MESH" ]; then
@@ -131,6 +143,14 @@ if [ "$GPUS" -gt 0 ]; then
     run gpu_band_dp_sp_hp_sender 1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-5
     run gpu_band_sp_hp          1 $P $G --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5
     run gpu_band_hp_fp16acc     1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4
+    run gpu_dense_bf16          1 $P $G --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm_hp 0x20 --check_tol 1e-4
+    run gpu_dense_bf16_c16      1 $P $G --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm 0x40 --check_tol 1e-3
+    run gpu_dense_tf32          1 $P $G --band_dense_dp 2 --band_dense_sp 8 --tensor_gemm_sp 0x4 --check_tol 1e-4
+    L="--kind_of_problem 2 --N 8192 --NB 512 --gpus $GPUS --check 1 --fixedacc 1e-4 --maxrank 256"
+    run gpu_tlr_adaptive_fp16acc 1 $P $L --band_dense 4 --adaptive_decision 1 --tensor_gemm_hp 0x10 --check_tol 1e-4
+    run gpu_tlr_hp_band         1 $P $L --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --check_tol 3e-4
+    run gpu_tlr_mp_hp_band      1 $P $L --kind_of_cholesky 1 --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --check_tol 3e-4
+    run gpu_tlr_fp8_band        1 $P $L --kind_of_cholesky 8 --band_dense 6 --band_dense_dp 1 --band_dense_sp 2 --band_dense_hp 3 --adddiag 100 --check_tol 3e-4
     else
     print_warning "GPU cases of kinds 1-4 (CUDA bodies only, refused on HIP)"; skipped=$((skipped+1))
     fi
