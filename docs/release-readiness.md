@@ -758,7 +758,14 @@ synchronization or allocation in per-task GPU code; on the A100, lookahead
 (0, 1, 2) and tile size (1024, 2048) moved the dense time within the noise
 (up to 10 % between repeats at a load average of 15), so no default changed.
 A documentation audit against the code found 21 statements to fix; 20 were
-confirmed and corrected (section 12 of `code-review.md`).
+confirmed and corrected (section 12 of `code-review.md`). A fresh clone of
+`c2aef96` (MKL, CUDA, README quick start) passes CTest 48 / 48, installs, and
+its consumer drivers pass with `LD_LIBRARY_PATH` unset. Against OpenBLAS
+0.3.28 on the same node, `-DBLA_VENDOR=OpenBLAS` stopped the configure step
+in STARS-H's find module, which names it `Open`; with the translation added
+to the top-level CMake, every component links OpenBLAS only and CTest passes
+48 / 48 (CUDA) with `OPENBLAS_NUM_THREADS=1`, the thread-safety check
+included.
 
 ## 6. Release checklist
 

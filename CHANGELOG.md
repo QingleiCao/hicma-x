@@ -313,6 +313,11 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - `README.md` has a quick start; `scripts/build_release.sh --help` states
   its default build type (RelWithDebInfo).
 
+- `-DBLA_VENDOR=OpenBLAS` stopped the configure step in STARS-H, whose
+  find module names the vendor `Open`; the top-level CMake translates it for
+  STARS-H and HCORE. Checked with OpenBLAS 0.3.28 on a node that also has
+  MKL: every component links OpenBLAS, CTest 48 / 48.
+
 ### Documentation
 
 - `TESTS.md` regenerated from the option table; `BUILD.md`, `README.md` and

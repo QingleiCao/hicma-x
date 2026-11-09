@@ -73,7 +73,14 @@ ctest --test-dir build -L hicma -LE gpu --output-on-failure        # the CPU tes
 The configure step finds MPI and the BLAS/LAPACKE stack (DPLASMA's
 `FindLAPACKE`: set `LAPACKE_ROOT` or `BLA_VENDOR` to choose one) and records
 their directories in the binaries, so the drivers start without
-`LD_LIBRARY_PATH` changes.
+`LD_LIBRARY_PATH` changes. To take OpenBLAS where MKL is also installed,
+give the vendor and its directory to every find module (STARS-H and HCORE
+use their own, which take the four hints):
+
+```bash
+cmake -S . -B build -G Ninja -DBLA_VENDOR=OpenBLAS -DCMAKE_PREFIX_PATH=$OPENBLAS \
+      -DBLAS_DIR=$OPENBLAS -DCBLAS_DIR=$OPENBLAS -DLAPACK_DIR=$OPENBLAS -DLAPACKE_DIR=$OPENBLAS
+```
 If no LAPACKE is available, `scripts/build_hicma_with_lapack.sh` builds the
 reference LAPACK 3.12.1 (BLAS, CBLAS, LAPACK, LAPACKE) in `lapack_build/` and
 HiCMA-X against it. The reference BLAS is slow; prefer OpenBLAS or MKL.
