@@ -195,8 +195,17 @@ if(DEFINED PARSEC_BINARY_DIR AND NOT CMAKE_Fortran_COMPILER_SUPPORTS_F90)
     file(MAKE_DIRECTORY ${PARSEC_BINARY_DIR}/parsec/include/fortran)
 endif()
 
+# STARS-H and HCORE find the BLAS with the ECRC FindBLAS, which names OpenBLAS
+# "Open" where CMake's FindBLAS (DPLASMA above, LAPACKE below) names it
+# "OpenBLAS": translate for them, then return to the user's value
+if(BLA_VENDOR STREQUAL "OpenBLAS")
+    set(BLA_VENDOR Open)
+endif()
 add_subdirectory(stars-h)
 add_subdirectory(hcore)
+if(BLA_VENDOR STREQUAL "Open")
+    unset(BLA_VENDOR)
+endif()
 
 # HCORE's and STARS-H's own CMake files record no link dependency on the
 # LAPACKE, CBLAS and BLAS routines they call. Without it libhcore.so has no
