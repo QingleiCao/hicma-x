@@ -98,6 +98,15 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   the Hamming GPU kernel prototypes match their definitions.
 - Resource leaks: memory-pool structs of every Cholesky taskpool, GPU device
   index arrays, the cuBLASLt/cuSOLVER setup failures now reported.
+- Kind 10 on AMD GPUs: the FP16 matrix instructions of gfx90a (MI200) flush
+  FP16 subnormal inputs (|x| < 6.1e-5) to zero, and the run-time decision picks
+  FP16 for a GEMM exactly when its operands are small, so those updates were
+  lost: residual 1.3e-6 on an MI210 where the A100 gives 1.0e-8, and 2.5e-7
+  against 1.9e-13 on the CPU with `--sigma 1e-4` (`gpu_runtime_decision`
+  and `gpu_runtime_admem` failed). On HIP the FP16 operands of the run-time
+  GEMM are scaled by powers of two from their Frobenius norms and the GEMM's
+  alpha divides the scales out (exact): 1.5e-8 and 9.1e-11. CUDA builds are
+  unchanged.
 
 ### Architecture and maintenance
 
@@ -206,8 +215,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   the prefix's lib dir, the directories of MPI/GSL/hwloc): with RUNPATH
   semantics a library's dependencies are searched with its own path, and the
   installed `libhicma_parsec.so` could not find `libdplasma.so.2` without
-  `LD_LIBRARY_PATH`. A BLAS outside the system directories still needs
-  `LD_LIBRARY_PATH` (CMake does not record the MKL directory).
+  `LD_LIBRARY_PATH`. The BLAS/LAPACKE directories are recorded as well (see
+  above).
 - `HICMA_PARSEC_GENOMICS` option: the genomics drivers are built only when it
   is on (they need a CUDA build: the genomics kernels have no HIP bodies); the
   default build no longer ships binaries that cannot run. The Cholesky CTest
@@ -322,6 +331,52 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   STARS-H and HCORE. Checked with OpenBLAS 0.3.28 on a node that also has
   MKL: every component links OpenBLAS, CTest 48 / 48.
 
+### Frontier pass (HIP on MI210 / MI250X)
+
+- The machine scripts took their first argument as the build directory even
+  when it was a CMake option: `install_icl.sh -DFOO=ON` configured with an
+  empty build directory and dropped the option. A first argument starting
+  with `-` now goes to CMake and the build directory stays the default.
+- `scripts/test_CI.sh` and `scripts/validation_matrix.sh` pass
+  `--oversubscribe` (and `--bind-to none`) only to Open MPI's `mpirun`;
+  MPICH's refuses them.
+- `potrf_autoband_3d` (band auto-tuning, kind 4) is registered with CTest; it
+  ran only in `scripts/test_CI.sh`.
+- A passing check prints its residual and bound (`Check passed: ...`), as a
+  failed one did.
+- `--tensor_gemm_sp 0x4` (TF32) on a HIP build warns that AMD GPUs run those
+  GEMMs in FP32.
+- `--band_size_termination`: the help gave "default 3.0, on GPU"; the default
+  is 0.67 and the value is used on CPUs only (with GPUs the factor comes from
+  the performance model).
+- The installed headers carry `@version 0.2.0` (they said 1.0.0).
+- AMD GPUs flush FP16 subnormals in their FP16 GEMMs (see the kind-10 entry
+  under Correctness). In the adaptive kinds 5, 8 and 9 the FP16 tiles hold
+  small entries, so on an MI210 and an MI250X an adaptive kind-5 run at
+  N=30720 gave 1.0e-5 for `--fixedacc 1e-8`, and `gpu_dense_adaptive` failed
+  now and then (1.9e-6, 2.8e-5). The same tiles in BF16
+  (`--tensor_gemm_hp 0x20`) give 1.2e-8. `--tensor_gemm` keeps choosing and
+  the default stays FP16; a HIP run whose decisions produce FP16 tiles says
+  how many and points to 0x20, and the HIP builds' adaptive GPU tests use it.
+- With a BF16 variant (0x20, 0x40) the adaptive decisions use BF16's epsilon
+  (3.91e-3) instead of FP16's: BF16 tiles chosen with FP16's threshold missed
+  `--fixedacc` by up to 8x. Static bands are unchanged.
+- HIP: every rocBLAS/rocSOLVER handle is set up before the factorization.
+  Their first calls happened inside it: the first dense factorization at
+  N=8192 took 0.52 s on an MI210 and the next ones 0.055 s. Now the first one
+  takes 0.058 s; at N=30720 FP64 matches DPLASMA (0.93 s) and mixed precision
+  is faster than FP64 (adaptive 0.70 s, FP16 band 0.55 s), where it was slower.
+- The message for a GPU handle that cannot be created names
+  `device_hip_memory_use` on HIP.
+- Multi-rank GPU runs under Cray MPICH (Frontier) aborted at the first
+  transfer (`process_vm_readv: Bad address`): PaRSEC sent from GPU memory, and
+  GPU runs allocate host tiles with `hipHostMalloc`, neither of which Cray
+  MPICH reads without `MPICH_GPU_SUPPORT_ENABLED=1` and its GTL library.
+  Without them HiCMA-X keeps remote transfers in host memory and, when it
+  initializes MPI, sets `MPICH_SMP_SINGLE_COPY_MODE=NONE`
+  (`PARSEC_MCA_mpi_gpu_aware` and a user-set mode still win). With GTL and
+  the variable set, two ranks with one MI250X GCD each pass as they are.
+
 ### Documentation
 
 - `TESTS.md` regenerated from the option table; `BUILD.md`, `README.md` and
@@ -330,8 +385,10 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 ### Known limitations (see `docs/release-readiness.md`)
 
 - Cholesky drivers need `N % NB == 0`.
-- Kinds 1 to 4 have no HIP bodies. HIP builds are compiled and their CPU cases
-  run (Frontier, gfx90a); HIP GPU execution is not validated.
+- Kinds 1 to 4 have no HIP bodies. HIP GPU runs were validated on Frontier
+  (MI210, MI250X; `docs/release-readiness.md`, section 5.15).
+- AMD GPUs flush FP16 subnormals in their FP16 GEMMs: use
+  `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the dense layout.
 - `--enable_stochastic_rounding` is not implemented for kinds 8 to 10.
 - The CPU and GPU runtime-decision GEMMs use different storage policies for
   FP16 updates.

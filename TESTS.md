@@ -69,7 +69,8 @@ cd build && HICMA_GPUS=1 ../scripts/test_CI.sh
 `HICMA_CLIMATE_DATA` points the climate emulator case at its input directory
 (skipped when unset), `HICMA_MESH_FILE` at the SARS-CoV-2 mesh (default: the
 copy in `stars-h/`). The two-rank cases use `HICMA_MPIRUN -n 2` (default:
-`mpirun --oversubscribe`, else `srun` inside a Slurm allocation as on Frontier,
+`mpirun --oversubscribe` with Open MPI or plain `mpirun` with another MPI,
+else `srun` inside a Slurm allocation as on Frontier,
 else they are skipped); `HICMA_MPIRUN=skip` runs the single-rank cases only.
 On a HIP build the GPU cases of kinds 1 to 4 are skipped (CUDA bodies only).
 
@@ -144,6 +145,13 @@ CUDA build; see `BUILD.md`.
 - `--kind_of_cholesky 10` (runtime decisions) is selected by
   `--adaptive_decision_runtime 1` and forces a dense band.
 - Kinds 1 to 4 have CUDA bodies only; on HIP they run on the CPU (`--gpus 0`).
+- AMD GPUs (gfx90a) flush FP16 subnormals (|x| < 6.1e-5) to zero in their
+  FP16 GEMMs. Adaptive decisions put small entries in FP16, so on AMD GPUs
+  pass `--tensor_gemm_hp 0x20` (BF16) when every tile is dense: at N=30720 an
+  adaptive kind-5 run gives 1.0e-5 in FP16 and 1.2e-8 in BF16 for
+  `--fixedacc 1e-8`. A HIP run that uses FP16 tiles prints how many. Kind 10
+  scales its FP16 operands on HIP and is not affected; the HIP builds' CTest
+  cases of adaptive kinds 5, 8 and 9 use 0x20.
 - `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the TRMM,
   not for kinds 8 to 10, and not together with FP8 GEMMs.
 - The GPU GEMM variants other than the default are not implemented
@@ -217,7 +225,7 @@ does not implement, are refused before the factorization (most at start-up).
 |---|---|---|---|---|
 | 0x8 (default) | FP16 | FP32 | FP32 | everywhere |
 | 0x10 | FP16 | FP16 | FP16 | every Cholesky kind, not with `--adaptive_decision_runtime`, and on GPUs not when a low-rank tile has rank 0; the TRMM (same as 0x8 there) |
-| 0x20 | BF16 | FP32 | FP32 | dense layout (`--band_dense` ≥ NT), kinds other than 3, not with `--datatype_convert 2` or `--adaptive_decision_runtime` |
+| 0x20 | BF16 | FP32 | FP32 | dense layout (`--band_dense` ≥ NT), kinds other than 3, not with `--datatype_convert 2` or `--adaptive_decision_runtime`; recommended on AMD GPUs; adaptive decisions then use BF16's epsilon |
 | 0x40 | BF16 | BF16 | FP32 | as 0x20 |
 | 0x80 | FP16 | FP16 | FP32 | the TRMM only |
 | `--tensor_gemm_sp 0x4` | FP32 GEMMs in TF32 | | | kinds 1, 2, 4, 5, 8, 9, 10; ignored in kind 3, with `--adaptive_decision_runtime`, in the TRMM and on HIP |
@@ -293,7 +301,7 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--tensor_gemm_sp` | int | GPU GEMMs of the FP32 tiles: 0x2=FP32 (default), 0x4=TF32 |
 | `--tensor_gemm` | int | Both in one value (0.1.0): a --tensor_gemm_hp variant, plus 0x4 for TF32; 0x1 and 0x2 are accepted and ignored (default: 0xb). --tensor_gemm_hp and --tensor_gemm_sp override its parts |
 | `--datatype_convert` | int | Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive |
-| `--band_size_termination` | double | Band size auto-tuning termination on GPU, default 3.0 |
+| `--band_size_termination` | double | --auto_band on CPUs: widen the dense band while the TLR operations of the next band times this factor exceed the dense ones (default 0.67); with GPUs the factor comes from the GPU/CPU performance model and this value is ignored |
 | `--left_looking` | int | Modified left-looking Cholesky (row) |
 | `--enable_stochastic_rounding` | int | Stochastic rounding for the down-conversions (0 or 1); not with FP8 GEMMs |
 | `--nruns` | int | Number of Cholesky runs (default: 1); more than one needs the dense layout without --check, --auto_band, --adaptive_memory or --sparse |
@@ -343,6 +351,14 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
    GPUs are visible). The dense FP64 Cholesky at N=30720 runs at 9.2 Tflop/s
    on one A100 (`--gpus 1 --NB 1024`) and at 1.3 Tflop/s on the node's 36 CPU
    cores (`--NB 512`).
+   On one MI250X GCD (Frontier) the dense FP64 Cholesky at N=30720 runs at
+   13.1 Tflop/s (DPLASMA: 9.9), an FP64/FP32 band of 2/2 tiles with the rest in
+   BF16 (`--band_dense_dp 2 --band_dense_sp 4 --tensor_gemm_hp 0x20`) at 18.3;
+   one process drives several GCDs with `--gpus n` (0.74 s on 1, 0.26 s on 8).
+   With Cray MPICH, remote data goes through host memory unless
+   `MPICH_GPU_SUPPORT_ENABLED=1` is set and the GTL library is linked
+   (`scripts/machines/install_frontier.sh`); bind one rank per GCD with
+   `srun -c 7 --gpus-per-task=1 --gpu-bind=closest`.
 8. `--nruns n` factorizes the same matrix n times only in the dense layout
    (`--band_dense` ≥ NT) without `--check`, `--auto_band`, `--adaptive_memory`
    or `--sparse`, where A is regenerated between runs. Elsewhere a later run

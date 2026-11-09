@@ -42,7 +42,7 @@ These are managed as Git submodules and will be automatically built when you con
 ### Optional Dependencies
 
 - **CUDA Toolkit** 12.0+ (for GPU acceleration)
-- **ROCm** 4.0+ (for AMD GPU support)
+- **ROCm** 6 (for AMD GPU support; tested with 6.2.4 on gfx90a)
 - **CUTLASS** (for optimized CUDA kernels)
 - **GSL** (GNU Scientific Library)
 - **Ninja**
@@ -73,7 +73,10 @@ ctest --test-dir build -L hicma -LE gpu --output-on-failure        # the CPU tes
 The configure step finds MPI and the BLAS/LAPACKE stack (DPLASMA's
 `FindLAPACKE`: set `LAPACKE_ROOT` or `BLA_VENDOR` to choose one) and records
 their directories in the binaries, so the drivers start without
-`LD_LIBRARY_PATH` changes. To take OpenBLAS where MKL is also installed,
+`LD_LIBRARY_PATH` changes. STARS-H and HCORE accept the `BLA_VENDOR` values
+their own finder knows (`OpenBLAS`, `Intel10_64lp`, `Intel10_64lp_seq`,
+`Generic`, `ATLAS`, `Apple`, `IBMESSL`); others, such as `FlexiBLAS`, `AOCL`
+or `NVHPC`, stop their configure step. To take OpenBLAS where MKL is also installed,
 give the vendor and its directory to every find module (STARS-H and HCORE
 use their own, which take the four hints):
 
@@ -158,7 +161,10 @@ cmake -S app -B build-app -DCMAKE_PREFIX_PATH=/opt/hicma-x
 
 `tests/install_consumer/` is such a project (it builds the Cholesky driver
 and the tile/LAPACK conversion test against the installed package) and CI
-runs it.
+runs it. Configure the consumer with the compilers of the HiCMA-X build; on
+Frontier that is `-DCMAKE_C_COMPILER=mpicc -DCMAKE_CXX_COMPILER=mpic++
+-DCMAKE_Fortran_COMPILER=mpif90` (CMake's default `ftn` fails its compiler
+check there unless a CPU target module such as `craype-x86-trento` is loaded).
 
 #### Calling HiCMA-X from an application
 
@@ -187,13 +193,13 @@ Points to know when embedding it:
 
 ```bash
 # CUDA build
-cmake -DHICMA_PARSEC_HAVE_CUDA=ON
+cmake -S . -B build -G Ninja -DHICMA_PARSEC_HAVE_CUDA=ON
 
 # CUDA build with CUTLASS
-cmake -DHICMA_PARSEC_HAVE_CUDA=ON -DENABLE_CUTLASS=ON -DCUTLASS_ROOT=/path/to/cutlass ..
+cmake -S . -B build -G Ninja -DHICMA_PARSEC_HAVE_CUDA=ON -DENABLE_CUTLASS=ON -DCUTLASS_ROOT=/path/to/cutlass
 
 # HIP build for AMD GPUs
-cmake -DHICMA_PARSEC_HAVE_HIP=ON
+cmake -S . -B build -G Ninja -DHICMA_PARSEC_HAVE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx90a
 
 ```
 
@@ -241,14 +247,14 @@ mpicc --version
 mpirun --version
 
 # Use specific MPI
-cmake -DMPI_C_COMPILER=mpicc -DMPI_CXX_COMPILER=mpicxx ..
+cmake -S . -B build -DMPI_C_COMPILER=mpicc -DMPI_CXX_COMPILER=mpicxx
 ```
 
 #### 5. Memory Issues
 
 ```bash
 # Reduce parallel jobs
-make -j2
+cmake --build build -j 2
 ```
 
 #### 6. System Specific Issues
@@ -266,12 +272,17 @@ cmake --install build                                              # into build/
 
 ##### Frontier
 `install_frontier.sh` needs `ROCM_PATH`, `OLCF_OPENBLAS_ROOT` and
-`CRAY_MPICH_DIR`. For GPU-aware MPI:
+`CRAY_MPICH_DIR` (modules `PrgEnv-amd`, `rocm`, `openblas`). Without
+GPU-aware MPI, multi-rank GPU runs move remote data through host memory
+(HiCMA-X detects Cray MPICH without `MPICH_GPU_SUPPORT_ENABLED=1`). For
+GPU-aware MPI, link the GTL library and set the variable at run time:
 ```bash
 module load craype-accel-amd-gfx90a rocm
+scripts/machines/install_frontier.sh build -DCMAKE_SHARED_LINKER_FLAGS="-L$ROCM_PATH/lib -lamdhip64 -L$CRAY_MPICH_ROOTDIR/gtl/lib -lmpi_gtl_hsa"
 export MPICH_GPU_SUPPORT_ENABLED=1
-scripts/machines/install_frontier.sh build -DCMAKE_SHARED_LINKER_FLAGS="-L$ROCM_PATH/lib -lamdhip64 -lmpi_gtl_hsa"
 ```
+On AMD GPUs pass `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the
+dense layout: their FP16 GEMMs flush small entries to zero (`TESTS.md`).
 
 ##### Jetstream2 
 This is the cmake command using gcc and openmpi.
@@ -311,8 +322,8 @@ gdb ./your_program
 ### Verbose Output
 
 ```bash
-# Verbose make
-make VERBOSE=1
+# Verbose build
+cmake --build build --verbose
 
 # Verbose cmake
 cmake --debug-output ..

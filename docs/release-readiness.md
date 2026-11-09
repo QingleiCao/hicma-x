@@ -23,6 +23,17 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `c658f96` Cray MPICH without GPU support: no intra-node single copy for HIP runs
+- `a67bb1b` Cray MPICH without GPU support: keep remote transfers in host memory
+- `931c41b` AMD GPUs: BF16 for the adaptive low-precision tiles, chosen with --tensor_gemm
+- `5c0874b` HIP: set every BLAS/solver handle up before the factorization
+- `34acdce` Frontier pass: machine scripts, launcher, HIP test coverage, check output
+- `cc40906` HIP: scale the FP16 operands of the run-time-decision GEMM
+- `94c5b62` Documentation: the complete hexane test (H100, V100, both, two ranks)
+- `e9e998f` Notes for a capped --gpus and for oversubscribed cores
+- `7ac56e1` Documentation: choosing OpenBLAS next to MKL; the fresh-clone and OpenBLAS checks
+- `570ec75` CMake: translate BLA_VENDOR=OpenBLAS for STARS-H and HCORE
+- `c2aef96` Documentation: the H100 pass, the FP8 fix, and a documentation audit
 - `64a88d1` Low-rank GEMMs: an FP8 operand is stored as FP32, like SP and HP
 - `89bcd89` Documentation for the FP16-band fix: root cause, results, limitation removed
 - `c1456ff` Fix FP16 tiles with low-rank x low-rank updates on GPUs: convert the low-rank B as U and V
@@ -108,7 +119,7 @@ Intermediate commits were not built individually.
 | Submodules | dplasma `3553b25a` (ICLDisco master + stage-in fix), parsec `5cd761f6` (4.0.2411-244), hcore `78028a59`, stars-h `5d98f2c2` |
 | CPU tree | `-DCMAKE_BUILD_TYPE=Release -DHICMA_PARSEC_HAVE_CUDA=OFF -DDPLASMA_PRECISIONS="s;d" -DPARSEC_DIST_SHORT_LIMIT=1` |
 | CUDA tree | same plus `-DHICMA_PARSEC_HAVE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80` |
-| HIP tree | same plus `-DHICMA_PARSEC_HAVE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx90a`, compile only |
+| HIP tree | same plus `-DHICMA_PARSEC_HAVE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx90a`, compile only here; built and run on Frontier with `install_frontier.sh` (section 5.15) |
 
 The baseline for every "before" number is the same configuration built from
 `6e987e3` in a separate worktree (CUDA tree) and from the branch point before
@@ -282,7 +293,8 @@ multi-GPU measurement was possible on this machine.
 
 ### 5.4 Not validated
 
-- HIP on AMD GPUs (the CPU cases of a HIP build ran on Frontier, section 5.8).
+- HIP on AMD GPUs other than gfx90a (MI210 and MI250X ran, section 5.15), and
+  more than one MI250X node.
 - More than one node. (Several GPUs per node: guyot, section 5.6; FP8 on an
   H100: section 5.13.)
 - The climate emulator driver (`testing_climate_emulator`): compiled in every
@@ -335,8 +347,8 @@ in both jobs:
   `CMAKE_INSTALL_RPATH_USE_LINK_PATH` are set for `hicma_parsec` and the
   drivers; reproduced and verified locally by linking the consumer with
   `--enable-new-dtags` and running it with only the BLAS directory on
-  `LD_LIBRARY_PATH` (CPU and CUDA prefixes). CMake does not record MKL's
-  directory, so a BLAS outside the system paths still needs `LD_LIBRARY_PATH`.
+  `LD_LIBRARY_PATH` (CPU and CUDA prefixes). CMake did not record MKL's
+  directory then; the second pass records it (`719bd2c`, section 5.6).
 
 Re-validation after these commits: CPU, CUDA and HIP trees build; CPU `ctest`
 20 / 20; CUDA-tree `ctest` 30 / 30; install consumers from both prefixes
@@ -810,6 +822,100 @@ gaps, fixed: `--gpus 4` with one usable GPU ran on one without a word, and
 two processes each taking all 16 cores (`--oversubscribe`) went unnoticed.
 Both print a note on rank 0 now; checked on methane and hexane, and CTest
 still passes (27 / 27 and 48 / 48 on methane, 48 / 48 on the H100).
+### 5.15 Ninth pass: Frontier, HIP on MI210 and MI250X (two rounds)
+
+**Environment.** OLCF Frontier. The login node has one AMD Instinct MI210
+(gfx90a, 64 GB); compute nodes have four MI250X (eight GCDs, gfx90a), used
+through the debug queue. PrgEnv-amd 8.6.0 (amdclang/amdflang 6.2.4), ROCm
+6.2.4, Cray MPICH 8.1.31, OpenBLAS 0.3.30, CMake 3.31.11, Ninja 1.13.2. The
+tree was built with `scripts/machines/install_frontier.sh` as written (the
+first run of a machine script on its machine after methane's `install_icl.sh`);
+a fresh recursive clone of the committed tree builds the same way in 2m48s.
+
+**Round 1: review, first HIP GPU runs.** Two independent reviews of the 27
+commits since `d6bf679` found no wrong-result defect in the source and these
+build, script and documentation problems, all fixed (`34acdce`): the machine
+scripts took a CMake option as the build directory; the
+`--band_size_termination` help gave a wrong default; CHANGELOG and two other
+places still said a BLAS outside the system paths needs `LD_LIBRARY_PATH`; the
+headers said version 1.0.0; the launchers passed Open MPI's `--oversubscribe`
+to any `mpirun`; `potrf_autoband_3d` ran only in `test_CI.sh`; `--tensor_gemm_sp
+0x4` ran FP32 silently on HIP; the kind-5 and kind-8 GPU cases were registered
+for CUDA only. The first HIP GPU CTest run (MI210) passed 26 of 28: kind 10
+(`gpu_runtime_decision`, `gpu_runtime_admem`) gave 1.3e-6 where the A100 gives
+1.0e-8. A hipBLAS test showed why: `hipblasGemmEx` with FP16 operands returns
+exactly 0 for entries around 1e-5 on gfx90a, which flushes FP16 subnormals
+(|x| < 6.1e-5) to zero; `HIPBLAS_GEMM_FLAGS_FP16_ALT_IMPL` does not change it.
+Kind 10 picks FP16 when ||A||·||B|| is small, so its FP16 operands are scaled
+by powers of two from their norms on HIP (`cc40906`): 1.5e-8, and 9.1e-11
+with `--sigma 1e-4` (was 2.5e-7; CPU 1.9e-13). After round 1: CTest 35 / 35 on
+the MI210 (21 CPU, 14 GPU; the kind-5 and kind-8 cases now run on HIP with the
+A100's residuals).
+
+**Round 2: re-review, MI250X node, performance.** A review of the round-1
+commits found an undefined cast for norms below 1e-304 (fixed in
+`cc40906`). On the MI250X node `gpu_dense_adaptive` failed (2.8e-5); on the
+MI210 it failed in 1 of 30 runs (1.9e-6), depending on which GEMMs ran on the
+GPU. It is the same flush in the static FP16 tiles of kinds 5, 8 and 9: at
+N=30720 the 98 FP16 tiles of an adaptive kind-5 run give 1.0e-5 for
+`--fixedacc 1e-8` on both GPUs, deterministically; the same tiles in BF16
+(`--tensor_gemm_hp 0x20`) give 1.2e-8. By the maintainer's decision
+(section 7, item 8) `--tensor_gemm` keeps choosing and the default stays FP16;
+HIP runs with FP16 tiles say so, the adaptive decisions use BF16's epsilon with
+a BF16 variant, and the HIP builds' adaptive GPU tests use 0x20 (`931c41b`).
+With `--sigma 1e4` the default nugget (0.1) no longer regularizes the matrix
+and an adaptive run at N=30720 is indefinite in FP16 and BF16 alike; this is
+not specific to AMD GPUs.
+
+The first factorization of a GPU run was slow on AMD GPUs: rocBLAS and
+rocSOLVER set a handle up at its first call, and HiCMA-X has four handles per
+stream. At N=8192 on the MI210 the first factorization took 0.52 s and the
+next ones 0.055 s (DPLASMA 0.126 s, then 0.060 s); the handles are now set up
+at start-up (`5c0874b`) and the first factorization takes 0.058 s. On a
+MI250X GCD, N=30720, NB=1024, one run per process, two processes per case:
+
+| Case | Before (s) | After (s) | After (Tflop/s) |
+|---|---|---|---|
+| DPLASMA `testing_dpotrf -g 1` | 0.96 | 0.98 | 9.9 |
+| kind 5 FP64 | 1.36 | 0.74 | 13.1 |
+| kind 5 adaptive, FP16 tiles | 1.66 to 1.76 | 0.67 | 14.4 |
+| kind 5 adaptive, BF16 tiles (0x20) | | 0.68 | 14.2 |
+| kind 10 run-time decisions | 1.85 to 1.94 | 0.87 | 11.1 |
+| FP64/FP32 bands 2/2, rest FP16 | 1.54 to 1.61 | 0.51 | 18.4 |
+| same, rest BF16 (0x20) | | 0.53 | 18.3 |
+| FP64 band 2, rest FP32 | 1.36 to 1.42 | 0.61 | 15.9 |
+
+One process over several GCDs (FP64, N=30720): 1.39 s on 1, 1.40 s on 2 and
+1.95 s on 8 before; 0.74, 0.42, 0.28 and 0.26 s on 1, 2, 4 and 8 after (BF16
+adaptive: 0.69, 0.38, 0.27, 0.24 s). N=61440, NB=2048 on 8 GCDs: 0.91 s,
+85 Tflop/s. The residual of the BF16 adaptive run at N=30720 is 1.16e-8 for
+`--fixedacc 1e-8` (FP16: 1.0e-5), the growth with N of section 5.6.
+
+Two-rank GPU runs with one GCD per rank aborted in Cray MPICH at the first
+transfer (`process_vm_readv: Bad address`): PaRSEC sends from GPU memory, which
+Cray MPICH reads only with `MPICH_GPU_SUPPORT_ENABLED=1` and its GTL library.
+Under Cray MPICH without GPU support HiCMA-X now keeps remote transfers in host
+memory (`a67bb1b`); that was not enough, since GPU runs allocate their host tiles
+with `hipHostMalloc`, which Cray MPICH's intra-node single copy cannot read
+either, so HiCMA-X also sets `MPICH_SMP_SINGLE_COPY_MODE=NONE` when it
+initializes MPI there (`c658f96`). With the GTL library preloaded and
+`MPICH_GPU_SUPPORT_ENABLED=1` the same runs passed before these changes.
+
+| Run on an MI250X node, final commit unless noted | Result |
+|---|---|
+| `scripts/test_CI.sh`, one GCD, two-rank cases through `srun` (`a67bb1b`) | 41 passed, 2 skipped (kinds 1 to 4 on GPUs; climate data) |
+| `scripts/validation_matrix.sh ... gpu` (`a67bb1b`) | 40 of 43 pass; the 3 two-rank cases sharing a GCD aborted (single copy), all 3 pass at the final commit (3.2e-16, 1.5e-8, 4.7e-9) |
+| Fresh clone, `ctest -L hicma` (MPI cases through `srun`, GPU cases on one GCD) | 42 / 42 |
+| Two ranks, one GCD each, no GTL, N=16384: dense, BF16 adaptive, kind 10 | 3.4e-16, 1.1e-8, 8.1e-9 |
+| Two ranks, one GCD each, TLR band 2 / adaptive TLR, N=8192 | 3.9e-9 / 2.8e-5 (the band-2 run hung before) |
+| Two ranks, one GCD each, TRMM N=16384 | passed |
+| Mismatched `--gpus` (rank 0: 1, rank 1: 0) | refused on every rank, no hang |
+| CPU-only tree (same sources) | builds; CTest 21 / 21 |
+
+
+The installed package (`cmake --install`, `tests/install_consumer` built with
+the MPI compiler wrappers) runs on the CPU (1.5e-16), on the MI210 with BF16
+adaptive tiles (8.7e-9) and the conversion test (13 cases).
 
 ## 6. Release checklist
 
@@ -833,6 +939,7 @@ still passes (27 / 27 and 48 / 48 on methane, 48 / 48 on the H100).
 | Seventh pass: GPU GEMM variants and three rounds of checks (section 5.12) | done; `--tensor_gemm_hp`/`_sp`, five wrong-result or crash paths closed; static FP16 band with low-rank tiles on GPUs fixed (its low-rank B is now converted as U and V) |
 | Eighth pass: H100 and two more rounds (section 5.13) | done; FP8 operands in the low-rank GEMMs fixed, documentation audited and corrected |
 | Complete hexane test, H100 and V100 (section 5.14) | done; correct on every configuration; notes for capped `--gpus` and oversubscribed cores added |
+| Ninth pass: Frontier, HIP on MI210 and MI250X, two rounds (section 5.15) | done; FP16 subnormal flush on gfx90a (kind 10 scaled, BF16 via `--tensor_gemm` for the static paths), HIP handle warm-up (FP64 1.84x faster on a GCD, multi-GCD scaling), Cray MPICH multi-rank GPU runs, script and test fixes |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
@@ -851,9 +958,9 @@ still passes (27 / 27 and 48 / 48 on methane, 48 / 48 on the H100).
    effectively checked; binding it would need a second, looser bound).
 4. **CI**: both jobs (CPU build, tests and install; CUDA compile) pass on every
    push since section 5.10 (one run per push, listed in ecrc/hicma-x#13).
-5. **Hardware not available here**: AMD GPUs, H100 (FP8), multi-node. A run of
-   `scripts/validation_matrix.sh <build> <label> gpu` on those systems before
-   tagging is recommended.
+5. **Hardware not available here**: multi-node runs and AMD GPUs other than
+   gfx90a. The GPU validation matrix ran on an H100 (section 5.13) and on an
+   MI250X node (section 5.15).
 6. **Defaults that cost performance** (section 5.11): a GPU build runs on the
    CPU unless `--gpus` is given, and kinds 1 and 2 (tile low-rank) are fully
    dense unless `--band_dense` is given. Both now print a note. Making
@@ -865,6 +972,15 @@ still passes (27 / 27 and 48 / 48 on methane, 48 / 48 on the H100).
    **resolved.** Kinds 1 and 5 returned wrong results or crashed, as 0.1.0
    did: the FP16 branch of the low-rank x low-rank GPU GEMM converted its
    low-rank B as a dense tile. Fixed; the layout runs and is in CTest.
+
+8. **FP16 on AMD GPUs** (section 5.15): gfx90a flushes FP16 subnormals in
+   its FP16 GEMMs, which costs the adaptive FP16 tiles their accuracy.
+   **Decided (2026-11-08): keep FP16 and BF16 and let `--tensor_gemm`
+   choose; the default stays FP16 (0x8).** HIP runs that produce FP16 tiles
+   say so and point to `--tensor_gemm_hp 0x20`; the HIP builds' adaptive GPU
+   tests use it. Kind 10 scales its FP16 operands on HIP. A per-tile scale
+   for the static FP16 paths (as the FP8 GEMMs have) would make FP16 safe
+   on AMD GPUs too; it is not done.
 
 ## 8. Remaining and future work
 

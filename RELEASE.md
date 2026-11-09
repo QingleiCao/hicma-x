@@ -26,7 +26,7 @@ and the genomics (kernel ridge regression) applications.
 |---|---|
 | Linux x86_64, CPU only (OpenBLAS or MKL, LAPACKE, Open MPI or MPICH) | tested (CI, 1 and 2 ranks) |
 | Linux x86_64 + CUDA 12 (A100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks) and one H100 (FP8; 1 and 2 ranks) |
-| Linux + ROCm 6 (HIP, gfx90a) | compiles; the CPU cases of a HIP build ran on Frontier; not run on AMD GPUs |
+| Linux + ROCm 6 (HIP, gfx90a) | tested on Frontier: one MI210 (CTest 35 / 35) and one MI250X node (CTest 42 / 42 with the two-rank cases, `test_CI.sh`, the GPU validation matrix; 1 to 8 GCDs in one process, two ranks with one GCD each or sharing one); kinds 1 to 4 run on the CPU |
 | Fugaku (`ON_FUGAKU`), macOS, Windows | not supported |
 
 Requirements: CMake 3.21, a C11/C++17 compiler, a Fortran compiler (BLAS/LAPACK
@@ -38,6 +38,13 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
 - The Cholesky drivers require `N` to be a multiple of `NB` (rejected at
   start-up). The TRMM supports partial tiles.
 - Cholesky kinds 1 to 4 have CUDA bodies only; on HIP they run on the CPU.
+- AMD GPUs (gfx90a: MI210, MI250X) flush FP16 subnormals (|x| < 6.1e-5) to
+  zero in their FP16 GEMMs, and adaptive decisions put small entries in FP16:
+  an adaptive kind-5 run at N=30720 gave 1.0e-5 for `--fixedacc 1e-8`. Pass
+  `--tensor_gemm_hp 0x20` (BF16, FP32's exponent range; 1.2e-8) on AMD GPUs
+  when every tile is dense; HIP runs that use FP16 tiles say so at start-up.
+  The run-time decision (kind 10) scales its FP16 operands and is not
+  affected. Low-rank (TLR) layouts have no BF16 variant and keep FP16.
   Kind 3 with a half-precision band runs on GPUs only (the CPU bodies have no
   half path; without GPUs the single-precision band is widened to the matrix).
 - `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the TRMM,
@@ -60,12 +67,16 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
 ### Validation
 
 `docs/release-readiness.md` records what was built and run for this release:
-CPU, CUDA (A100) and HIP (compile only) configurations, the CTest suite, the
+CPU, CUDA (A100, H100) and HIP (MI210, MI250X on Frontier) configurations, the CTest suite, the
 validation matrix (`scripts/validation_matrix.sh`), the install consumer and a
 before/after timing comparison.
 
 ### Upgrading from 0.1.0
 
+- With a BF16 GEMM variant (`--tensor_gemm_hp 0x20` or `0x40`) the adaptive
+  decisions use BF16's epsilon instead of FP16's, so fewer tiles go to BF16
+  and `--fixedacc` is met; such runs differ from 0.1.0 and earlier 0.2.0
+  snapshots.
 - New: `hicma_parsec_matrix_sum` (mixed-precision checksum). The build-time
   switches of `hicma_parsec_internal.h` (`PRINT_RANK`, `DEBUG_INFO`,
   `WORKLOAD_BALANCE`, ...) are set with `-DNAME=value` in `CMAKE_C_FLAGS`
