@@ -336,7 +336,9 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
    `--map-by ppr:1:package:pe=<cores per socket>` (Open MPI 5 refuses a
    binding that spans sockets). With two processes on a two-socket, 36-core
    node, a TLR factorization at N=16384 takes 11.5 s with the default binding
-   and 1.04 s with `--map-by ppr:1:package:pe=18`.
+   and 1.04 s with `--map-by ppr:1:package:pe=18`. Rank 0 also warns when the
+   processes of its node start more worker threads than it has cores
+   (`--bind-to none` with several processes per node: 1.28 s in that case).
 7. A GPU build runs on the CPU unless `--gpus` is given (rank 0 says so when
    GPUs are visible). The dense FP64 Cholesky at N=30720 runs at 9.2 Tflop/s
    on one A100 (`--gpus 1 --NB 1024`) and at 1.3 Tflop/s on the node's 36 CPU
@@ -351,3 +353,11 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
    (N³/3) divided by the factorization time. For TLR and mixed-precision runs
    it is an equivalent rate that can exceed the machine's peak;
    `Operation_counts` reports the operations performed.
+10. GPUs of different generations in one run go at the pace of the slowest:
+   the tiles are split evenly. On a node with an H100 and a V100, the dense
+   FP64 Cholesky at N=30720 took 0.53 s on the H100 alone, 2.3 s on both with
+   one process per GPU, and 4.7 s on both in one process; keep the fastest
+   GPU with `CUDA_VISIBLE_DEVICES`. On the H100, NB=2048 was 5 % faster than
+   1024 at that size (18.5 to 19.4 Tflop/s against 17.5 to 18.2).
+11. DPLASMA's `testing_dpotrf`, a natural reference, uses every visible GPU
+   unless given `-g 0`.

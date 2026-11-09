@@ -767,6 +767,50 @@ to the top-level CMake, every component links OpenBLAS only and CTest passes
 48 / 48 (CUDA) with `OPENBLAS_NUM_THREADS=1`, the thread-safety check
 included.
 
+### 5.14 A complete test on hexane (H100 and V100)
+
+`7ac56e1` on hexane (2 x Xeon Silver 4309Y, 16 cores; GPU 0 an H100 PCIe on
+NUMA node 0, GPU 1 a V100 16 GB on node 1), inside the user's SLURM
+allocation, a tree built with the default architectures.
+
+**Correctness**
+
+| Configuration | CTest | `test_CI.sh` | Validation matrix | Other |
+|---|---|---|---|---|
+| H100 alone | 48 / 48 | 48 passed, 1 skipped | 50 / 50 | |
+| V100 alone (no FP8, no BF16 tensor cores) | 48 / 48 | | 50 / 50 | BF16, TF32, FP16 band with low-rank tiles, kind 8 (FP16 there) pass |
+| both GPUs, one process (`--gpus 2`) | | | | kinds 5 (FP64, adaptive), 10, 3, 2 (TLR), 8, FP16 band with low-rank tiles, the TRMM pass; FP8 off with its note |
+| two ranks, one GPU and its NUMA node each | | | | kinds 5, 10, FP16 band with low-rank tiles, adaptive TLR with 0x10, the TRMM pass |
+
+**Performance** (two runs each; ranges)
+
+| Case | HiCMA-X | DPLASMA |
+|---|---|---|
+| H100, dense FP64, N=30720, NB=1024 | 0.53 to 0.55 s (17.5 to 18.2 Tflop/s) | 0.64 to 0.65 s (9.3 to 12.0) |
+| H100, same, NB=2048 | 0.50 to 0.52 s (18.5 to 19.4) | |
+| H100, FP32 band with TF32 | 0.37 to 0.41 s (23.5 to 26.2) | |
+| V100, dense FP64, NB=1024 | 1.64 to 1.65 s (5.9) | 1.77 s (4.9) |
+| V100, FP16 band | 0.71 to 0.73 s (13.3 to 13.6) | |
+| H100 + V100, two ranks | 2.28 to 2.30 s | 2.44 to 2.49 s |
+| H100 + V100, one process | 4.70 to 4.75 s | 3.61 to 3.75 s (`-g 2`) |
+| 16 CPU cores, dense FP64, N=20480, NB=512 | 7.77 to 7.79 s (0.37) | 7.74 to 7.77 s (0.37, `-g 0`) |
+| 16 CPU cores, TLR, N=30720 | 2.0 s | |
+
+A first CPU comparison was void: DPLASMA's `testing_dpotrf` uses every
+visible GPU unless given `-g 0`. Mixed GPUs go at the pace of the V100 in
+both libraries (the tiles are split evenly); the H100 alone is four times
+faster. On one GPU at N=30720 the dense FP64 Cholesky beats TLR (0.53 s
+against 1.64 s): the low-rank updates run on the 8 cores of the NUMA node.
+
+**Ease of use**, as a new user: the no-argument run, `--help` (77 options,
+the 10 kinds), the `README.md` example, the notes for `--gpus 0` and for a
+TLR kind with every tile dense, the messages for a misspelled option, `N %
+NB`, invalid `--tensor_gemm` values and `--left_looking -1` all behave. Two
+gaps, fixed: `--gpus 4` with one usable GPU ran on one without a word, and
+two processes each taking all 16 cores (`--oversubscribe`) went unnoticed.
+Both print a note on rank 0 now; checked on methane and hexane, and CTest
+still passes (27 / 27 and 48 / 48 on methane, 48 / 48 on the H100).
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -788,6 +832,7 @@ included.
 | Sixth pass: external user, usability and performance (section 5.11) | done; `--nruns` crash, help defaults, summary line fixed; notes for three performance traps |
 | Seventh pass: GPU GEMM variants and three rounds of checks (section 5.12) | done; `--tensor_gemm_hp`/`_sp`, five wrong-result or crash paths closed; static FP16 band with low-rank tiles on GPUs fixed (its low-rank B is now converted as U and V) |
 | Eighth pass: H100 and two more rounds (section 5.13) | done; FP8 operands in the low-rank GEMMs fixed, documentation audited and corrected |
+| Complete hexane test, H100 and V100 (section 5.14) | done; correct on every configuration; notes for capped `--gpus` and oversubscribed cores added |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 

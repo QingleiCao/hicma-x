@@ -177,3 +177,7 @@ after the library changes.
   GEMMs (fixed); FP8 band numerics documented; a documentation audit's
   findings corrected; `scripts/test_CI.sh` brought up to the CTest cases.
   See `release-readiness.md` section 5.13.
+- 2026-11-09 (on request): a complete test on hexane, H100 and V100, one and
+  two GPUs, one and two ranks, performance and ease of use: correct
+  everywhere; notes added for a capped `--gpus` and for oversubscribed cores.
+  See `release-readiness.md` section 5.14.

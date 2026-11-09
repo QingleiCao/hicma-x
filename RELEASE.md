@@ -118,8 +118,10 @@ before/after timing comparison.
   parameter summary starts with the version.
 - The set-up notes (band sizes, lookahead, memory layout, FP16 emulation,
   tile-size advice) print only with `--verbose 1`. New notes: GPUs visible
-  but `--gpus 0`; a TLR kind (1, 2) with every tile dense; a launcher binding
-  that leaves the processes of a node half of its cores or fewer.
+  but `--gpus 0`; `--gpus` above the usable GPUs (or on a build without GPU
+  support), which runs with what there is; a TLR kind (1, 2) with every tile
+  dense; a launcher binding that leaves the processes of a node half of its
+  cores or fewer, or starts more worker threads than it has cores.
 - `--left_looking` < 0 and BF16 GEMMs with low-rank tiles exit with status 1
   (they exited 0).
 - New `--tensor_gemm_hp` (GPU GEMM variant of the FP16 tiles) and

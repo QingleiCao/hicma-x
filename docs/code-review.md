@@ -1524,3 +1524,7 @@ do not take it (kind 3, run-time decisions, the TRMM, HIP).
    the GPU hot paths (kind 10's per-GEMM norm read already uses a private
    stream, by design). Lookahead and tile size moved the time within the
    noise on the A100 (section 5.13 of release-readiness); no default changed.
+5. **A complete test on hexane** (H100, V100, both, two ranks; release-readiness
+   section 5.14) found no defect. Two silent cases now print a note on rank
+   0: `--gpus` above the usable GPUs (or on a build without GPU support), and
+   processes of a node starting more worker threads than it has cores.

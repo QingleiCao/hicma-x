@@ -310,6 +310,10 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   `git describe` revision are printed (`GITHASH` was never set).
 - Internal set-up notes print with `--verbose 1` only; two invalid-option
   exits returned 0.
+- `--gpus` above the usable GPUs, or on a build without GPU support, used
+  fewer silently (the note needed `--verbose 2`); and several processes per
+  node each taking all its cores (`--bind-to none`) went unnoticed. Rank 0
+  now says so in both cases.
 - `README.md` has a quick start; `scripts/build_release.sh --help` states
   its default build type (RelWithDebInfo).
 
