@@ -9,7 +9,10 @@
 # repository.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BUILD=$(realpath -m "${1:-$ROOT/build}"); shift || true
+# the first argument is the build directory unless it is a CMake option
+BUILD=$ROOT/build
+case "${1:-}" in ""|-*) ;; *) BUILD=$1; shift ;; esac
+BUILD=$(realpath -m "$BUILD")
 LAPACK_VERSION=${LAPACK_VERSION:-v3.12.1}
 LAPACK_SRC=$ROOT/lapack_build/lapack
 LAPACK_PREFIX=$ROOT/lapack_build/installdir

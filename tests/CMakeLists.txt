@@ -133,6 +133,9 @@ hicma_add_test(potrf_band_dp_sp_sender 1 ${P} ${COMMON} --kind_of_cholesky 3 --b
 hicma_add_test(potrf_runtime_decision  1 ${P} ${COMMON} --adaptive_decision_runtime 1 --check_tol 1e-7)
 hicma_add_test(potrf_sparse_general    1 ${P} ${COMMON} --sparse 1)
 hicma_add_test(potrf_sparse_balance    1 ${P} ${COMMON} --sparse 2)
+# band auto-tuning on a 3-D problem (kind 4)
+hicma_add_test(potrf_autoband_3d       1 ${P} --N 5400 --NB 540 --fixedacc 1e-8 --maxrank 540 --kind_of_problem 4 --auto_band 1 --check 1
+               -- -mca runtime_comm_coll_bcast 0)
 hicma_add_test(trmm_fp64               1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 0)
 hicma_add_test(trmm_adaptive           1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4)
 hicma_add_test(trmm_adaptive_sr        1 ${T} --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4 --enable_stochastic_rounding 1)
@@ -182,30 +185,32 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
         hicma_add_test(gpu_band_sp_hp        1 ${P} ${G} --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5)
         # FP16 accumulation (--tensor_gemm 0x10): residual 2.3e-5
         hicma_add_test(gpu_band_hp_fp16acc   1 ${P} ${G} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4)
-        # GEMM variants of the dense GEMMs (kind 5), through --tensor_gemm_hp,
-        # --tensor_gemm_sp and the combined --tensor_gemm: BF16 operands with
-        # FP32 C (residual 6.7e-6) and with BF16 C (1.0e-4); TF32 for the FP32
-        # band (5.1e-6, against 5.1e-8 in FP32)
-        hicma_add_test(gpu_dense_bf16        1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm_hp 0x20 --check_tol 1e-4)
-        hicma_add_test(gpu_dense_bf16_c16    1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm 0x40 --check_tol 1e-3)
-        hicma_add_test(gpu_dense_tf32        1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 8 --tensor_gemm_sp 0x4 --check_tol 1e-4)
-        # Adaptive TLR with FP16 C (0x10): the dense and the low-rank GEMMs of a
-        # tile disagreed on its type (NaNs, then a crash); residual 2.2e-5
-        hicma_add_test(gpu_tlr_adaptive_fp16acc 1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
-                       --fixedacc 1e-4 --maxrank 256 --adaptive_decision 1 --tensor_gemm_hp 0x10 --check_tol 1e-4)
-        # Static FP16 band with low-rank tiles, so FP16 tiles get low-rank x
-        # low-rank updates (their low-rank B was converted as a dense tile:
-        # residual 22 to 59, or a segfault); residuals 4.3e-5 (kinds 5 and 1)
-        hicma_add_test(gpu_tlr_hp_band       1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
-                       --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256 --check_tol 3e-4)
+        # kind 1 version of gpu_tlr_hp_band (static FP16 band with low-rank tiles)
         hicma_add_test(gpu_tlr_mp_hp_band    1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --kind_of_cholesky 1
                        --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256 --check_tol 3e-4)
-        # Kind 8 with an FP8 band (FP16 where the GPUs lack FP8) and low-rank
-        # tiles: FP8 operands, stored as FP32, were read as FP64 by the
-        # low-rank GEMMs (residual 1.5e-2 on an H100, 1.6e-5 fixed). --adddiag
-        # keeps the matrix positive definite under FP8 so close to the diagonal
-        hicma_add_test(gpu_tlr_fp8_band      1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --kind_of_cholesky 8
-                       --band_dense 6 --band_dense_dp 1 --band_dense_sp 2 --band_dense_hp 3 --adddiag 100 --fixedacc 1e-4 --maxrank 256
-                       --check_tol 3e-4)
     endif()
+    # kinds 5 and 8, CUDA and HIP (on HIP --tensor_gemm_sp 0x4 runs in FP32)
+    # GEMM variants of the dense GEMMs (kind 5), through --tensor_gemm_hp,
+    # --tensor_gemm_sp and the combined --tensor_gemm: BF16 operands with
+    # FP32 C (residual 6.7e-6) and with BF16 C (1.0e-4); TF32 for the FP32
+    # band (5.1e-6, against 5.1e-8 in FP32)
+    hicma_add_test(gpu_dense_bf16        1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm_hp 0x20 --check_tol 1e-4)
+    hicma_add_test(gpu_dense_bf16_c16    1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm 0x40 --check_tol 1e-3)
+    hicma_add_test(gpu_dense_tf32        1 ${P} ${G} --band_dense_dp 2 --band_dense_sp 8 --tensor_gemm_sp 0x4 --check_tol 1e-4)
+    # Adaptive TLR with FP16 C (0x10): the dense and the low-rank GEMMs of a
+    # tile disagreed on its type (NaNs, then a crash); residual 2.2e-5
+    hicma_add_test(gpu_tlr_adaptive_fp16acc 1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
+                   --fixedacc 1e-4 --maxrank 256 --adaptive_decision 1 --tensor_gemm_hp 0x10 --check_tol 1e-4)
+    # Static FP16 band with low-rank tiles, so FP16 tiles get low-rank x
+    # low-rank updates (their low-rank B was converted as a dense tile:
+    # residual 22 to 59, or a segfault); residuals 4.3e-5 (kinds 5 and 1)
+    hicma_add_test(gpu_tlr_hp_band       1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --band_dense 4
+                   --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256 --check_tol 3e-4)
+    # Kind 8 with an FP8 band (FP16 where the GPUs lack FP8) and low-rank
+    # tiles: FP8 operands, stored as FP32, were read as FP64 by the
+    # low-rank GEMMs (residual 1.5e-2 on an H100, 1.6e-5 fixed). --adddiag
+    # keeps the matrix positive definite under FP8 so close to the diagonal
+    hicma_add_test(gpu_tlr_fp8_band      1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --kind_of_cholesky 8
+                   --band_dense 6 --band_dense_dp 1 --band_dense_sp 2 --band_dense_hp 3 --adddiag 100 --fixedacc 1e-4 --maxrank 256
+                   --check_tol 3e-4)
 endif()

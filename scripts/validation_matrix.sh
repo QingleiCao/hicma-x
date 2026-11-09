@@ -8,7 +8,8 @@
 # time, GEMM counts) and one log per case under <out_dir>/logs_<label>/.
 # <out_dir> defaults to ./validation. "gpu" adds the single-GPU cases and the
 # two-rank cases that share one GPU (they pass --mca device_{cuda,hip}_memory_use 30).
-# The run-time libraries (BLAS, MPI) must be on LD_LIBRARY_PATH / PATH.
+# The drivers find BLAS and MPI through their run-time path; the launcher must
+# be on PATH.
 # HICMA_MPIRUN overrides the launcher of the two-rank cases (called with -n N);
 # the default is mpirun, else srun inside a Slurm allocation, else they are skipped.
 set -u
@@ -22,7 +23,12 @@ cd $BUILD
 if [ -n "${HICMA_MPIRUN:-}" ]; then
   MPIRUN=$HICMA_MPIRUN
 elif command -v mpirun > /dev/null 2>&1; then
-  MPIRUN="mpirun --oversubscribe --bind-to none"
+  # --oversubscribe and --bind-to are Open MPI options (MPICH's mpirun refuses them)
+  if mpirun --version 2>&1 | grep -qi "open mpi\|open-mpi\|openrte"; then
+    MPIRUN="mpirun --oversubscribe --bind-to none"
+  else
+    MPIRUN=mpirun
+  fi
 elif [ -n "${SLURM_JOB_ID:-}" ] && command -v srun > /dev/null 2>&1; then
   MPIRUN=srun
 else

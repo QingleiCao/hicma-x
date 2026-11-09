@@ -226,6 +226,8 @@ int check_dpotrf2( parsec_context_t *parsec, int verbose,
     else
     {
         if( verbose ) printf(GRN "-- Factorization is CORRECT ! \n" RESET);
+        if( 0 == A0->super.myrank )
+            printf("Check passed: ||LL^T-A||_F/||A||_F = %e, accepted bound %e (--check_tol)\n", result, threshold);
         info_factorization = 0;
     }
 

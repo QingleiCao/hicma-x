@@ -19,7 +19,8 @@
 #   HICMA_GPUS           number of GPUs for the GPU cases (default 0: skipped)
 #   HICMA_MPIRUN         launcher for the 2-rank cases, called as
 #                        "$HICMA_MPIRUN -n <ranks> ..." (default: "mpirun
-#                        --oversubscribe" when mpirun exists, else srun inside
+#                        --oversubscribe" with Open MPI, plain mpirun with
+#                        other MPIs, else srun inside
 #                        a Slurm allocation, as on Frontier, else "skip");
 #                        "skip" runs single rank only
 #
@@ -43,7 +44,12 @@ GPUS=${HICMA_GPUS:-0}
 if [ -n "${HICMA_MPIRUN:-}" ]; then
     MPIRUN=$HICMA_MPIRUN
 elif command -v mpirun > /dev/null 2>&1; then
-    MPIRUN="mpirun --oversubscribe"
+    # --oversubscribe is an Open MPI option (MPICH's mpirun refuses it)
+    if mpirun --version 2>&1 | grep -qi "open mpi\|open-mpi\|openrte"; then
+        MPIRUN="mpirun --oversubscribe"
+    else
+        MPIRUN=mpirun
+    fi
 elif [ -n "${SLURM_JOB_ID:-}" ] && command -v srun > /dev/null 2>&1; then
     MPIRUN=srun   # inside an allocation; outside one srun would request a new job
 else
@@ -129,6 +135,7 @@ fi
 # GPU cases
 if [ "$GPUS" -gt 0 ]; then
     G="--kind_of_problem 2 --N 8192 --NB 1024 --gpus $GPUS --check 1"
+    L="--kind_of_problem 2 --N 8192 --NB 512 --gpus $GPUS --check 1 --fixedacc 1e-4 --maxrank 256"
     run gpu_dense_fp64          1 $P $G
     run gpu_dense_adaptive      1 $P $G --adaptive_decision 1
     run gpu_dense_band2         1 $P $G --band_dense 2 --maxrank 512
@@ -143,17 +150,17 @@ if [ "$GPUS" -gt 0 ]; then
     run gpu_band_dp_sp_hp_sender 1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --datatype_convert 1 --check_tol 1e-5
     run gpu_band_sp_hp          1 $P $G --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5
     run gpu_band_hp_fp16acc     1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4
-    run gpu_dense_bf16          1 $P $G --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm_hp 0x20 --check_tol 1e-4
-    run gpu_dense_bf16_c16      1 $P $G --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm 0x40 --check_tol 1e-3
-    run gpu_dense_tf32          1 $P $G --band_dense_dp 2 --band_dense_sp 8 --tensor_gemm_sp 0x4 --check_tol 1e-4
-    L="--kind_of_problem 2 --N 8192 --NB 512 --gpus $GPUS --check 1 --fixedacc 1e-4 --maxrank 256"
-    run gpu_tlr_adaptive_fp16acc 1 $P $L --band_dense 4 --adaptive_decision 1 --tensor_gemm_hp 0x10 --check_tol 1e-4
-    run gpu_tlr_hp_band         1 $P $L --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --check_tol 3e-4
     run gpu_tlr_mp_hp_band      1 $P $L --kind_of_cholesky 1 --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --check_tol 3e-4
-    run gpu_tlr_fp8_band        1 $P $L --kind_of_cholesky 8 --band_dense 6 --band_dense_dp 1 --band_dense_sp 2 --band_dense_hp 3 --adddiag 100 --check_tol 3e-4
     else
     print_warning "GPU cases of kinds 1-4 (CUDA bodies only, refused on HIP)"; skipped=$((skipped+1))
     fi
+    # kinds 5 and 8 (CUDA and HIP; TF32 runs in FP32 on HIP)
+    run gpu_dense_bf16          1 $P $G --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm_hp 0x20 --check_tol 1e-4
+    run gpu_dense_bf16_c16      1 $P $G --band_dense_dp 2 --band_dense_sp 4 --band_dense_hp 8 --tensor_gemm 0x40 --check_tol 1e-3
+    run gpu_dense_tf32          1 $P $G --band_dense_dp 2 --band_dense_sp 8 --tensor_gemm_sp 0x4 --check_tol 1e-4
+    run gpu_tlr_adaptive_fp16acc 1 $P $L --band_dense 4 --adaptive_decision 1 --tensor_gemm_hp 0x10 --check_tol 1e-4
+    run gpu_tlr_hp_band         1 $P $L --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --check_tol 3e-4
+    run gpu_tlr_fp8_band        1 $P $L --kind_of_cholesky 8 --band_dense 6 --band_dense_dp 1 --band_dense_sp 2 --band_dense_hp 3 --adddiag 100 --check_tol 3e-4
     run gpu_trmm_adaptive       1 $T --N 2000 --K 1500 --NB 256 --gpus $GPUS --check 1 --adaptive_decision 1 --fixedacc 1e-4
 else
     print_warning "GPU cases (set HICMA_GPUS=1)"; skipped=$((skipped+1))

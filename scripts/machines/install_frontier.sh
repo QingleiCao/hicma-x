@@ -10,7 +10,10 @@
 # -DCMAKE_SHARED_LINKER_FLAGS="-L$ROCM_PATH/lib -lamdhip64 -lmpi_gtl_hsa".
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-BUILD=$(realpath -m "${1:-$ROOT/build}"); shift || true
+# the first argument is the build directory unless it is a CMake option
+BUILD=$ROOT/build
+case "${1:-}" in ""|-*) ;; *) BUILD=$1; shift ;; esac
+BUILD=$(realpath -m "$BUILD")
 
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \

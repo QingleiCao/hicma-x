@@ -1089,14 +1089,6 @@ BODY
         int Crank_new = ((int*)Cr)[0];
         if(DEBUG_INFO) printf("Cr value in DGEMM (%d, %d, %d): %d\n", m, n, k, ((int *)Cr)[0]);
 
-        if(0) printf("HCORE_dgemm( %d, %d, %d )\n\t( %s, %s, %d, %d, %d, %f, A(%d,%d)[%p], %d-%d, A(%d,%d)[%p], %d-%d, %f, A(%d,%d)[%p], %d-%d)\n",
-                m, n, k,
-                dplasma_lapack_const( PlasmaNoTrans ),  dplasma_lapack_const( PlasmaTrans ),
-                tempmmu, tempmmv, descA->mb,
-                -1.0, m, k, Au, ldamu, ldamv,
-                n, k, Bu, ldanu, ldanv,
-                1.0, m, n, Cu, ldamu, ldamv);
-
         /* Pass Cr value to size */
         if(params_tlr->send_full_tile == 1){
             this_task->locals.size.value = descA->mb * params_tlr->maxrank * 2;

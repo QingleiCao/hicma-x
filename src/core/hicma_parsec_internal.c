@@ -298,7 +298,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"tensor_gemm_sp", "GPU GEMMs of the FP32 tiles: 0x2=FP32 (default), 0x4=TF32", 0, &params->tensor_gemm_sp},
         {"tensor_gemm", "Both in one value (0.1.0): a --tensor_gemm_hp variant, plus 0x4 for TF32; 0x1 and 0x2 are accepted and ignored (default: 0xb). --tensor_gemm_hp and --tensor_gemm_sp override its parts", 0, &params->tensor_gemm},
         {"datatype_convert", "Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive", 0, &params->datatype_convert},
-        {"band_size_termination", "Band size auto-tuning termination on GPU, default 3.0", 1, &params->band_size_auto_tuning_termination},
+        {"band_size_termination", "--auto_band on CPUs: widen the dense band while the TLR operations of the next band times this factor exceed the dense ones (default 0.67); with GPUs the factor comes from the GPU/CPU performance model and this value is ignored", 1, &params->band_size_auto_tuning_termination},
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
         {"enable_stochastic_rounding", "Stochastic rounding for the down-conversions (0 or 1); not with FP8 GEMMs", 0, &params->enable_stochastic_rounding},
         {"nruns", "Number of Cholesky runs (default: 1); more than one needs the dense layout without --check, --auto_band, --adaptive_memory or --sparse", 0, &params->nruns},
@@ -811,6 +811,11 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
                 fprintf(stderr, RED "%s 0x%x: %s\n" RESET, opt, value, error);
             exit(1);
         }
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        /* AMD GPUs have no TF32: the FP32 GEMMs stay in FP32 */
+        if( (params->tensor_gemm & MASK_TF32) && params->gpus > 0 && 0 == params->rank )
+            fprintf(stderr, YEL "TF32 (0x4) is not available on HIP: FP32 tiles use FP32 GEMMs\n" RESET);
+#endif
     }
 
     // Set verbose flag for rank 0 only (avoid duplicate output in parallel execution)

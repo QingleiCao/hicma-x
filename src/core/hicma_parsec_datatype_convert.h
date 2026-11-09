@@ -28,7 +28,7 @@
  * - PaRSEC task-based parallel execution for large matrices
  * - Bit manipulation optimizations for half precision conversions
  * 
- * @version 1.0.0
+ * @version 0.2.0
  * @see hicma_parsec_internal.h for internal HICMA PaRSEC definitions
  */
 

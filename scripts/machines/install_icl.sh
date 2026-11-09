@@ -6,7 +6,10 @@
 # DPLASMA, PaRSEC, STARS-H and HCORE from the submodules (BUILD.md);
 # "cmake --install <build-dir>" then installs into <build-dir>/installdir.
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-BUILD=$(realpath -m "${1:-$ROOT/build}"); shift || true
+# the first argument is the build directory unless it is a CMake option
+BUILD=$ROOT/build
+case "${1:-}" in ""|-*) ;; *) BUILD=$1; shift ;; esac
+BUILD=$(realpath -m "$BUILD")
 
 module load env/gcc12-cuda12 cmake ninja openmpi intel-oneapi-mkl cuda python
 module list

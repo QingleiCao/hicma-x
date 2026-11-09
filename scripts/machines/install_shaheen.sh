@@ -7,7 +7,10 @@
 # "cmake --install <build-dir>" then installs into <build-dir>/installdir.
 # DPLASMA's code generator needs Python 3 (the system python3 will do).
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-BUILD=$(realpath -m "${1:-$ROOT/build}"); shift || true
+# the first argument is the build directory unless it is a CMake option
+BUILD=$ROOT/build
+case "${1:-}" in ""|-*) ;; *) BUILD=$1; shift ;; esac
+BUILD=$(realpath -m "$BUILD")
 
 module swap PrgEnv-cray PrgEnv-intel
 module load cmake gsl
