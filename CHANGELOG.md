@@ -79,8 +79,9 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   Negative sizes are refused; a `--P`/`--Q` that does not cover the
   processes is reported before the grid is chosen.
 - Refused instead of silently miscomputed: `--enable_stochastic_rounding` with
-  kinds 8, 9, 10; `--datatype_convert 2` without GPUs; kinds 1 to 4 with GPUs
-  on HIP; a half-precision band on CPU-only runs of kind 3. Kind 3 with
+  kinds 8, 9, 10; kinds 1 to 4 with GPUs on HIP. Changed with a message
+  instead: `--datatype_convert 2` without GPUs runs in mode 0, and a
+  half-precision band in CPU-only runs of kind 3 is widened to FP32. Kind 3 with
   `--datatype_convert 2` runs in the receiver mode: it does not implement the
   sender conversion, and with a one-tile FP64 band its GPU TRSM read the FP64
   diagonal factor as FP32.
@@ -280,9 +281,16 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   FP16 tile with a low-rank x low-rank update received garbage. It is now
   converted as U and V, like A; residuals 4.3e-5 (FP32 band: 2.1e-5, CPU:
   3.5e-5), and two ranks agree with one.
+- On GPUs with FP8 (H100), kind 8 with an FP8 band and low-rank tiles gave
+  wrong results (residual 1.5e-2) or crashed: the low-rank GEMMs, CPU and
+  GPU, converted a dense operand from FP32 only when it was SP or HP, so an
+  FP8 tile (stored and sent as FP32 like them) was read as FP64. Thirteen
+  conditions in five kernels and the core file now include DENSE_FP8;
+  residual 1.6e-5.
 - New CTest cases: BF16 with FP32 and with BF16 C, TF32, adaptive TLR with
-  FP16 C, a static FP16 band with low-rank tiles in kinds 5 and 1 (GPU), and
-  the start-up refusal of `0x18` (CPU).
+  FP16 C, a static FP16 band with low-rank tiles in kinds 5 and 1, an FP8
+  band with low-rank tiles in kind 8 (GPU), and the start-up refusal of
+  `0x18` (CPU); `scripts/test_CI.sh` runs them too.
 
 ### Usability (external-user pass)
 

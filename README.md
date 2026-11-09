@@ -55,8 +55,8 @@ cmake --build build
 ctest --test-dir build -L hicma -LE gpu
 ```
 
-A tile low-rank Cholesky in FP64, checked; add `--gpus 1` on a GPU build,
-which otherwise runs on the CPU:
+A tile low-rank Cholesky in FP64, checked; add `--gpus 1` on a CUDA build,
+which otherwise runs on the CPU (kinds 1 to 4 have no HIP GPU bodies):
 
 ```bash
 build/tests/testing_potrf_tlr --N 8192 --NB 512 --kind_of_problem 2 --kind_of_cholesky 2 --band_dense 1 --fixedacc 1e-8 --maxrank 150 --check 1

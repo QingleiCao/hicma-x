@@ -247,8 +247,9 @@ make -j2
 #### 6. System Specific Issues
 
 `scripts/machines/install_<machine>.sh` hold the modules and CMake options of
-the machines HiCMA-X is used on: Alps, Frontier, Fugaku, the ICL machines,
-Leonardo, Polaris, Shaheen, TACC and Vista. Each configures and builds the
+the machines HiCMA-X is used on: Alps, Frontier, Fugaku (script kept; not
+supported or validated in 0.2.0), the ICL machines, Leonardo, Polaris,
+Shaheen, TACC and Vista. Each configures and builds the
 whole tree once, STARS-H, HCORE, DPLASMA and PaRSEC included:
 
 ```bash

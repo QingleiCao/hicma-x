@@ -5,8 +5,9 @@ Branch `qinglei/release-cleanup`, 2026-11-07. Base: `main` at `6e987e3`
 per-item status: `docs/release-improvement-plan.md`; user-facing notes:
 `RELEASE.md`, `CHANGELOG.md`.
 
-Nothing has been tagged, pushed or merged. Those three steps need the
-maintainer's authorization (section 7).
+Nothing has been tagged or merged; the branch is pushed for ecrc/hicma-x#13.
+Tagging, the GitHub release and the merge need the maintainer's authorization
+(section 6).
 
 ## 1. Recommendation
 
@@ -22,6 +23,11 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `64a88d1` Low-rank GEMMs: an FP8 operand is stored as FP32, like SP and HP
+- `89bcd89` Documentation for the FP16-band fix: root cause, results, limitation removed
+- `c1456ff` Fix FP16 tiles with low-rank x low-rank updates on GPUs: convert the low-rank B as U and V
+- `348bca8` release-readiness: round 3 (fresh clone, install, CI, performance); variant timings in TESTS.md
+- `3fd5cda` Documentation for the GPU GEMM variants and rounds 1 and 2
 - `317e171` GPU GEMM variants: --tensor_gemm_hp and --tensor_gemm_sp, one checked variant
 - `070c85a` release-readiness: record the decision to keep the --gpus and TLR band defaults
 - `d5a519a` Documentation for the external-user pass
@@ -82,13 +88,14 @@ SONAME `libhicma_parsec.so.0`.
 - `4eca4c3` Apply --adddiag once for the STARS-H kernels that already carry it
 - `0c76e56` Make the correctness check binding and add --check_tol
 
-(This documentation commit follows.) Each commit is self-contained in intent;
+Each commit is self-contained in intent;
 the trees that were built and tested are the one after the documentation
 commit `8f7cb5e` (section 5.3), the one after the CI fixes (section 5.5), the
 one after the third pass (`ec39832`; sections 4, 5.1, 5.2, 5.6 and 5.7) and the
 final one, which includes the Frontier commits `6e01e6b` to `d6bf679`
-(section 5.8: CTest on CPU and CUDA, kind 3 on 2 ranks; the validation matrix
-was not rerun after the third pass).
+(section 5.8: CTest on CPU and CUDA, kind 3 on 2 ranks); the validation
+matrix was rerun after each later pass (sections 5.9 to 5.13), identical to
+the third pass on the A100.
 Intermediate commits were not built individually.
 
 ## 3. Validation environment
@@ -125,6 +132,9 @@ reproducible with `scripts/validation_matrix.sh`).
 
 ### 5.1 CTest
 
+This table is the third pass's; the cases added later and the final counts
+are in sections 5.12 and 5.13.
+
 | Tree | Command | Result |
 |---|---|---|
 | CPU | `ctest -L hicma -LE gpu --output-on-failure` | 25 / 25 passed (18 single-rank, 7 two-rank) on methane, and 25 / 25 in an AddressSanitizer build |
@@ -133,8 +143,8 @@ reproducible with `scripts/validation_matrix.sh`).
 Every registered case runs with `--check 1`; the mixed-precision cases state
 their accepted bound with `--check_tol` (1e-6 for the SP band on CPU, 1e-5
 with a half-precision band on GPU, 1e-4 with FP16 accumulation, 1e-7 for the
-adaptive and runtime-decision kinds). The two-rank GPU cases share the
-single A100 and pass `--mca device_cuda_memory_use 30`.
+adaptive and runtime-decision kinds). The two-rank GPU cases of the
+validation matrix share the single A100 and pass `--mca device_cuda_memory_use 30`.
 
 ### 5.2 Validation matrix
 
@@ -272,9 +282,9 @@ multi-GPU measurement was possible on this machine.
 
 ### 5.4 Not validated
 
-- HIP execution (compile only).
-- More than one node, more than one GPU per node, GPUs with compute capability
-  8.9 or higher (real FP8 arithmetic).
+- HIP on AMD GPUs (the CPU cases of a HIP build ran on Frontier, section 5.8).
+- More than one node. (Several GPUs per node: guyot, section 5.6; FP8 on an
+  H100: section 5.13.)
 - The climate emulator driver (`testing_climate_emulator`): compiled in every
   configuration, not run (needs the external data set).
 - The genomics drivers: see section 4; not run (data files).
@@ -591,8 +601,8 @@ CI on `c912875` passed (AMD EPYC 7763 runner, pthread OpenBLAS).
 
 On the A100, mixed precision (`--adaptive_decision 1`) reached 9.6 Tflop/s
 and the runtime decision (kind 10) 9.3; the FP64 GEMMs already run on the
-tensor cores. Lookahead 0 was 2 % faster than the default (1) on one GPU, in
-two runs each; not changed on one configuration.
+tensor cores. A later study of lookahead and tile size (section 5.13) found
+their effect within the run-to-run noise; no default changed.
 
 **Found and fixed** (`code-review.md` section 10):
 
@@ -702,6 +712,54 @@ CTest runs the layout in kinds 5 and 1 (`gpu_tlr_hp_band`,
 validation matrix identical to the third pass, AddressSanitizer 27 / 27, the
 HIP tree builds.
 
+### 5.13 Eighth pass: the H100, and two more rounds (hexane, methane)
+
+**hexane, H100 PCIe (compute capability 9.0, FP8 on)**, a tree built with the
+default architectures (70 80 90 90a), run inside the user's SLURM allocation
+with only the H100 visible:
+
+- CTest 48 / 48 and `scripts/test_CI.sh` 48 passed, 1 skipped (47 / 47 before
+  the FP8 case was added); the GPU validation matrix (50 cases) passes, twice
+  with identical results; the TRMM with 0x80 and 0x8 passes.
+- FP8 is used: dense static FP8 band 8.4e-7 with 1 FP8 GEMM (`--fp8 0`: 0),
+  kind 10 7.5e-9 with 3; two ranks sharing the H100 give the one-rank
+  residuals.
+- Found and fixed: FP8 operands read as FP64 by the low-rank GEMMs
+  (`code-review.md` section 12): before, residual 1.5e-2, 3.6e-2 or a crash;
+  after, 1.6e-5, 4.9e-5, 1.8e-4. The FP16-band fix of section 5.12 holds on
+  the H100 (4.4e-5).
+- FP8 numerics: a static FP8 band from tile distance 3 to 6 makes the test
+  matrix indefinite (`info` > 0, residual 60 to 75), from distance 8 on it
+  passes (1.2e-4 to 9e-6), `--adddiag 100` restores distance 3 (3.3e-5).
+  Documented, not a defect.
+
+Performance on the H100 (N=30720, NB=1024, bound to NUMA node 0, two runs):
+
+| Case | Time | Rate |
+|---|---|---|
+| DPLASMA `dpotrf -g 1` | 0.64 s | 11.1 to 12.1 Tflop/s |
+| kind 5 FP64 | 0.53 to 0.54 s | 17.8 to 18.1 |
+| kind 5 adaptive | 0.58 s | 16.6 to 16.8 |
+| kind 8 adaptive | 0.59 s | 16.3 to 16.4 (`--fp8 0`: 15.4 to 16.2) |
+| kind 10 run-time decisions | 0.67 to 0.71 s | 13.6 to 14.3 |
+| kind 5 FP16 band (0x8) | 0.48 to 0.54 s | 17.8 to 20.3 |
+| kind 5 FP32 band with TF32 | 0.40 to 0.41 s | 23.6 to 24.3 |
+
+On both GPUs the FP32 band with TF32 is the fastest; kind 10 pays for its
+per-GEMM decisions where FP64 GEMMs are as fast as on the H100.
+
+**Round 1** (checks on methane): CTest 27 / 27 (CPU) and 48 / 48 (CUDA,
+with `gpu_tlr_fp8_band`, which runs FP16 there), the validation matrix
+identical to the third pass, `scripts/test_CI.sh` 48 passed and 1 skipped
+(the climate data set), the HIP tree builds.
+
+**Round 2** (performance and release consistency): no device-wide
+synchronization or allocation in per-task GPU code; on the A100, lookahead
+(0, 1, 2) and tile size (1024, 2048) moved the dense time within the noise
+(up to 10 % between repeats at a load average of 15), so no default changed.
+A documentation audit against the code found 21 statements to fix; 20 were
+confirmed and corrected (section 12 of `code-review.md`).
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -721,7 +779,8 @@ HIP tree builds.
 | Fourth pass: build scripts (section 5.8) | done; CUDA default architectures and kind-3 guard messages fixed |
 | Fifth pass: macros and data structures (section 5.9) | done; unused names removed, switches settable, two climate debug paths fixed |
 | Sixth pass: external user, usability and performance (section 5.11) | done; `--nruns` crash, help defaults, summary line fixed; notes for three performance traps |
-| Seventh pass: GPU GEMM variants and three rounds of checks (section 5.12) | done; `--tensor_gemm_hp`/`_sp`, five wrong-result or crash paths closed; static FP16 band with low-rank tiles on GPUs fixed (low-rank B converted as dense) |
+| Seventh pass: GPU GEMM variants and three rounds of checks (section 5.12) | done; `--tensor_gemm_hp`/`_sp`, five wrong-result or crash paths closed; static FP16 band with low-rank tiles on GPUs fixed (its low-rank B is now converted as U and V) |
+| Eighth pass: H100 and two more rounds (section 5.13) | done; FP8 operands in the low-rank GEMMs fixed, documentation audited and corrected |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
@@ -738,7 +797,8 @@ HIP tree builds.
 3. **What `--check` decides**: the residual ||LL^T-A||/||A||. The forward error
    against the dense reference factor is printed but not checked (it was never
    effectively checked; binding it would need a second, looser bound).
-4. **CI**: passed after the fixes of section 5.5; rerun on the commits of section 5.6.
+4. **CI**: both jobs (CPU build, tests and install; CUDA compile) pass on every
+   push since section 5.10 (one run per push, listed in ecrc/hicma-x#13).
 5. **Hardware not available here**: AMD GPUs, H100 (FP8), multi-node. A run of
    `scripts/validation_matrix.sh <build> <label> gpu` on those systems before
    tagging is recommended.
@@ -773,7 +833,9 @@ Found in the second pass and left for later:
 - The public headers include STARS-H declarations with generic names (`diff`,
   `cube`, `Gaussian`), which an application cannot reuse in files that include
   `hicma_parsec.h` (third-party submodule, unchanged).
-- The FP16-compute branch of the two low-rank GPU GEMMs is fixed but no test
-  reaches it: the decisions of the test problems never route an update there.
+- The FP16-compute branch of the two low-rank GPU GEMMs is covered by
+  `gpu_tlr_adaptive_fp16acc` (0x10), and FP16 tiles with low-rank x low-rank
+  updates by `gpu_tlr_hp_band` and `gpu_tlr_mp_hp_band` (0x8); the FP16-band
+  layout under 0x10 was run by hand (1.7e-4).
 - Kind 3 has no CPU half-precision path; without GPUs the single-precision
   band is widened to the whole matrix.

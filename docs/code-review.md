@@ -1483,10 +1483,44 @@ mb x nb tile, as FP32 unless the tile was `DENSE_DP`, so a `LOW_RANK_DP` B's
 U and V were read as FP32 and past their buffer. It is converted as U and V
 of rank Brank now, like A and like the FP64 and FP32 branches. Every layout
 that failed passes, kinds 1 and 5, one and two ranks, with 0x8, 0x10 and
-TF32 (residuals 4.3e-5 to 1.7e-4); the temporary refusal is removed.
+TF32 (residuals 4.3e-5 to 1.7e-4); the temporary refusal is removed. The
+same refusal covered FP8 bands with low-rank tiles, which had a second bug,
+found on the H100 (section 12).
 
 **Not changed**: the `MASK_*` names and values (installed header); the TRMM's
 numerics (FP16 compute for FP16 C whatever the variant, except 0x80);
 `ENABLE_TF16_A16_B16_C16_OP16`; the legacy compute-type argument of the
 kind-3 band kernel's `cublasGemmEx`; TF32 stays ignored where the FP32 GEMMs
 do not take it (kind 3, run-time decisions, the TRMM, HIP).
+
+## 12. Eighth pass: the H100, and two more rounds (2026-11-09, on request)
+
+1. **FP8 operands read as FP64 in the low-rank GEMMs.** On hexane's H100
+   (FP8 on), kind 8 with an FP8 band and low-rank tiles gave wrong results
+   or crashed. FP8 tiles are stored and sent as FP32, like SP and HP tiles
+   (`decision_make_send.jdf`, the D2S conversion, and the TRSM, SYRK and
+   send-size code already say so), but thirteen conditions in the low-rank
+   GEMMs (the CPU low-rank-C bodies of five kernels, and
+   `hicma_parsec_core_gemm_denseC_lrA_denseB_{cpu,gpu}`) converted a dense
+   operand from FP32 only when it was SP or HP. They now include DENSE_FP8.
+   A tree built before the change gives residuals of 1.5e-2 and 3.6e-2 (or a
+   crash) on the layouts that give 1.6e-5, 4.9e-5 and 1.8e-4 after it.
+2. **FP8 numerics.** A static FP8 band close to the diagonal makes the test
+   matrix indefinite: dense layout, FP8 from tile distance 3 to 6, `info` >
+   0 and residual 60 to 75; from distance 8 on, 1.2e-4 to 9e-6; with
+   `--adddiag 100`, 3.3e-5 from distance 3. The residual degrades smoothly
+   with the distance and the breakdown is reported, so this is the precision,
+   not a defect; with low-rank tiles the NaNs reach HCORE, whose QR aborts.
+   Documented (`TESTS.md`, `RELEASE.md`); CTest `gpu_tlr_fp8_band` uses
+   `--adddiag 100`.
+3. **Documentation audit** by a separate agent against the code: 21
+   findings, 20 confirmed and fixed (option defaults of `--P`, stale case
+   counts, the kinds table, refusals described as "at start-up" that happen
+   later, the HIP and multi-GPU validation scope, the commit list); one did
+   not hold (the default lookahead of a dense GPU run is 1, not NT, set in
+   `hicma_parsec_params_check`). `scripts/test_CI.sh` gained the eight CTest
+   cases added since it was last changed.
+4. **Performance.** No per-task device-wide synchronization or allocation in
+   the GPU hot paths (kind 10's per-GEMM norm read already uses a private
+   stream, by design). Lookahead and tile size moved the time within the
+   noise on the A100 (section 5.13 of release-readiness); no default changed.

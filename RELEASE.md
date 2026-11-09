@@ -25,8 +25,8 @@ and the genomics (kernel ridge regression) applications.
 | Configuration | Status in 0.2.0 |
 |---|---|
 | Linux x86_64, CPU only (OpenBLAS or MKL, LAPACKE, Open MPI or MPICH) | tested (CI, 1 and 2 ranks) |
-| Linux x86_64 + CUDA 12 (A100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it); H100 FP8 results from the development of this release are in `PR` history, not re-run here |
-| Linux + ROCm 6 (HIP, gfx90a) | compiles; not run on AMD hardware for this release |
+| Linux x86_64 + CUDA 12 (A100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks) and one H100 (FP8; 1 and 2 ranks) |
+| Linux + ROCm 6 (HIP, gfx90a) | compiles; the CPU cases of a HIP build ran on Frontier; not run on AMD GPUs |
 | Fugaku (`ON_FUGAKU`), macOS, Windows | not supported |
 
 Requirements: CMake 3.21, a C11/C++17 compiler, a Fortran compiler (BLAS/LAPACK
@@ -44,6 +44,9 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
   not for kinds 8 to 10 and not together with FP8 GEMMs.
 - `--tensor_gemm` variants other than 0x8 are not implemented on every path
   (`TESTS.md`, "GPU GEMM variants"); `--datatype_convert 2` needs GPUs.
+- A static FP8 band near the diagonal can make the matrix indefinite (the
+  factorization reports `info` > 0; with low-rank tiles HCORE aborts on the
+  NaNs). Keep it away from the diagonal or use `--adaptive_decision`.
 - In runtime-decision mode the CPU GEMM keeps FP16 updates into an FP32 tile in
   FP64 while the GPU GEMM keeps FP32; CPU-only and GPU runs of kind 10 therefore
   differ in their storage precisions (results are within tolerance in both).
@@ -126,7 +129,8 @@ before/after timing comparison.
   meaning, except with `--adaptive_decision` (below). Refused
   at start-up: no variant or several (0.1.0 gave wrong results in kind 3 and
   aborted mid-run in kind 5), BF16 with low-rank tiles or in kind 3 (wrong
-  results), a variant other than 0x8 in kind 10 (ignored before), 0x80
+  results), a variant other than 0x8 with `--adaptive_decision_runtime`
+  (ignored before), 0x80
   in the Cholesky (exited 0 without factorizing), BF16 in the TRMM.
   `--adaptive_decision` uses the chosen variant and TF32; it always used 0x8
   without TF32, and with 0x10 its dense and low-rank GEMMs disagreed on the
@@ -136,8 +140,9 @@ before/after timing comparison.
   rank 0.
 - GPU runs of kinds 1 and 5 with a static FP16 band and low-rank tiles
   (`--band_dense_sp` < `--band_dense` < NT) return correct results; 0.1.0
-  gave wrong results (residuals 10 to 59) or crashed. Results of such runs
-  change.
+  gave wrong results (residuals 10 to 59) or crashed. So do kind-8 runs with
+  an FP8 band and low-rank tiles on GPUs with FP8 (residual 1.5e-2 before).
+  Results of such runs change.
 
 ## 0.1.0
 

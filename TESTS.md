@@ -19,9 +19,10 @@ Configurations that compute whole bands in single or half precision (kinds 3,
 4, 9, and `--adaptive_decision` runs at a tolerance of 1e-8 or tighter) reach
 the accuracy of that precision, not an FP64-level `fixedacc`; pass the bound
 you expect them to meet, for example `--check_tol 1e-6` for a single-precision
-band. The registered CTest cases use 1e-7 for the `--adaptive_decision` runs
+band. The registered CPU cases use 1e-7 for the `--adaptive_decision` runs
 (their residual is 6e-9 to 1.1e-8 depending on the BLAS library) and 1e-6 for
-the single/half-precision band kinds. `--check 1` roughly doubles the run time (dense reference factorization)
+the single-precision band; the GPU cases with FP16, BF16 or TF32 GEMMs use
+1e-5 to 1e-3, about ten times their measured residuals (`tests/CMakeLists.txt`). `--check 1` roughly doubles the run time (dense reference factorization)
 and uses two extra copies of the matrix.
 
 The mixed-precision TRMM driver `testing_trmm_mp --check 1` compares against
@@ -75,7 +76,7 @@ On a HIP build the GPU cases of kinds 1 to 4 are skipped (CUDA bodies only).
 ### The validation matrix
 
 `scripts/validation_matrix.sh <build_dir> <label> [cpu|gpu] [out_dir]` runs
-the release validation matrix (30 CPU cases, 45 with `gpu`): every Cholesky
+the release validation matrix (31 CPU cases, 50 with `gpu`): every Cholesky
 kind, the TRMM, the sparse paths, single- and two-rank runs, all with
 `--check 1`. It writes `results_<label>.tsv` (exit code, residual,
 factorization time, GEMM precision counts) and one log per case. The results
@@ -146,8 +147,15 @@ CUDA build; see `BUILD.md`.
 - `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the TRMM,
   not for kinds 8 to 10, and not together with FP8 GEMMs.
 - The GPU GEMM variants other than the default are not implemented
-  everywhere ("GPU GEMM variants" below); the drivers refuse the others at
-  start-up.
+  everywhere ("GPU GEMM variants" below); the drivers refuse the others
+  before the factorization.
+- A static FP8 band (kind 8, `--band_dense_hp` < `--band_dense`) close to
+  the diagonal can make the matrix indefinite: FP8 keeps 3 mantissa bits. On
+  an H100 (problem kind 2, N=8192, NB=512), FP8 from tile distance 3 to 6
+  fails with `info` > 0, from distance 8 on the residual is 1e-4 to 1e-5,
+  and `--adddiag 100` makes distance 3 work (3.3e-5). With low-rank tiles
+  the breakdown reaches HCORE as NaNs and aborts the run. `--adaptive_decision`
+  places FP8 from the tile norms instead.
 - `--datatype_convert 2` needs GPUs.
 - On CPUs other than the A64FX (Fugaku), FP16 tiles are emulated: they model
   the accuracy of half precision, without a speed-up.
@@ -166,8 +174,8 @@ CUDA build; see `BUILD.md`.
 | 5 | `DENSE_MP_GPU` | default: dense or banded, static or adaptive precisions, low-rank off-band | CPU, CUDA, HIP |
 | 6 | `SPARSE_TLR_DP_GENERAL` | TLR Cholesky over the sparsity pattern (`--sparse 1`) | CPU |
 | 7 | `SPARSE_TLR_DP_BALANCE` | kind 6 with load-balanced GEMM distribution (`--sparse 2`) | CPU |
-| 8 | `DENSE_MP_GPU_FP8` | kind 5 with a static FP8 band (compute capability ≥ 8.9) | CUDA, HIP (no FP8) |
-| 9 | `DENSE_MP_GPU_FP8_SP` | kind 8 with every tile at FP32 or lower | CUDA, HIP (no FP8) |
+| 8 | `DENSE_MP_GPU_FP8` | kind 5 with a static FP8 band (compute capability ≥ 8.9) | CPU, CUDA, HIP (FP8 only on CUDA with compute capability ≥ 8.9; FP16 elsewhere) |
+| 9 | `DENSE_MP_GPU_FP8_SP` | kind 8 with every tile at FP32 or lower | CPU, CUDA, HIP (as kind 8) |
 | 10 | `DENSE_MP_GPU_FP8_ADAPTIVE` | GEMM precisions decided at run time from the operand norms (`--adaptive_decision_runtime 1`) | CPU, CUDA, HIP |
 
 ## Problem kinds (`--kind_of_problem`)
@@ -182,7 +190,7 @@ CUDA build; see `BUILD.md`.
 | 5 | ed-3d-sin | electrodynamics, 3-D |
 | 6 | md-3d-virus | RBF mesh deformation, virus mesh (`--mesh_file`) |
 | 7 | md-3d-cube | RBF mesh deformation, cube |
-| 8 | matern-2d | Matérn (needs GSL) |
+| 8 | matern-2d | Matérn (kinds 8 to 13 need GSL) |
 | 9 | space-time-matern-2d | space-time Matérn |
 | 10 | space-time-matern-real-2d | space-time Matérn on real locations |
 | 11 | space-time-matern-real-exageo-2d | ExaGeoStat variant |
@@ -203,12 +211,12 @@ the shift is applied once and the reference matrix of `--check` carries it too.
 plus 0x4 for TF32; its 0x1 and 0x2 change nothing, so the default `0xb`
 means 0x8 in FP32. The two new options override its parts. Values with no
 FP16 variant or several (`--tensor_gemm 0x3`, `0x18`), and variants a path
-does not implement, are refused at start-up.
+does not implement, are refused before the factorization (most at start-up).
 
 | `--tensor_gemm_hp` | A, B | C | Compute | Implemented in |
 |---|---|---|---|---|
 | 0x8 (default) | FP16 | FP32 | FP32 | everywhere |
-| 0x10 | FP16 | FP16 | FP16 | every Cholesky kind, not with `--adaptive_decision_runtime`; the TRMM (same as 0x8 there) |
+| 0x10 | FP16 | FP16 | FP16 | every Cholesky kind, not with `--adaptive_decision_runtime`, and on GPUs not when a low-rank tile has rank 0; the TRMM (same as 0x8 there) |
 | 0x20 | BF16 | FP32 | FP32 | dense layout (`--band_dense` ≥ NT), kinds other than 3, not with `--datatype_convert 2` or `--adaptive_decision_runtime` |
 | 0x40 | BF16 | BF16 | FP32 | as 0x20 |
 | 0x80 | FP16 | FP16 | FP32 | the TRMM only |
@@ -233,7 +241,7 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 |---|---|---|
 | `--cores` | int | Number of compute threads per process (default: number of physical cores) |
 | `--gpus` | int | Number of GPUs per process (default: 0, CPU only) |
-| `--P` | int | Rows (P) in the PxQ process grid (default: NP) |
+| `--P` | int | Rows (P) in the PxQ process grid (default: the squarest grid, P >= Q) |
 | `--Q` | int | Columns (Q) in the PxQ process grid (default: NP/P) |
 | `--grid_rows` | int | Same as --P |
 | `--grid_cols` | int | Same as --Q |
@@ -312,7 +320,8 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
    is faster.
 2. Set `--cores` to the number of cores minus one when a core is needed for
    communication.
-3. Choose a process grid as square as possible (`--P`), with P ≤ Q.
+3. Choose a process grid as square as possible (`--P`), with P ≤ Q; without
+   `--P` the drivers take the squarest grid with P ≥ Q.
 4. The tile size has to be tuned per problem and machine; for dense problems a
    quick scan of a few sizes is enough.
 5. Suggested `--maxrank`: 150 for `--kind_of_problem 2`, 500 for 3, NB/2 for 4,

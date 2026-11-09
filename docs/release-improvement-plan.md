@@ -172,3 +172,8 @@ after the library changes.
   low-rank tiles root-caused and fixed: the FP16 branch of the low-rank x
   low-rank GPU GEMM converted its low-rank B as a dense tile. The refusal is
   removed; CTest runs the layout in kinds 5 and 1.
+- 2026-11-09 (eighth pass, on request): the H100 run (CTest, matrix, FP8,
+  two ranks, performance) found FP8 operands read as FP64 by the low-rank
+  GEMMs (fixed); FP8 band numerics documented; a documentation audit's
+  findings corrected; `scripts/test_CI.sh` brought up to the CTest cases.
+  See `release-readiness.md` section 5.13.
