@@ -609,6 +609,22 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
         MPI_Initialized(&already_initialized);
         if (!already_initialized) {
             int provided;
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+            /* GPU runs allocate host tiles with hipHostMalloc, which Cray
+             * MPICH's intra-node single copy (process_vm_readv) cannot read
+             * without its GPU support: the first transfer of a multi-rank GPU
+             * run on Frontier aborted ("Bad address"). Use its copy through
+             * shared memory then, unless the user chose a mode. */
+            {
+                const char *mpich_gpu = getenv("MPICH_GPU_SUPPORT_ENABLED");
+                char mpi_lib[MPI_MAX_LIBRARY_VERSION_STRING];
+                int mpi_lib_len = 0;
+                if( NULL == getenv("MPICH_SMP_SINGLE_COPY_MODE") && (NULL == mpich_gpu || 0 != strcmp(mpich_gpu, "1"))
+                    && MPI_SUCCESS == MPI_Get_library_version(mpi_lib, &mpi_lib_len) && NULL != strstr(mpi_lib, "CRAY MPICH") ) {
+                    setenv("MPICH_SMP_SINGLE_COPY_MODE", "NONE", 0);
+                }
+            }
+#endif
             MPI_Init_thread(_argc, _argv, MPI_THREAD_MULTIPLE, &provided);
             params->mpi_initialized_by_hicma = 1;
         } else {
