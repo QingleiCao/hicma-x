@@ -844,7 +844,20 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
      * several ranks). Keep sending from GPU memory (2) but receive in host
      * memory, unless the user chose a value. */
     if( NULL == getenv("PARSEC_MCA_mpi_gpu_aware") ) {
-        parsec_setenv_mca_param( "mpi_gpu_aware", "2", &environ );
+        /* Cray MPICH moves GPU memory only with MPICH_GPU_SUPPORT_ENABLED=1
+         * and its GTL library linked; otherwise its intra-node copy of a GPU
+         * buffer aborts (process_vm_readv: Bad address) at the first transfer
+         * of a multi-rank GPU run on Frontier. Keep every transfer in host
+         * memory there. */
+        char gpu_aware[] = "2";
+        const char *mpich_gpu = getenv("MPICH_GPU_SUPPORT_ENABLED");
+        char mpi_lib[MPI_MAX_LIBRARY_VERSION_STRING];
+        int mpi_lib_len = 0;
+        if( MPI_SUCCESS == MPI_Get_library_version(mpi_lib, &mpi_lib_len) && NULL != strstr(mpi_lib, "CRAY MPICH")
+            && (NULL == mpich_gpu || 0 != strcmp(mpich_gpu, "1")) ) {
+            gpu_aware[0] = '0';
+        }
+        parsec_setenv_mca_param( "mpi_gpu_aware", gpu_aware, &environ );
     }
 #endif
 

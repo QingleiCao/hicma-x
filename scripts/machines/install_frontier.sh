@@ -5,9 +5,11 @@
 # DPLASMA, PaRSEC, STARS-H and HCORE from the submodules (BUILD.md);
 # "cmake --install <build-dir>" then installs into <build-dir>/installdir.
 # Needs ROCM_PATH (rocm module), OLCF_OPENBLAS_ROOT (openblas module) and
-# CRAY_MPICH_DIR. For GPU-aware MPI, load craype-accel-amd-gfx90a, export
+# CRAY_MPICH_DIR. Without MPICH_GPU_SUPPORT_ENABLED=1 a multi-rank GPU run
+# moves remote data through host memory (Cray MPICH cannot read GPU buffers
+# then). For GPU-aware MPI, load craype-accel-amd-gfx90a, export
 # MPICH_GPU_SUPPORT_ENABLED=1 and pass
-# -DCMAKE_SHARED_LINKER_FLAGS="-L$ROCM_PATH/lib -lamdhip64 -lmpi_gtl_hsa".
+# -DCMAKE_SHARED_LINKER_FLAGS="-L$ROCM_PATH/lib -lamdhip64 -L$CRAY_MPICH_ROOTDIR/gtl/lib -lmpi_gtl_hsa".
 set -e
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 # the first argument is the build directory unless it is a CMake option
