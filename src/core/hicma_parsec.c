@@ -288,6 +288,27 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
     hicma_parsec_decisions_update( parsec, data, params );
     SYNC_TIME_PRINT(params->rank, ("Decision update: %d\n", params->adaptive_decision));
 
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    /* The FP16 matrix instructions of AMD gfx90a (MI200) flush FP16 subnormal
+     * inputs (|x| < 6.1e-5) to zero, and FP16 tiles are chosen for their small
+     * entries: at N=30720 the FP16 tiles of an adaptive kind-5 run gave
+     * ||LL^T-A||/||A|| = 1.0e-5 for --fixedacc 1e-8, the same tiles in BF16
+     * (FP32's exponent range) 1.2e-8. --tensor_gemm chooses; say so when the
+     * decisions produced FP16 tiles. The run-time decision (kind 10) scales its
+     * FP16 operands and is not concerned. */
+    if( params->gpus > 0 && 0 == params->rank && !params->adaptive_decision_runtime
+        && (MASK_TF16_A16_B16_C32_OP32 == HICMA_FP16_GEMM(params) || MASK_TF16_A16_B16_C16_OP16 == HICMA_FP16_GEMM(params)) ) {
+        const int NT = params->NT;
+        int nb_hp = 0;
+        for( int k = 0; k < NT; k++ )
+            for( int m = k; m < NT; m++ )
+                nb_hp += DENSE_HP == params->decisions[k*NT+m];
+        if( nb_hp > 0 )
+            fprintf(stderr, YEL "%d FP16 tiles on an AMD GPU, whose FP16 GEMMs flush entries below 6.1e-5 to zero: "
+                    "they can lose accuracy; --tensor_gemm_hp 0x20 (BF16) avoids it when every tile is dense\n" RESET, nb_hp);
+    }
+#endif
+
     /* Step 10b: with FP16 C (--tensor_gemm_hp 0x10) a dense FP16 tile goes to
      * FP16 at its first update and back at its last, which a rank-0 low-rank
      * operand skips: refuse it on GPUs when a low-rank tile has rank 0 (the

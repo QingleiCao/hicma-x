@@ -38,6 +38,8 @@ fi
 # MCA parameters are named after the device type
 HIP_BUILD=0; GPU_MCA=device_cuda
 grep -q '^HICMA_PARSEC_HAVE_HIP:BOOL=ON' CMakeCache.txt 2> /dev/null && { HIP_BUILD=1; GPU_MCA=device_hip; }
+# AMD gfx90a flushes FP16 subnormals: the adaptive dense GPU cases use BF16 there (as CTest)
+HPV=""; [ "$HIP_BUILD" -eq 1 ] && HPV="--tensor_gemm_hp 0x20"
 run() { # name, np, cmd...
   local name=$1; local np=$2; shift 2
   local log=$LOGD/$name.log
@@ -96,10 +98,10 @@ run runtime_k10_np2         2 $P --N 4096 --NB 512 --kind_of_problem 2 --adaptiv
 run trmm_adapt_np2          2 $T --N 2000 --K 1500 --NB 256 --check 1 --adaptive_decision 1 --fixedacc 1e-4
 if [ "$MODE" = gpu ]; then
 run gpu_dense_k5_fp64       1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2
-run gpu_dense_k5_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision 1 --check 1 --verbose 2
+run gpu_dense_k5_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision 1 --check 1 --verbose 2 $HPV
 run gpu_dense_k5_band2      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --band_dense 2 --maxrank 512 --check 1 --verbose 2
-run gpu_dense_k8_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 8 --adaptive_decision 1 --check 1 --verbose 2
-run gpu_dense_k9_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 9 --adaptive_decision 1 --check 1 --check_tol 1e-6 --verbose 2
+run gpu_dense_k8_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 8 --adaptive_decision 1 --check 1 --verbose 2 $HPV
+run gpu_dense_k9_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 9 --adaptive_decision 1 --check 1 --check_tol 1e-6 --verbose 2 $HPV
 run gpu_runtime_k10         1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --check 1 --verbose 2
 run gpu_runtime_k10_admem   1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --adaptive_memory 1 --check 1 --verbose 2
 if [ "$HIP_BUILD" -eq 0 ]; then
@@ -117,6 +119,6 @@ run gpu_band_k3_fp16acc    1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 
 fi
 run gpu_dense_k5_fp64_np2   2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --check 1 --verbose 2 -- --mca ${GPU_MCA}_memory_use 30
 run gpu_runtime_k10_np2     2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --check 1 --verbose 2 -- --mca ${GPU_MCA}_memory_use 30
-run gpu_dense_k8_np2        2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 8 --adaptive_decision 1 --check 1 --verbose 2 -- --mca ${GPU_MCA}_memory_use 30
+run gpu_dense_k8_np2        2 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 8 --adaptive_decision 1 --check 1 --verbose 2 $HPV -- --mca ${GPU_MCA}_memory_use 30
 fi
 echo "results: $RES"

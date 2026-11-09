@@ -137,10 +137,12 @@ if [ "$GPUS" -gt 0 ]; then
     G="--kind_of_problem 2 --N 8192 --NB 1024 --gpus $GPUS --check 1"
     L="--kind_of_problem 2 --N 8192 --NB 512 --gpus $GPUS --check 1 --fixedacc 1e-4 --maxrank 256"
     run gpu_dense_fp64          1 $P $G
-    run gpu_dense_adaptive      1 $P $G --adaptive_decision 1
+    # on AMD GPUs the adaptive FP16 tiles run in BF16 (FP16 subnormals are flushed)
+    HPV=""; [ "$HIP_BUILD" -eq 1 ] && HPV="--tensor_gemm_hp 0x20"
+    run gpu_dense_adaptive      1 $P $G --adaptive_decision 1 $HPV
     run gpu_dense_band2         1 $P $G --band_dense 2 --maxrank 512
-    run gpu_fp8_static          1 $P $G --kind_of_cholesky 8 --adaptive_decision 1
-    run gpu_fp8_sp              1 $P $G --kind_of_cholesky 9 --adaptive_decision 1 --check_tol 1e-6
+    run gpu_fp8_static          1 $P $G --kind_of_cholesky 8 --adaptive_decision 1 $HPV
+    run gpu_fp8_sp              1 $P $G --kind_of_cholesky 9 --adaptive_decision 1 --check_tol 1e-6 $HPV
     run gpu_runtime_decision    1 $P $G --adaptive_decision_runtime 1 --check_tol 1e-7
     run gpu_runtime_admem       1 $P $G --adaptive_decision_runtime 1 --adaptive_memory 1 --check_tol 1e-7
     if [ "$HIP_BUILD" -eq 0 ]; then

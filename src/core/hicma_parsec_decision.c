@@ -577,7 +577,7 @@ void hicma_parsec_get_precision_tile(hicma_parsec_params_t *params_tlr,
     // Determine precision decisions based on tile norm relative to global norm and tolerance
     // Each decision checks if the normalized tile norm is below the precision-specific threshold
     bool decision_hp_gpu = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_HP_GPU;
-    bool decision_hp = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_HP;
+    bool decision_hp = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / HICMA_EPS_HP(params_tlr);
     bool decision_sp = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_SP;
     bool decision_fp8 = norm_tile * scalar_factore / params_tlr->norm_global  < params_tlr->fixedacc / EPS_FP8;
 

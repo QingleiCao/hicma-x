@@ -454,6 +454,10 @@ typedef int64_t hicma_parsec_int64_t;  /**< Standard 64-bit integer type */
 #define EPS_HP     4.88e-04  /**< Half precision epsilon (IEEE 754) */
 #define EPS_HP_GPU 8.88e-01  /**< Half precision GPU epsilon (relaxed precision) */
 #define EPS_FP8    0.0625    /**< FP8 precision epsilon (custom 8-bit format) */
+#define EPS_BF16   3.91e-03  /**< bfloat16 epsilon (8-bit significand) */
+/** Epsilon of the "HP" tiles: their GPU GEMMs run in BF16 with --tensor_gemm_hp 0x20 or 0x40 */
+#define HICMA_EPS_HP(params) ((HICMA_FP16_GEMM(params) & (MASK_BF16_A16_B16_C32_OP32 | MASK_BF16_A16_B16_C16_OP16)) \
+                              ? EPS_BF16 : EPS_HP)
 
 /* ============================================================================
  * JDF (Job Data Flow) identifiers
