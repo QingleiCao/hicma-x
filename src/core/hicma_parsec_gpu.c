@@ -15,10 +15,15 @@
  * creation (for example when several ranks share one GPU and the first one
  * reserved most of its memory) used to crash later in cublasSetStream with a
  * segfault. Check explicitly. Used inside the (i, j) device/stream loops. */
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#define HICMA_GPU_MEMORY_MCA "device_hip_memory_use"
+#else
+#define HICMA_GPU_MEMORY_MCA "device_cuda_memory_use"
+#endif
 #define HICMA_GPU_HANDLE_CHECK(ok, what) do {                                        \
         if( !(ok) ) {                                                                 \
             fprintf(stderr, "Fatal: %s failed on device %d stream %d; when several "  \
-                    "processes share a GPU, lower PaRSEC's device_cuda_memory_use\n", \
+                    "processes share a GPU, lower PaRSEC's " HICMA_GPU_MEMORY_MCA "\n", \
                     (what), i, j);                                                    \
             abort();                                                                  \
         }                                                                             \
@@ -480,6 +485,61 @@ void gpu_handle_fini( hicma_parsec_data_t *data ) {
     free( ws );
 }
 
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+/* rocBLAS and rocSOLVER set a handle up (workspace, kernel code objects) at
+ * its first call, which in a GPU run happened inside the factorization: on an
+ * MI210 the first dense factorization at N=8192 took 0.52 s and the next ones
+ * 0.055 s (DPLASMA: 0.126 s, then 0.060 s). Call every handle of a stream once,
+ * at tile size, with the routines and precisions the Cholesky uses; the
+ * buffers are scratch and are zeroed again afterwards. */
+static void hicma_gpu_handles_warmup( parsec_potrf_stream_workspace_t *sw, hipStream_t stream, int mb )
+{
+    void *A = sw->gpu_buffer_A, *B = sw->gpu_buffer_B, *C = sw->gpu_buffer_C;
+    const size_t bytes = (size_t)mb * mb * sizeof(double);
+    const double d1 = 1.0, d0 = 0.0;
+    const float s1 = 1.0f, s0 = 0.0f;
+    if( NULL == A || NULL == B || NULL == C || NULL == sw->handle_cublas ) return;
+    hipMemsetAsync(A, 0, bytes, stream);
+    hipMemsetAsync(B, 0, bytes, stream);
+    hipMemsetAsync(C, 0, bytes, stream);
+    hipblasHandle_t blas[2] = { sw->handle_cublas, sw->handle_cublas_tensor };
+    for( int h = 0; h < 2; h++ ) {
+        if( NULL == blas[h] ) continue;
+        hipblasSetStream(blas[h], stream);
+        hipblasDgemm(blas[h], HIPBLAS_OP_N, HIPBLAS_OP_T, mb, mb, mb, &d1, A, mb, B, mb, &d0, C, mb);
+        hipblasSgemm(blas[h], HIPBLAS_OP_N, HIPBLAS_OP_T, mb, mb, mb, &s1, A, mb, B, mb, &s0, C, mb);
+        hipblasGemmEx(blas[h], HIPBLAS_OP_N, HIPBLAS_OP_T, mb, mb, mb, &d1, A, HIPBLAS_R_64F, mb, B, HIPBLAS_R_64F, mb,
+                      &d0, C, HIPBLAS_R_64F, mb, HIPBLAS_R_64F, HIPBLAS_GEMM_DEFAULT);
+        hipblasGemmEx(blas[h], HIPBLAS_OP_N, HIPBLAS_OP_T, mb, mb, mb, &s1, A, HIPBLAS_R_32F, mb, B, HIPBLAS_R_32F, mb,
+                      &s0, C, HIPBLAS_R_32F, mb, HIPBLAS_R_32F, HIPBLAS_GEMM_DEFAULT);
+        hipblasGemmEx(blas[h], HIPBLAS_OP_N, HIPBLAS_OP_T, mb, mb, mb, &s1, A, HIPBLAS_R_16F, mb, B, HIPBLAS_R_16F, mb,
+                      &s0, C, HIPBLAS_R_32F, mb, HIPBLAS_R_32F, HIPBLAS_GEMM_DEFAULT);
+        hipblasGemmEx(blas[h], HIPBLAS_OP_N, HIPBLAS_OP_T, mb, mb, mb, &s1, A, HIPBLAS_R_16B, mb, B, HIPBLAS_R_16B, mb,
+                      &s0, C, HIPBLAS_R_32F, mb, HIPBLAS_R_32F, HIPBLAS_GEMM_DEFAULT);
+    }
+    hipblasDtrsm(sw->handle_cublas, HIPBLAS_SIDE_RIGHT, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_T, HIPBLAS_DIAG_NON_UNIT,
+                 mb, mb, &d1, A, mb, C, mb);
+    hipblasStrsm(sw->handle_cublas, HIPBLAS_SIDE_RIGHT, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_T, HIPBLAS_DIAG_NON_UNIT,
+                 mb, mb, &s1, A, mb, C, mb);
+    hipblasDsyrk(sw->handle_cublas, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_N, mb, mb, &d1, A, mb, &d1, C, mb);
+    hipblasSsyrk(sw->handle_cublas, HIPBLAS_FILL_MODE_LOWER, HIPBLAS_OP_N, mb, mb, &s1, A, mb, &s1, C, mb);
+    if( NULL != sw->handle_cublas_deviceptr ) {  /* norms of the run-time decision, result on the device */
+        hipblasSetStream(sw->handle_cublas_deviceptr, stream);
+        hipblasDnrm2(sw->handle_cublas_deviceptr, mb * mb, A, 1, (double *)B);
+        hipblasSnrm2(sw->handle_cublas_deviceptr, mb * mb, A, 1, (float *)B);
+    }
+    if( NULL != sw->handle_cusolver && NULL != sw->gpu_buffer ) {
+        hipblasSetStream(sw->handle_cusolver, stream);
+        rocsolver_dpotrf(sw->handle_cusolver, rocblas_fill_lower, mb, C, mb, (int *)sw->gpu_buffer);
+        rocsolver_spotrf(sw->handle_cusolver, rocblas_fill_lower, mb, C, mb, (int *)sw->gpu_buffer);
+    }
+    hipMemsetAsync(A, 0, bytes, stream);
+    hipMemsetAsync(B, 0, bytes, stream);
+    hipMemsetAsync(C, 0, bytes, stream);
+    hipStreamSynchronize(stream);
+}
+#endif
+
 /**
  * @brief Initialize GPU temporary buffer
  *
@@ -746,6 +806,9 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 }
             }
 
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+            hicma_gpu_handles_warmup(&data->ws_gpu->gpu_workspace[i].stream_workspace[j], cuda_stream->cuda_stream, mb);
+#endif
         }
     }
 
