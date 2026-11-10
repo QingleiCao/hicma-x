@@ -2745,6 +2745,703 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
     params_tlr->op_offpath[es->th_id] += cnt;
 }
 
+/**
+ * @brief CPU GEMM C = C - A * B^T for a low-rank C, a low-rank A and a dense B
+ *
+ * The update and its recompression (HCORE). C and A, and B when low-rank, are
+ * stored as U then V; C is LOW_RANK_DP or LOW_RANK_SP and the operands are
+ * converted to its precision. When the rank of C grows, its buffer is
+ * reallocated through C_copy (unless --send_full_tile) and the new rank is
+ * written to Cr. Shared by the kernels of kinds 1, 5, 8, 9 and 10, which each
+ * carried a copy of it. The caller skips the update when a low-rank operand
+ * has rank 0.
+ *
+ * @param[in,out] C_copy data copy of C (its device_private is C)
+ * @param[in,out] Cr rank of C; @param[in] Ar, Br ranks of A and B (Br unused for a dense B)
+ * @return the size of C in bytes, for the caller's send size
+ */
+int hicma_parsec_core_gemm_lrC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
+        hicma_parsec_params_t *params_tlr,
+        parsec_execution_stream_t *es,
+        parsec_memory_pool_t *p_work,
+        parsec_memory_pool_t *p_work_full_dp,
+        parsec_memory_pool_t *p_work_full_sp,
+        parsec_memory_pool_t *p_work_uv_dp,
+        parsec_memory_pool_t *p_work_uv_sp,
+        parsec_data_copy_t *C_copy,
+        void *C, void *A, void *B,
+        void *Cr, void *Ar, void *Br,
+        int m, int n, int k,
+        int Arank, int Brank )
+{
+    int size = 0;
+    void *A_use = A, *B_use = B, *A_d, *A_s, *B_d, *B_s;
+    (void)Br; (void)Brank;
+
+    if(DEBUG_INFO) printf("GEMM (%d, %d, %d) : %d %d %d : C_LOW_RANK, A_LOW_RANK, B_DENSE\n",
+        m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
+
+    int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int ldamu = BLKLDD( descA, m );
+    int ldamv = BLKLDD( descA, m );
+
+    int Crank_old = ((int*)Cr)[0];
+    void *Au, *Av, *Cu, *Cv;
+
+    void *p_elem_work = NULL;
+    p_elem_work = parsec_private_memory_pop( p_work );
+    int new_Crank = ((int*)Cr)[0];
+
+    if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] )
+    {
+        /* Convert datatype, A */
+        if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
+            A_d = parsec_private_memory_pop( p_work_uv_dp );
+            hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
+            A_use = A_d;
+        }
+
+        /* Convert datatype, B */
+        if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+n] ) {
+            B_d = parsec_private_memory_pop( p_work_full_dp );
+            hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_d, descA->mb );
+            B_use = B_d;
+        }
+
+        /* U and V pointer */
+        Au = (void *)A_use;
+        Av = (void *)A_use + descA->mb * Arank * sizeof(double);
+
+        Cu = (void *)C;
+        Cv = (void *)C + descA->mb * Crank_old * sizeof(double);
+
+        /** Calls two-step hcore_gemm.
+          First step reveals ACTUAL_RANK.
+          Second step constructs new CU and CV.
+          Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+         */
+        double* work_new;
+        double* _CU;
+        double* _CV;
+        int CU_ncols;
+        int new_UVrk;
+        double* newU;
+        int ld_newU;
+        double* qrtauA;
+        int CV_ncols;
+        double* newV;
+        int ld_newV;
+        double* qrtauB;
+        int use_CUV_clone;
+        double* CUclone;
+        int ld_CUclone;
+        double *_CU_save;
+        double* CVclone;
+        int ld_CVclone;
+        double* _CV_save;
+        flop_counter flops;
+        HCORE_dgemm_qr_svd_b_dense( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                B_use, ldamv,
+                (double)1.0,
+                Cu, Cv, &new_Crank, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                &flops,
+                /** parameters that will be passed to HCORE_dgemm_ormqr */
+                &work_new,
+                &_CU,
+                &_CV,
+                &CU_ncols,
+                &new_UVrk,
+                &newU,
+                &ld_newU,
+                &qrtauA,
+                &CV_ncols,
+                &newV,
+                &ld_newV,
+                &qrtauB,
+                &use_CUV_clone,
+                &CUclone,
+                &ld_CUclone,
+                &_CU_save,
+                &CVclone,
+                &ld_CVclone,
+                &_CV_save
+                    );
+
+        /* If new_UVrk > Crank_old, re-allocate */
+        if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+            if( DEBUG_INFO ) printf("Reallocate %d %d %d : C_LOW_RANK_DP, A_LOW_RANK, B_DENSE\n", m, n, k);
+            if( NULL != C_copy->device_private )
+                free( C_copy->device_private ); 
+            C_copy->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
+            C_copy->original->span = descA->mb * new_UVrk * 2 * sizeof(double);
+        }
+
+        /* Address for Cu and Cv to be copied to */
+        _CU_save = C_copy->device_private;
+        _CV_save = C_copy->device_private + descA->mb * new_UVrk * sizeof(double);
+
+        HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                (double)1.0,
+                Cu, Cv, &new_Crank, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                &flops,
+                /** parameters coming from HCORE_dgemm_qr_svd */
+                _CU,
+                _CV,
+                CU_ncols,
+                new_UVrk,
+                newU,
+                ld_newU,
+                qrtauA,
+                CV_ncols,
+                newV,
+                ld_newV,
+                qrtauB,
+                use_CUV_clone,
+                CUclone,
+                ld_CUclone,
+                _CU_save,
+                CVclone,
+                ld_CVclone,
+                _CV_save
+                    );
+
+        /* Update send size, how many bytes */
+        size = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
+
+        /* Push back to mempool */
+        if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] )
+            parsec_private_memory_push( p_work_uv_dp, A_d );
+
+        if( DENSE_SP == params_tlr->decisions[k*descA->lmt+n] || DENSE_HP == params_tlr->decisions[k*descA->lmt+n] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+n] )
+            parsec_private_memory_push( p_work_full_dp, B_d );
+    }
+    else
+    {
+        /* Convert datatype, A */
+        if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+            A_s = parsec_private_memory_pop( p_work_uv_sp );
+            hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+            A_use = A_s;
+        }
+
+        /* Convert datatype, B */
+        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] ) {
+            B_s = parsec_private_memory_pop( p_work_full_sp );
+            hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, descA->nb, B, descA->mb, B_s, descA->mb );
+            B_use = B_s;
+        }
+
+        /* U and V pointer */
+        Au = (void *)A_use;
+        Av = (void *)A_use + descA->mb * Arank * sizeof(float);
+
+        Cu = (void *)C;
+        Cv = (void *)C + descA->mb * Crank_old * sizeof(float);
+
+        /** Calls two-step hcore_gemm.
+          First step reveals ACTUAL_RANK.
+          Second step constructs new CU and CV.
+          Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+         */
+
+        float* work_new;
+        float* _CU;
+        float* _CV;
+        int CU_ncols;
+        int new_UVrk;
+        float* newU;
+        int ld_newU;
+        float* qrtauA;
+        int CV_ncols;
+        float* newV;
+        int ld_newV;
+        float* qrtauB;
+        int use_CUV_clone;
+        float* CUclone;
+        int ld_CUclone;
+        float* _CU_save;
+        float* CVclone;
+        int ld_CVclone;
+        float* _CV_save;
+        flop_counter flops;
+        HCORE_sgemm_qr_svd_b_dense( PlasmaNoTrans, PlasmaTrans,
+                tempmmv,
+                tempmmv,
+                (float)-1.0, 
+                Au, Av, Ar, ldamu,
+                B_use, ldamv,
+                (float)1.0,
+                Cu, Cv, &new_Crank, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                &flops,
+                /** parameters that will be passed to HCORE_dgemm_ormqr */
+                &work_new,
+                &_CU,
+                &_CV,
+                &CU_ncols,
+                &new_UVrk,
+                &newU,
+                &ld_newU,
+                &qrtauA,
+                &CV_ncols,
+                &newV,
+                &ld_newV,
+                &qrtauB,
+                &use_CUV_clone,
+                &CUclone,
+                &ld_CUclone,
+                &_CU_save,
+                &CVclone,
+                &ld_CVclone,
+                &_CV_save
+                    );
+
+        /* If new_UVrk > Crank_old, re-allocate */
+        if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+            if( DEBUG_INFO ) printf("Reallocate %d %d %d : C_LOW_RANK_SP, A_LOW_RANK, B_DENSE\n", m, n, k);
+            if( NULL != C_copy->device_private )
+                free( C_copy->device_private ); 
+            C_copy->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(float) );
+            C_copy->original->span = descA->mb * new_UVrk * 2 * sizeof(float);
+        }
+
+        /* Address for Cu and Cv to be copied to */
+        _CU_save = C_copy->device_private;
+        _CV_save = C_copy->device_private + descA->mb * new_UVrk * sizeof(float);
+
+        HCORE_sgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (float)-1.0,
+                Au, Av, Ar, ldamu,
+                (float)1.0,
+                Cu, Cv, &new_Crank, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                &flops,
+                /** parameters coming from HCORE_dgemm_qr_svd */
+                _CU,
+                _CV,
+                CU_ncols,
+                new_UVrk,
+                newU,
+                ld_newU,
+                qrtauA,
+                CV_ncols,
+                newV,
+                ld_newV,
+                qrtauB,
+                use_CUV_clone,
+                CUclone,
+                ld_CUclone,
+                _CU_save,
+                CVclone,
+                ld_CVclone,
+                _CV_save
+                    );
+
+        /* Update send size, how many bytes */
+        size = descA->mb * ((int *)Cr)[0] * 2 * sizeof(float);
+
+        /* Push back to mempool */
+        if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] )
+            parsec_private_memory_push( p_work_uv_sp, A_s );
+
+        if( DENSE_DP == params_tlr->decisions[k*descA->lmt+n] )
+            parsec_private_memory_push( p_work_full_sp, B_s );
+    }
+
+    ((int*)Cr)[0] = new_Crank;
+    parsec_private_memory_push( p_work, p_elem_work );
+
+    /* Operation count */
+    int Crank_old__Arank = Crank_old + Arank;
+    unsigned long int cnt = 0;
+
+    /// QR([CU AU])
+    unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);///ASSUMPTION:tempmmv is not totally correct if nrowsC<ncolsC
+    unsigned long int qrbflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);
+    /// Au * B
+    qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, tempmmv, 0);
+    unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0);// trmm is used
+    svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
+    svdflop += Crank_old__Arank * new_Crank;
+    unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, new_Crank, Crank_old__Arank, 1);
+    unsigned long int newvflop = hicma_parsec_op_counts('o', new_Crank, tempmmv, Crank_old__Arank, 2);
+
+    cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
+    params_tlr->op_offband[es->th_id] += cnt;
+    params_tlr->op_offpath[es->th_id] += cnt;
+
+    return size;
+}
+
+/**
+ * @brief CPU GEMM C = C - A * B^T for a low-rank C, a low-rank A and a low-rank B
+ *
+ * The update and its recompression (HCORE). C and A, and B when low-rank, are
+ * stored as U then V; C is LOW_RANK_DP or LOW_RANK_SP and the operands are
+ * converted to its precision. When the rank of C grows, its buffer is
+ * reallocated through C_copy (unless --send_full_tile) and the new rank is
+ * written to Cr. Shared by the kernels of kinds 1, 5, 8, 9 and 10, which each
+ * carried a copy of it. The caller skips the update when a low-rank operand
+ * has rank 0.
+ *
+ * @param[in,out] C_copy data copy of C (its device_private is C)
+ * @param[in,out] Cr rank of C; @param[in] Ar, Br ranks of A and B (Br unused for a dense B)
+ * @return the size of C in bytes, for the caller's send size
+ */
+int hicma_parsec_core_gemm_lrC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
+        hicma_parsec_params_t *params_tlr,
+        parsec_execution_stream_t *es,
+        parsec_memory_pool_t *p_work,
+        parsec_memory_pool_t *p_work_full_dp,
+        parsec_memory_pool_t *p_work_full_sp,
+        parsec_memory_pool_t *p_work_uv_dp,
+        parsec_memory_pool_t *p_work_uv_sp,
+        parsec_data_copy_t *C_copy,
+        void *C, void *A, void *B,
+        void *Cr, void *Ar, void *Br,
+        int m, int n, int k,
+        int Arank, int Brank )
+{
+    int size = 0;
+    void *A_use = A, *B_use = B, *A_d, *A_s, *B_d, *B_s;
+
+    if(DEBUG_INFO) printf("GEMM (%d, %d, %d) : %d %d %d : C_LOW_RANK, A_LOW_RANK, B_LOW_RANK\n",
+        m, n, k, params_tlr->decisions[n*descA->lmt+m], params_tlr->decisions[k*descA->lmt+m], params_tlr->decisions[k*descA->lmt+n]);
+
+    int tempmmv = m == descA->mt-1 ? descA->m - m * descA->mb : descA->mb;
+    int ldamu = BLKLDD( descA, m );
+    int ldamv = BLKLDD( descA, m );
+
+    int Crank_old = ((int*)Cr)[0];
+    void *Au, *Av, *Bu, *Bv, *Cu, *Cv;
+
+    void *p_elem_work = NULL;
+    p_elem_work = parsec_private_memory_pop( p_work );
+
+    if( LOW_RANK_DP == params_tlr->decisions[n*descA->lmt+m] )
+    {
+        /* Convert datatype, A */
+        if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] ) {
+            A_d = parsec_private_memory_pop( p_work_uv_dp );
+            hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_d, descA->mb );
+            A_use = A_d;
+        }
+
+        /* Convert datatype, B */
+        if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] ) {
+            B_d = parsec_private_memory_pop( p_work_uv_dp );
+            hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+            LAPACKE_slag2d( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_d, descA->mb );
+            B_use = B_d;
+        }
+
+        /* U and V pointer */
+        Au = (void *)A_use;
+        Av = (void *)A_use + descA->mb * Arank * sizeof(double);
+        Bu = (void *)B_use;
+        Bv = (void *)B_use + descA->mb * Brank * sizeof(double);
+        Cu = (void *)C;
+        Cv = (void *)C + descA->mb * Crank_old * sizeof(double);
+
+        /** Calls two-step hcore_gemm.
+          First step reveals ACTUAL_RANK.
+          Second step constructs new CU and CV.
+          Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+         */
+        double* work_new;
+        double* _CU;
+        double* _CV;
+        int CU_ncols;
+        int new_UVrk;
+        double* newU;
+        int ld_newU;
+        double* qrtauA;
+        int CV_ncols;
+        double* newV;
+        int ld_newV;
+        double* qrtauB;
+        int use_CUV_clone;
+        double* CUclone;
+        int ld_CUclone;
+        double *_CU_save;
+        double* CVclone;
+        int ld_CVclone;
+        double* _CV_save;
+        flop_counter flops;
+        HCORE_dgemm_qr_svd( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                Bu, Bv, Br, ldamv,
+                (double)1.0,
+                Cu, Cv, Cr, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                &flops,
+                /** parameters that will be passed to HCORE_dgemm_ormqr */
+                &work_new,
+                &_CU,
+                &_CV,
+                &CU_ncols,
+                &new_UVrk,
+                &newU,
+                &ld_newU,
+                &qrtauA,
+                &CV_ncols,
+                &newV,
+                &ld_newV,
+                &qrtauB,
+                &use_CUV_clone,
+                &CUclone,
+                &ld_CUclone,
+                &_CU_save,
+                &CVclone,
+                &ld_CVclone,
+                &_CV_save
+                    );
+
+        /* If new_UVrk > Crank_old, re-allocate */
+        if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+            if( DEBUG_INFO ) printf("\nReallocate %d %d %d : C_LOW_RANK_DP, A_LOW_RANK, B_LOW_RANK\n\n", m, n, k);
+            if( NULL != C_copy->device_private )
+                free( C_copy->device_private ); 
+            C_copy->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(double) );
+            C_copy->original->span = descA->mb * new_UVrk * 2 * sizeof(double);
+        }
+
+        /* Address for Cu and Cv to be copied to */
+        _CU_save = C_copy->device_private;
+        _CV_save = C_copy->device_private + descA->mb * new_UVrk * sizeof(double);
+
+        HCORE_dgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (double)-1.0,
+                Au, Av, Ar, ldamu,
+                (double)1.0,
+                Cu, Cv, Cr, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                &flops,
+                /** parameters coming from HCORE_dgemm_qr_svd */
+                _CU,
+                _CV,
+                CU_ncols,
+                new_UVrk,
+                newU,
+                ld_newU,
+                qrtauA,
+                CV_ncols,
+                newV,
+                ld_newV,
+                qrtauB,
+                use_CUV_clone,
+                CUclone,
+                ld_CUclone,
+                _CU_save,
+                CVclone,
+                ld_CVclone,
+                _CV_save
+                    );
+
+        Cu = _CU_save;
+        Cv = _CV_save;
+
+        /* Update send size, how many bytes */
+        size = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
+
+        /* Push back to mempool */
+        if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+m] )
+            parsec_private_memory_push( p_work_uv_dp, A_d );
+
+        if( LOW_RANK_SP == params_tlr->decisions[k*descA->lmt+n] )
+            parsec_private_memory_push( p_work_uv_dp, B_d );
+    }
+    else
+    {
+        /* Convert datatype, A */
+        if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
+            A_s = parsec_private_memory_pop( p_work_uv_sp );
+            hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Arank * 2, A, descA->mb, A_s, descA->mb );
+            A_use = A_s;
+        }
+
+        /* Convert datatype, B */
+        if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] ) {
+            B_s = parsec_private_memory_pop( p_work_uv_sp );
+            hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
+            LAPACKE_dlag2s( LAPACK_COL_MAJOR, descA->mb, Brank * 2, B, descA->mb, B_s, descA->mb );
+            B_use = B_s;
+        }
+
+        /* U and V pointer */
+        Au = (void *)A_use;
+        Av = (void *)A_use + descA->mb * Arank * sizeof(float);
+        Bu = (void *)B_use;
+        Bv = (void *)B_use + descA->mb * Brank * sizeof(float);
+        Cu = (void *)C;
+        Cv = (void *)C + descA->mb * Crank_old * sizeof(float);
+
+        /** Calls two-step hcore_gemm.
+          First step reveals ACTUAL_RANK.
+          Second step constructs new CU and CV.
+          Provided CU and CV buffers must have at least ACTUAL_RANK number of columns.
+         */
+        float* work_new;
+        float* _CU;
+        float* _CV;
+        int CU_ncols;
+        int new_UVrk;
+        float* newU;
+        int ld_newU;
+        float* qrtauA;
+        int CV_ncols;
+        float* newV;
+        int ld_newV;
+        float* qrtauB;
+        int use_CUV_clone;
+        float* CUclone;
+        int ld_CUclone;
+        float* _CU_save;
+        float* CVclone;
+        int ld_CVclone;
+        float* _CV_save;
+        flop_counter flops;
+        HCORE_sgemm_qr_svd( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (float)-1.0,
+                Au, Av, Ar, ldamu,
+                Bu, Bv, Br, ldamv,
+                (float)1.0,
+                Cu, Cv, Cr, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, p_elem_work,
+                &flops,
+                /** parameters that will be passed to HCORE_dgemm_ormqr */
+                &work_new,
+                &_CU,
+                &_CV,
+                &CU_ncols,
+                &new_UVrk,
+                &newU,
+                &ld_newU,
+                &qrtauA,
+                &CV_ncols,
+                &newV,
+                &ld_newV,
+                &qrtauB,
+                &use_CUV_clone,
+                &CUclone,
+                &ld_CUclone,
+                &_CU_save,
+                &CVclone,
+                &ld_CVclone,
+                &_CV_save
+                    );
+
+        /* If new_UVrk > Crank_old, re-allocate */
+        if( new_UVrk > Crank_old && !params_tlr->send_full_tile ) {
+            if( DEBUG_INFO ) printf("\nReallocate %d %d %d : C_LOW_RANK_SP, A_LOW_RANK, B_LOW_RANK\n\n", m, n, k);
+            if( NULL != C_copy->device_private )
+                free( C_copy->device_private ); 
+            C_copy->device_private = calloc( descA->mb * new_UVrk * 2, sizeof(float) );
+            C_copy->original->span = descA->mb * new_UVrk * 2 * sizeof(float);
+        }
+
+        /* Address for Cu and Cv to be copied to */
+        _CU_save = C_copy->device_private;
+        _CV_save = C_copy->device_private + descA->mb * new_UVrk * sizeof(float);
+
+        HCORE_sgemm_ormqr( PlasmaNoTrans, PlasmaTrans,
+                tempmmv, // ASSUMPTION: For a tile, if nrows<ncols, storage is ncols for both U and V
+                tempmmv,
+                (float)-1.0,
+                Au, Av, Ar, ldamu,
+                (float)1.0,
+                Cu, Cv, Cr, ldamu,
+                params_tlr->fixedrk, params_tlr->maxrank, params_tlr->compmaxrank, params_tlr->fixedacc, work_new,
+                &flops,
+                /** parameters coming from HCORE_dgemm_qr_svd */
+                _CU,
+                _CV,
+                CU_ncols,
+                new_UVrk,
+                newU,
+                ld_newU,
+                qrtauA,
+                CV_ncols,
+                newV,
+                ld_newV,
+                qrtauB,
+                use_CUV_clone,
+                CUclone,
+                ld_CUclone,
+                _CU_save,
+                CVclone,
+                ld_CVclone,
+                _CV_save
+                    );
+
+        Cu = _CU_save;
+        Cv = _CV_save;
+
+        /* Update send size, how many bytes */
+        size = descA->mb * ((int *)Cr)[0] * 2 * sizeof(float);
+
+        /* Push back to mempool */
+        if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] )
+            parsec_private_memory_push( p_work_uv_sp, A_s );
+
+        if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+n] )
+            parsec_private_memory_push( p_work_uv_sp, B_s );
+    }
+
+    /* Update new rank */
+    parsec_private_memory_push( p_work, p_elem_work );
+    int Crank_new = ((int*)Cr)[0];
+    if(DEBUG_INFO) printf("Cr value in DGEMM (%d, %d, %d): %d\n", m, n, k, ((int *)Cr)[0]);
+
+    /* Operation count */
+    int Crank_old__Arank = Crank_old + Arank;
+    unsigned long int cnt = 0;
+    /// QR([CU AU])
+    unsigned long int qraflop = hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);///ASSUMPTION:tempmmv is not totally correct if nrowsC<ncolsC
+    /// AV*BV^T
+    unsigned long int qrbflop = hicma_parsec_op_counts('m', Arank, Brank, tempmmv, 0);
+    /// (AV*BV^T) * BU^T
+    qrbflop += hicma_parsec_op_counts('m', Arank, tempmmv, Brank, 0);
+    qrbflop += hicma_parsec_op_counts('q', tempmmv, Crank_old__Arank, 0, 0);  
+    unsigned long int svdflop = hicma_parsec_op_counts('r', Crank_old__Arank, Crank_old__Arank, 2, 0);// trmm is used
+    svdflop += hicma_parsec_op_counts('s', Crank_old__Arank, 0, 0, 0);
+    svdflop += Crank_old__Arank * Crank_new; 
+    unsigned long int newuflop = hicma_parsec_op_counts('o', tempmmv, Crank_new, Crank_old__Arank, 1);  
+    unsigned long int newvflop = hicma_parsec_op_counts('o', Crank_new, tempmmv, Crank_old__Arank, 2); 
+
+    cnt = qraflop + qrbflop + svdflop + newuflop + newvflop;
+
+    params_tlr->op_offband[es->th_id] += cnt;
+    params_tlr->op_offpath[es->th_id] += cnt;
+
+    return size;
+}
+
 
 
 // TODO Rewrite low-rank kernels

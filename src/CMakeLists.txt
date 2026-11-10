@@ -24,8 +24,6 @@ set(SRC
     kernels/potrf_L_dense_mp_gpu_wrapper.c
     kernels/potrf_L_dense_sp_hp_band_wrapper.c
     kernels/potrf_L_dense_mp_band_wrapper.c
-    kernels/potrf_L_dense_mp_gpu_fp8_wrapper.c
-    kernels/potrf_L_dense_mp_gpu_fp8_sp_wrapper.c
     kernels/potrf_L_dense_mp_gpu_fp8_adaptive_wrapper.c
     kernels/trmm_mp_wrapper.c
     kernels/isyrk_wrapper.c
@@ -80,8 +78,6 @@ set(JDF
     kernels/potrf_L_dense_mp_gpu.jdf
     kernels/potrf_L_dense_sp_hp_band.jdf
     kernels/potrf_L_dense_mp_band.jdf
-    kernels/potrf_L_dense_mp_gpu_fp8.jdf
-    kernels/potrf_L_dense_mp_gpu_fp8_sp.jdf
     kernels/potrf_L_dense_mp_gpu_fp8_adaptive.jdf
     kernels/trmm_mp_LLN.jdf
     

@@ -9,7 +9,13 @@
 
 /**
  * @file potrf_L_dense_mp_gpu_wrapper.c
- * @brief PaRSEC wrapper of potrf_L_dense_mp_gpu.jdf (kind 5, DENSE_MP_GPU: mixed-precision dense (band) Cholesky with GPU bodies)
+ * @brief PaRSEC wrapper of potrf_L_dense_mp_gpu.jdf (kinds 5, 8 and 9: DENSE_MP_GPU, DENSE_MP_GPU_FP8 and DENSE_MP_GPU_FP8_SP, the mixed-precision dense (band) Cholesky with GPU bodies)
+ *
+ * Kind 8 is kind 5 with FP8 tiles in the precision decisions, and kind 9 is
+ * kind 8 with no FP64 tile, the diagonal included. The kernel follows the
+ * decisions (hicma_parsec_decision.c), so the three kinds run this one
+ * taskpool; they differ in the decisions and in the tile placement on the
+ * GPUs (hicma_parsec_gpu_of_tile).
  *
  * Timing hooks, chore selection, memory pools, GPU discovery and the driver
  * are shared with the other Cholesky wrappers (potrf_common.h); this file
@@ -145,6 +151,12 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
     if( params->band_size_dense >= params->NT && params->auto_band == 0 && !params->adaptive_memory ) {
         A = (parsec_tiled_matrix_t *)&data->dcAd;
     }
+#if PREDICTION
+    /* Prediction mode (GENOMICS) factorizes the leading NP x NP submatrix, with kind 9 */
+    if( DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky ) {
+        A = parsec_tiled_matrix_submatrix( A, 0, 0, params->NP, params->NP );
+    }
+#endif
     parsec_tiled_matrix_t *Ar = (parsec_tiled_matrix_t *)&data->dcAr;
     parsec_tiled_matrix_t *Rank = (parsec_tiled_matrix_t *)&data->dcRank;
     parsec_tiled_matrix_t *Fake = (parsec_tiled_matrix_t *)&data->dcFake;
@@ -244,10 +256,10 @@ potrf_L_dense_mp_gpu_New( parsec_context_t *parsec,
             1, A->mb, A->mb*2, A->mb, 
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
-    /* FP8 precision matrix arena */
+    /* FP8 tiles sent to FP8 GEMMs, with their per-tile scale (hicma_fp8_tile_bytes) */
     parsec_add2arena(&tp->arenas_datatypes[PARSEC_potrf_L_dense_mp_gpu_FULL_FP8_ADT_IDX],
             MPI_BYTE, PARSEC_MATRIX_FULL,
-            1, A->mb, A->mb, A->mb,
+            1, hicma_fp8_tile_bytes(A->mb), 1, hicma_fp8_tile_bytes(A->mb),
             PARSEC_ARENA_ALIGNMENT_SSE, -1 );
 
     /* Integer array arena */
@@ -316,5 +328,7 @@ int potrf_L_dense_mp_gpu( parsec_context_t *parsec,
         hicma_parsec_params_t *params )
 {
     return hicma_potrf_run( parsec, potrf_L_dense_mp_gpu_New( parsec, data, params ),
-                            potrf_L_dense_mp_gpu_Destruct, params, "DENSE_MP_GPU" );
+                            potrf_L_dense_mp_gpu_Destruct, params,
+                            DENSE_MP_GPU_FP8 == params->kind_of_cholesky ? "DENSE_MP_GPU_FP8" :
+                            DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky ? "DENSE_MP_GPU_FP8_SP" : "DENSE_MP_GPU" );
 }

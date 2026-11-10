@@ -192,6 +192,9 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
         hicma_add_test(gpu_band_sp_hp        1 ${P} ${G} --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5)
         # FP16 accumulation (--tensor_gemm 0x10): residual 2.3e-5
         hicma_add_test(gpu_band_hp_fp16acc   1 ${P} ${G} --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4)
+        # Stochastic rounding in the Cholesky, through kind 8 (kinds 5, 8 and
+        # 9 share a kernel; refused with FP8 GEMMs, hence --fp8 0): 2.3e-9
+        hicma_add_test(gpu_fp8_static_sr     1 ${P} ${G} --kind_of_cholesky 8 --adaptive_decision 1 --enable_stochastic_rounding 1 --fp8 0)
         # kind 1 version of gpu_tlr_hp_band (static FP16 band with low-rank tiles)
         hicma_add_test(gpu_tlr_mp_hp_band    1 ${P} --kind_of_problem 2 --N 8192 --NB 512 --gpus 1 --check 1 --kind_of_cholesky 1
                        --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --fixedacc 1e-4 --maxrank 256 --check_tol 3e-4)

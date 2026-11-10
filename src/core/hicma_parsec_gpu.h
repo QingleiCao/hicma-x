@@ -69,19 +69,6 @@ void disable_GPU( parsec_taskpool_t * tp );
  * ============================================================================ */
 
 /**
- * @brief Calculate load balance for dense operations
- * 
- * Determines the optimal GPU device for dense matrix operations
- * based on matrix dimensions and process distribution.
- * 
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] params HICMA PaRSEC parameters
- * @return Load balance factor (GPU device index)
- */
-int gpu_load_balance( int m, int n, hicma_parsec_params_t *params );
-
-/**
  * @brief Calculate load balance for GPU 2D operations
  * 
  * Determines the optimal GPU device for 2D distributed operations
@@ -95,34 +82,22 @@ int gpu_load_balance( int m, int n, hicma_parsec_params_t *params );
 int gpu_load_balance_2d( int m, int n, hicma_parsec_params_t *params );
 
 /**
- * @brief Calculate load balance for TLR operations
- * 
- * Determines the optimal GPU device for TLR (Tile Low Rank)
- * operations based on matrix dimensions and available devices.
- * 
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] nb_cuda_devices Number of CUDA devices
- * @return Load balance factor (GPU device index)
+ * @brief GPU that tile (m, n) of the Cholesky matrix is advised to live on
+ *
+ * One rule for every Cholesky kind and for the warmup, which must agree with
+ * the factorization. It works on the tile's position among the tiles of its
+ * rank (m / P, n / Q), so that a rank uses all its GPUs whatever the process
+ * grid. A dense matrix is spread over the gpu_rows x gpu_cols grid
+ * (gpu_load_balance_2d): on four linked V100s at N=40960 the grid was 1 to
+ * 10 % faster than placing by row or by column (medians of five interleaved
+ * runs; FP64 1.07 s against 1.08 and 1.13, adaptive 0.83 against 0.87 and
+ * 0.91, run-time decisions 0.64 against 0.70 and 0.65). With low-rank tiles
+ * only a band is dense, and a band narrower than the grid would reach only
+ * some of its GPUs (the diagonal of a 2 x 2 grid, two of the four), so the
+ * band is placed by column; at a band of 8 tiles the rules did not differ
+ * beyond the run-to-run spread.
  */
-int gpu_load_tlr( int m, int n, int nb_cuda_devices);
-
-/**
- * @brief Calculate load balance for mixed precision operations
- * 
- * Determines the optimal GPU device for mixed precision operations
- * considering band sizes for different precision levels.
- * 
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] NT Number of tiles
- * @param[in] P Number of processes
- * @param[in] nb_cuda_devices Number of CUDA devices
- * @param[in] band_size_double Double precision band size
- * @param[in] band_size_single Single precision band size
- * @return Load balance factor (GPU device index)
- */
-int gpu_load_mixed_precision( int m, int n, int NT, int P, int nb_cuda_devices, int band_size_double, int band_size_single);
+int hicma_parsec_gpu_of_tile( int m, int n, hicma_parsec_params_t *params );
 
 /* ============================================================================
  * GPU workspace management functions

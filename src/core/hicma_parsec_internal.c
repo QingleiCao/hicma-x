@@ -1271,6 +1271,16 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
         if( cudaSuccess == cudaGetDeviceCount(&nb_visible) && nb_visible > 0 )
             fprintf(stderr, YEL "%d GPU(s) visible but --gpus is 0: running on the CPU only\n" RESET, nb_visible);
     }
+    /* When some of the GPUs cannot read each other's memory directly, PaRSEC
+     * copies every GPU task's output back to host memory, since it cannot
+     * tell which GPU will read it next: 90 GB instead of 6 GB for a dense
+     * N=40960 on four V100s, and four times the run time. Typical of 8-GPU
+     * servers whose cross-socket pairs have no NVLink. */
+    if( params->gpus > 1 && parsec_device_peer_mesh_incomplete && 0 == params->rank ) {
+        fprintf(stderr, YEL "The %d GPUs cannot all read each other directly, so every GPU task's output is copied back to "
+                "host memory: a set of directly linked GPUs is faster (nvidia-smi topo -m, CUDA_VISIBLE_DEVICES)\n" RESET,
+                params->gpus);
+    }
 #endif
 
     /* cores and gpus are final: allocate the per-worker statistics once */
@@ -1323,17 +1333,14 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
         params->band_size_dense_hp = params->band_size_dense;
     }
 
-    /* Kinds 8, 9 and 10 convert with round-to-nearest in their own bodies
-     * while the shared kernels would honor stochastic rounding: refuse the
-     * mix instead of silently rounding two different ways. */
-    if( params->enable_stochastic_rounding
-        && (DENSE_MP_GPU_FP8 == params->kind_of_cholesky
-            || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
-            || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky) ) {
+    /* Kind 10 converts with round-to-nearest in its own bodies while the
+     * shared kernels would honor stochastic rounding: refuse the mix instead
+     * of silently rounding two different ways. Kinds 8 and 9 run kind 5's
+     * kernel, which implements it (without FP8 GEMMs, checked above). */
+    if( params->enable_stochastic_rounding && DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky ) {
         if( 0 == params->rank ) {
-            fprintf(stderr, RED "--enable_stochastic_rounding is not implemented for kind_of_cholesky %d "
-                    "(kinds 8, 9 and 10); use kind 5 or --enable_stochastic_rounding 0\n" RESET,
-                    params->kind_of_cholesky);
+            fprintf(stderr, RED "--enable_stochastic_rounding is not implemented for kind_of_cholesky 10 "
+                    "(--adaptive_decision_runtime); use kind 5, 8 or 9\n" RESET);
         }
         exit(1);
     }

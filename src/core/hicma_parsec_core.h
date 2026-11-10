@@ -500,6 +500,35 @@ void hicma_parsec_core_gemm_denseC_lrA_lrB_cpu(parsec_tiled_matrix_t* descA,
                                                int m, int n, int k,
                                                int Crank, int Arank, int Brank);
 
+/* CPU GEMM for a low-rank C (hicma_parsec_core.c): low-rank A, and a dense or a
+ * low-rank B; they return the size of C in bytes */
+int hicma_parsec_core_gemm_lrC_lrA_denseB_cpu( parsec_tiled_matrix_t* descA,
+        hicma_parsec_params_t *params_tlr,
+        parsec_execution_stream_t *es,
+        parsec_memory_pool_t *p_work,
+        parsec_memory_pool_t *p_work_full_dp,
+        parsec_memory_pool_t *p_work_full_sp,
+        parsec_memory_pool_t *p_work_uv_dp,
+        parsec_memory_pool_t *p_work_uv_sp,
+        parsec_data_copy_t *C_copy,
+        void *C, void *A, void *B,
+        void *Cr, void *Ar, void *Br,
+        int m, int n, int k,
+        int Arank, int Brank );
+int hicma_parsec_core_gemm_lrC_lrA_lrB_cpu( parsec_tiled_matrix_t* descA,
+        hicma_parsec_params_t *params_tlr,
+        parsec_execution_stream_t *es,
+        parsec_memory_pool_t *p_work,
+        parsec_memory_pool_t *p_work_full_dp,
+        parsec_memory_pool_t *p_work_full_sp,
+        parsec_memory_pool_t *p_work_uv_dp,
+        parsec_memory_pool_t *p_work_uv_sp,
+        parsec_data_copy_t *C_copy,
+        void *C, void *A, void *B,
+        void *Cr, void *Ar, void *Br,
+        int m, int n, int k,
+        int Arank, int Brank );
+
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
 
 /**

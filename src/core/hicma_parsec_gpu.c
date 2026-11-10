@@ -114,23 +114,6 @@ void hicma_parsec_disable_GPU( parsec_taskpool_t * tp ) {
  * ============================================================================ */
 
 /**
- * @brief Calculate load balance for dense operations
- *
- * Determines the optimal GPU device for dense matrix operations
- * based on matrix dimensions and process distribution.
- *
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] params HICMA PaRSEC parameters
- * @return Load balance factor (GPU device index)
- */
-int gpu_load_balance( int m, int n, hicma_parsec_params_t *params )
-{
-    if( params->band_size_dense < params->NT ) return n / params->P % params->gpus;
-    return m / params->P % params->gpus;
-}
-
-/**
  * @brief Calculate load balance for GPU 2D operations
  *
  * Determines the optimal GPU device for 2D distributed operations
@@ -146,44 +129,16 @@ int gpu_load_balance_2d( int m, int n, hicma_parsec_params_t *params )
     return (m / params->P % params->gpu_rows) * params->gpu_cols + n / params->Q % params->gpu_cols; 
 }
 
-/**
- * @brief Calculate load balance for TLR operations
- *
- * Determines the optimal GPU device for TLR (Tile Low Rank)
- * operations based on matrix dimensions and available devices.
- *
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] nb_cuda_devices Number of CUDA devices
- * @return Load balance factor (GPU device index)
- */
-int gpu_load_tlr( int m, int n, int nb_cuda_devices)
+/* GPU of tile (m, n) for the Cholesky kernels and their warmup (hicma_parsec_gpu.h).
+ * m / P and n / Q are the tile's row and column among the tiles of its rank. */
+int hicma_parsec_gpu_of_tile( int m, int n, hicma_parsec_params_t *params )
 {
-    return n % nb_cuda_devices;
+    if( !GENOMICS && params->band_size_dense < params->NT ) {
+        return n / params->Q % params->gpus;
+    }
+    return gpu_load_balance_2d( m, n, params );
 }
 
-/**
- * @brief Calculate load balance for mixed precision operations
- *
- * Determines the optimal GPU device for mixed precision operations
- * considering band sizes for different precision levels.
- *
- * @param[in] m Number of rows
- * @param[in] n Number of columns
- * @param[in] NT Number of tiles
- * @param[in] P Number of processes
- * @param[in] nb_cuda_devices Number of CUDA devices
- * @param[in] band_size_double Double precision band size
- * @param[in] band_size_single Single precision band size
- * @return Load balance factor (GPU device index)
- */
-int gpu_load_mixed_precision( int m, int n, int NT, int P, int nb_cuda_devices, int band_size_double, int band_size_single)
-{
-    if( band_size_double < NT && m - n < band_size_single )
-        return (m / P) % nb_cuda_devices; 
-    else
-        return (n * NT + m) % nb_cuda_devices;
-}
 /**
  * @brief Disable GPU to just run on CPU
  *

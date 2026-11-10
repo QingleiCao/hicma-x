@@ -1640,36 +1640,6 @@ int potrf_L_dense_mp_gpu_fp8_adaptive( parsec_context_t *parsec,
         hicma_parsec_params_t *params );
 
 /**
- * @brief GPU implementation of mixed-precision dense Cholesky factorization with FP8
- * 
- * Performs mixed-precision dense Cholesky factorization on GPU with FP8 support
- * using optimized kernels and memory management.
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] data HICMA PaRSEC data structure
- * @param[in] params HICMA PaRSEC parameters
- * @return 0 on success, non-zero on failure
- */
-int potrf_L_dense_mp_gpu_fp8( parsec_context_t *parsec,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params );
-
-/**
- * @brief GPU implementation of mixed-precision dense Cholesky factorization with FP8 and single precision
- * 
- * Performs mixed-precision dense Cholesky factorization on GPU with FP8 support
- * and single precision arithmetic for optimal performance.
- * 
- * @param[in] parsec PaRSEC context
- * @param[in] data HICMA PaRSEC data structure
- * @param[in] params HICMA PaRSEC parameters
- * @return 0 on success, non-zero on failure
- */
-int potrf_L_dense_mp_gpu_fp8_sp( parsec_context_t *parsec,
-        hicma_parsec_data_t *data,
-        hicma_parsec_params_t *params );
-
-/**
  * @brief Cholesky factorization for sparse matrices with TLR format (general case)
  *
  * This function performs Cholesky factorization (POTRF) on sparse matrices

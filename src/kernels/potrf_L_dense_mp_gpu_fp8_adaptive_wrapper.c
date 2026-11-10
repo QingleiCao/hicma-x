@@ -241,7 +241,6 @@ potrf_L_dense_mp_gpu_fp8_adaptive_New( parsec_context_t *parsec,
     tp->_g_p_work_full_dp = hicma_potrf_pool_new( (size_t)A->mb * hicma_parsec_max(A->mb, 2 * compmaxrank) * sizeof(double) );
     tp->_g_p_work_full_sp = hicma_potrf_pool_new( (size_t)A->mb * hicma_parsec_max(A->mb, 2 * compmaxrank) * sizeof(float) );
     tp->_g_p_work_full_hp = hicma_potrf_pool_new( (size_t)A->mb * hicma_parsec_max(A->mb, 2 * compmaxrank) * sizeof(float) / 2 );
-    tp->_g_p_work_full_fp8 = hicma_potrf_pool_new( (size_t)A->mb * hicma_parsec_max(A->mb, 2 * compmaxrank) * sizeof(float) / 4 );
     tp->_g_p_work_uv_dp = hicma_potrf_pool_new( A->mb * storagemaxrank * 2 * sizeof(double) );
     tp->_g_p_work_uv_sp = hicma_potrf_pool_new( A->mb * storagemaxrank * 2 * sizeof(float) );
 
@@ -321,7 +320,6 @@ void potrf_L_dense_mp_gpu_fp8_adaptive_Destruct(parsec_taskpool_t* _tp)
         tp->_g_p_work_full_dp,
         tp->_g_p_work_full_sp,
         tp->_g_p_work_full_hp,
-        tp->_g_p_work_full_fp8,
         tp->_g_p_work_uv_dp,
         tp->_g_p_work_uv_sp
     };
