@@ -950,8 +950,21 @@ default architectures, HIP):
   CTest 28 / 28 (CPU) and 49 / 49 (CUDA), the validation matrix again
   identical in every case it shares with the third pass, the eviction
   reproducer 3 of 3, the HIP tree builds.
-- hexane (H100, V100, the two-GPU low-memory DPLASMA tests, performance):
-  not run, the allocation having ended.
+- hexane, same combined tree: CTest 49 / 49 on the H100 and 49 / 49 on the
+  V100; DPLASMA's seven low-memory tests pass, the two-GPU ones (`[sd]gemm
+  _2gpu_cuda_lowmem_mpi`, both GPUs) included; FP8 with a static band, with
+  low-rank tiles and in kind 10 passes with FP8 GEMMs used; two ranks (H100,
+  V100) pass. Performance at N=30720 matches section 5.14 within noise:
+
+  | Case | Before the rebase (5.14) | After |
+  |---|---|---|
+  | H100, kind 5 FP64 | 17.5 to 18.2 Tflop/s | 17.9 and 18.4 |
+  | H100, kind 5 adaptive | 16.4 to 16.7 | 16.3 and 16.6 |
+  | H100, kind 10 | 13.7 to 14.2 | 14.3 and 13.2 |
+  | H100, FP32 band with TF32 | 23.5 to 26.2 | 25.8 and 24.2 |
+  | H100, DPLASMA `dpotrf -g 1` | 9.3 to 12.0 | 11.9 and 11.9 |
+  | V100, kind 5 FP64 | 5.9 | 5.88 and 5.86 |
+  | 16 CPU cores, TLR | 2.0 s | 1.95 and 2.02 s |
 
 ## 6. Release checklist
 
