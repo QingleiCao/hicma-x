@@ -17,7 +17,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   capability 8.9 or higher.
 - Mixed-precision TRMM (`testing_trmm_mp`), with stochastic rounding
   (`--enable_stochastic_rounding`) and FP32 accumulation (`--accumulation_fp32`).
-- DPLASMA and PaRSEC moved to the ICLDisco master branches.
+- DPLASMA and PaRSEC moved to the ICLDisco master branches (PaRSEC `2c16c652e`,
+  which includes ICLDisco/parsec#814, plus the fork's commits).
 
 ### Correctness
 

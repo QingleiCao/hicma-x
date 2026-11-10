@@ -116,7 +116,7 @@ Intermediate commits were not built individually.
 | Machine | 1 node, 2 x Intel Xeon Gold 6140 (72 hardware threads), 1 x NVIDIA A100-PCIE-40GB (compute capability 8.0, driver 580.65.06) |
 | Compilers / tools | GCC 11.5.0, CMake 3.30.5, Ninja; CUDA 12.6 (nvcc 12.6.77); ROCm 6.4 `hipcc` (compile only, no AMD GPU) |
 | Libraries | Open MPI 5.0.5, Intel MKL 2024.2 (BLAS/LAPACKE), GSL present |
-| Submodules | dplasma `3553b25a` (ICLDisco master + stage-in fix), parsec `5cd761f6` (4.0.2411-244), hcore `78028a59`, stars-h `5d98f2c2` |
+| Submodules | dplasma `ae43716e` (ICLDisco master + stage-in fix + parsec update), parsec `557a710f4` (4.0.2411-249: ICLDisco master `2c16c652e` + 8 fork commits), hcore `78028a59`, stars-h `5d98f2c2` |
 | CPU tree | `-DCMAKE_BUILD_TYPE=Release -DHICMA_PARSEC_HAVE_CUDA=OFF -DDPLASMA_PRECISIONS="s;d" -DPARSEC_DIST_SHORT_LIMIT=1` |
 | CUDA tree | same plus `-DHICMA_PARSEC_HAVE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=80` |
 | HIP tree | same plus `-DHICMA_PARSEC_HAVE_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx90a`, compile only here; built and run on Frontier with `install_frontier.sh` (section 5.15) |
@@ -916,6 +916,42 @@ initializes MPI there (`c658f96`). With the GTL library preloaded and
 The installed package (`cmake --install`, `tests/install_consumer` built with
 the MPI compiler wrappers) runs on the CPU (1.5e-16), on the MI210 with BF16
 adaptive tiles (8.7e-9) and the conversion test (13 cases).
+
+### 5.16 PaRSEC rebased on ICLDisco master (2026-11-10)
+
+ICLDisco/parsec#814 was merged upstream (`2c16c652e`), with the
+`completed_w2r` fix found here folded in. The fork branch is rebased on it:
+the fork's copies of #814 and its own fix `5cd761f64` are dropped, and the
+eight other fork commits are reapplied. One conflict, in
+`parsec/remote_dep_comm.c`: our "Size eager receives by the declared type"
+adds a `wire` argument to `remote_dep_copy_allocate` and #814 a `pinned`
+out-argument, so the definition and its four call sites take both; the file
+then differs from the old fork tip only by upstream's final #814 lines (an
+`assert` and a fatal message). New upstream besides #814: the termdet
+release/acquire ordering, #835 (DTD) and #840 (a PTG taskpool freed
+without being added to a context, which changes the JDF compiler).
+DPLASMA upstream has nothing new; the fork keeps its stage-in fix
+(dplasma#170 is not merged).
+
+On methane, with every tree rebuilt (CPU, CUDA with sm_80 and with the
+default architectures, HIP):
+
+- PaRSEC's own CTest 205 / 205, including the two new upstream tests.
+- HiCMA CTest 27 / 27 (CPU) and 48 / 48 (CUDA) in three runs. A first run
+  had nine GPU cases in a row fail or abort; the reruns, and the 70
+  GPU-labelled cases (HiCMA and DPLASMA) run on their own, passed. The
+  cause is not established; concurrent use of the GPU is the likely one.
+- The validation matrix (31 CPU and 50 GPU cases) identical to the third
+  pass.
+- DPLASMA's one-GPU low-memory tests pass, and the two-rank eviction
+  reproducer of #814 (`--N 16384 --NB 1024 --band_dense 2`, 400 device
+  blocks) completes in 10 of 10 runs.
+- With the Frontier pass (section 5.15) merged on top, rebuilt and rerun:
+  CTest 28 / 28 (CPU) and 49 / 49 (CUDA), the validation matrix again
+  identical in every case it shares with the third pass, the eviction
+  reproducer 3 of 3, the HIP tree builds.
+- hexane (H100, V100, the two-GPU low-memory DPLASMA tests, performance):
+  not run, the allocation having ended.
 
 ## 6. Release checklist
 

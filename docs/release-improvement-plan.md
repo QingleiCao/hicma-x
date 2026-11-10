@@ -181,3 +181,8 @@ after the library changes.
   two GPUs, one and two ranks, performance and ease of use: correct
   everywhere; notes added for a capped `--gpus` and for oversubscribed cores.
   See `release-readiness.md` section 5.14.
+- 2026-11-10 (on request): PaRSEC rebased on ICLDisco master `2c16c652e`
+  (#814 merged upstream; the fork's copies and `5cd761f64` dropped, eight
+  fork commits reapplied, one conflict resolved). methane: PaRSEC 205 / 205,
+  HiCMA 27 / 27 and 48 / 48, matrix identical, eviction reproducer 10 / 10.
+  See `release-readiness.md` section 5.16.
