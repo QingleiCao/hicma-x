@@ -80,8 +80,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   Negative sizes are refused; a `--P`/`--Q` that does not cover the
   processes is reported before the grid is chosen.
 - Refused instead of silently miscomputed: `--enable_stochastic_rounding` with
-  kinds 8, 9, 10; kinds 1 to 4 with GPUs on HIP. Changed with a message
-  instead: `--datatype_convert 2` without GPUs runs in mode 0, and a
+  kind 10 or with FP8 GEMMs; kinds 1 to 4 with GPUs on HIP. Changed with a
+  message instead: `--datatype_convert 2` without GPUs runs in mode 0, and a
   half-precision band in CPU-only runs of kind 3 is widened to FP32. Kind 3 with
   `--datatype_convert 2` runs in the receiver mode: it does not implement the
   sender conversion, and with a one-tile FP64 band its GPU TRSM read the FP64
@@ -126,6 +126,30 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - The ten Cholesky wrappers share `src/kernels/potrf_common.{c,h}` (timing
   hooks, chore selection by device type, memory pools, GPU discovery, driver);
   7250 lines of wrapper code became 2500. The JDF bodies are untouched.
+- Kinds 5, 8 and 9 run one kernel, `potrf_L_dense_mp_gpu.jdf`. Kind 8 was a
+  copy of kind 5 with FP8 branches, kind 9 a copy of kind 8 with FP32
+  diagonal types; both differences follow from the precision decisions, which
+  the kernel now reads for them. `potrf_L_dense_mp_gpu_fp8{,_sp}.jdf`, their
+  wrappers and their datatype functions are removed. Results are unchanged
+  (same residuals and decisions on A100, H100 and V100, one and two ranks).
+- The CPU GEMM into a low-rank tile, 665 lines pasted in the kernels of kinds
+  1, 5, 8, 9 and 10, is two functions:
+  `hicma_parsec_core_gemm_lrC_lrA_{denseB,lrB}_cpu`. Kind 1's copy did not
+  count its datatype conversions; `Number_of_Datatype_Conversions` of kind-1
+  runs is now complete (larger than before).
+- One rule places the tiles on the GPUs for every Cholesky kind and for the
+  warm-up, `hicma_parsec_gpu_of_tile`, replacing four per-kind rules and a
+  fifth in the warm-up: the `gpu_rows x gpu_cols` grid for a dense matrix
+  (1 to 10 % faster than by row or by column on four V100s), by column when
+  only a band is dense, both on the tile's position among the tiles of its
+  rank. The rules of kinds 1 to 4 used global tile indices: with two ranks
+  of four GPUs, two GPUs of each rank ran 61 % of its GPU tasks and the
+  other two 10 % (kind 3; 16 to 20 % each now).
+- These three changes take 6,076 lines out of `src/` (888 added, 6,964
+  removed); its code lines that sit in duplicated runs of 25 lines or more
+  went from 8,013 of 30,775 to 4,177 of 26,879 (`docs/code-review.md`,
+  section 13). Timings are unchanged (old against new, interleaved, on CPUs,
+  an H100 and four V100s: `docs/release-readiness.md`, section 5.17).
 - Per-core and per-GPU statistics arrays are allocated once, after device
   discovery.
 - Dead code removed: 14 unreferenced JDFs and sources (`copy2double`,
@@ -324,6 +348,13 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   fewer silently (the note needed `--verbose 2`); and several processes per
   node each taking all its cores (`--bind-to none`) went unnoticed. Rank 0
   now says so in both cases.
+- Several GPUs that cannot all read each other directly (8-GPU servers
+  whose cross-socket pairs have no NVLink) make PaRSEC copy every GPU task's
+  output to host memory: four GPUs across two sockets ran a dense N=40960
+  four times slower than four linked ones. Rank 0 says so and points to
+  `nvidia-smi topo -m` and `CUDA_VISIBLE_DEVICES`.
+- `--enable_stochastic_rounding` works for kinds 8 and 9 when no FP8 GEMM is
+  in use (`--fp8 0`, or GPUs without FP8); they run kind 5's kernel.
 - `README.md` has a quick start; `scripts/build_release.sh --help` states
   its default build type (RelWithDebInfo).
 
@@ -390,7 +421,8 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   (MI210, MI250X; `docs/release-readiness.md`, section 5.15).
 - AMD GPUs flush FP16 subnormals in their FP16 GEMMs: use
   `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the dense layout.
-- `--enable_stochastic_rounding` is not implemented for kinds 8 to 10.
+- `--enable_stochastic_rounding` is not implemented for kind 10 and for
+  FP8 GEMMs.
 - The CPU and GPU runtime-decision GEMMs use different storage policies for
   FP16 updates.
 - Mixed-precision runs reach the accuracy of the precisions they use, not an

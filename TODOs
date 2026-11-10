@@ -1,5 +1,5 @@
 1. Merge LAPACK to tile and tile to LAPACK (done for 0.2.0: src/kernels/lapack_tile_convert.jdf, hicma_parsec_lapack_tile_convert)
-2. Merge potrf JDFs
+2. Merge potrf JDFs (0.2.0: kinds 5, 8 and 9 are one JDF, and the CPU low-rank GEMM of kinds 1, 5 and 10 is shared; still open: kind 10 with kind 5, kinds 6 and 7 with kind 2)
 3. Matrix sum that supports multiple precisions (done for 0.2.0: src/kernels/matrix_sum.jdf, hicma_parsec_matrix_sum)
 4. Hide tile size
 5. Better API

@@ -152,8 +152,8 @@ CUDA build; see `BUILD.md`.
   `--fixedacc 1e-8`. A HIP run that uses FP16 tiles prints how many. Kind 10
   scales its FP16 operands on HIP and is not affected; the HIP builds' CTest
   cases of adaptive kinds 5, 8 and 9 use 0x20.
-- `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the TRMM,
-  not for kinds 8 to 10, and not together with FP8 GEMMs.
+- `--enable_stochastic_rounding` is implemented for kinds 1 to 5, 8 and 9 and
+  the TRMM, not for kind 10, and not together with FP8 GEMMs.
 - The GPU GEMM variants other than the default are not implemented
   everywhere ("GPU GEMM variants" below); the drivers refuse the others
   before the factorization.
@@ -185,6 +185,10 @@ CUDA build; see `BUILD.md`.
 | 8 | `DENSE_MP_GPU_FP8` | kind 5 with a static FP8 band (compute capability ≥ 8.9) | CPU, CUDA, HIP (FP8 only on CUDA with compute capability ≥ 8.9; FP16 elsewhere) |
 | 9 | `DENSE_MP_GPU_FP8_SP` | kind 8 with every tile at FP32 or lower | CPU, CUDA, HIP (as kind 8) |
 | 10 | `DENSE_MP_GPU_FP8_ADAPTIVE` | GEMM precisions decided at run time from the operand norms (`--adaptive_decision_runtime 1`) | CPU, CUDA, HIP |
+
+Kinds 5, 8 and 9 run the same kernel (`src/kernels/potrf_L_dense_mp_gpu.jdf`)
+and differ in the precision decisions they are given: kind 8 may decide FP8
+for a tile, and kind 9 has no FP64 tile.
 
 ## Problem kinds (`--kind_of_problem`)
 
@@ -377,3 +381,18 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
    1024 at that size (18.5 to 19.4 Tflop/s against 17.5 to 18.2).
 11. DPLASMA's `testing_dpotrf`, a natural reference, uses every visible GPU
    unless given `-g 0`.
+12. Several GPUs in one process (`--gpus n`) scale when the GPUs can read
+   each other's memory directly. On a node with eight V100s (NVLink within
+   each socket's four GPUs, some pairs across the sockets), the dense FP64
+   Cholesky at N=40960, NB=1024 takes 3.7 s on one GPU, 1.95 s on two and
+   1.06 s on four linked ones (DPLASMA: 4.1, 2.4 and 1.3 s). When some pair
+   of the GPUs in use is not linked, PaRSEC copies the output of every GPU
+   task back to host memory (90 GB instead of 6 GB in this run): two GPUs of
+   each socket take 4.3 s, all eight 2.4 s. Rank 0 says so at start-up;
+   `nvidia-smi topo -m` shows the links, and `CUDA_VISIBLE_DEVICES` selects
+   a linked set.
+13. On one node, one process with all the GPUs is faster than one rank per
+   GPU or per socket: the same factorization takes 4.7 s with two ranks of
+   four GPUs and 3.9 s with eight ranks of one, because tiles that move
+   between ranks go from the GPU to host memory, through MPI, and back.
+   Use several ranks to span nodes, not the GPUs of a node.

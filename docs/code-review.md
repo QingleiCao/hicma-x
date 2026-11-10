@@ -1159,7 +1159,7 @@ CHECKSOLVE && GENOMICS` vs `#if PREDICTION || CHECKSOLVE`, the climate emulator'
 
 | Item | Why deferred |
 |---|---|
-| Merging the Cholesky JDFs (70-85% identical) and the HCORE two-step GEMM block pasted 20× across the TLR JDFs | TODO backlog; task-graph rewrite |
+| Merging the remaining Cholesky JDFs: kind 10 with kind 5 (about 500 shared code lines), kinds 6 and 7 with kind 2 (about 500, among them the FP64 copy of the HCORE two-step GEMM) | kinds 5, 8 and 9 and the mixed-precision low-rank GEMM were merged in the tenth pass (section 13); the rest needs the per-GEMM runtime decisions (kind 10) or the sparse task graphs (kinds 6, 7) folded in, with results to compare at scale |
 | Merging the `Lapack_to_Tile`/`Tile_to_Lapack` family (9 JDFs) | TODO backlog |
 | GENOMICS macro consolidation, params restructure, public/internal header split, API redesign, hcore removal, Python/Julia | TODO backlog (the tensor_gemm redesign was done on request, section 11) |
 | Single-source CUDA/HIP kernels (D12) | cannot be validated on AMD hardware here; documented with the drift table |
@@ -1528,3 +1528,69 @@ do not take it (kind 3, run-time decisions, the TRMM, HIP).
    section 5.14) found no defect. Two silent cases now print a note on rank
    0: `--gpus` above the usable GPUs (or on a build without GPU support), and
    processes of a node starting more worker threads than it has cores.
+
+## 13. Tenth pass: code structure, several GPUs (2026-11-10, on request)
+
+A scan for runs of 25 or more identical code lines (comments and blank lines
+dropped) found 8,013 of the 30,775 code lines of `src/` in such runs, nearly
+all in the Cholesky kernels. After this pass: 4,177 of 26,879.
+
+1. **Kinds 5, 8 and 9 were one kernel in three copies.** Kind 8
+   (`potrf_L_dense_mp_gpu_fp8.jdf`) was kind 5 plus the FP8 branches of the
+   TRSM send and of the GEMM size, minus stochastic rounding; kind 9
+   (`..._fp8_sp.jdf`) was kind 8 with FP32 diagonal types. Every difference
+   is a function of the precision decisions, so `potrf_L_dense_mp_gpu.jdf`
+   now runs the three kinds: it has the FP8 branches, the type of a diagonal
+   flow comes from the tile's decision (`DIAG_ADT`), and the diagonal is
+   converted for sending only when it is FP64 (`DIAG_CONVERT`). The two
+   JDFs, their wrappers and their copies of the datatype functions are
+   deleted. The copies cost work and had drifted: the FP8 fix of section 12
+   had to be made in each of them, and the FP8 arena of kind 5 had another
+   size than kind 8's.
+   `--enable_stochastic_rounding` now works for kinds 8 and 9 without FP8
+   GEMMs (it was refused); with FP8 GEMMs and in kind 10 it stays refused.
+2. **The CPU GEMM into a low-rank tile was pasted in five kernels** (kinds
+   1, 5, 8, 9, 10; 665 lines each, both the dense-B and the low-rank-B case).
+   It is `hicma_parsec_core_gemm_lrC_lrA_denseB_cpu` and
+   `hicma_parsec_core_gemm_lrC_lrA_lrB_cpu` in `hicma_parsec_core.c`, next to
+   the dense-C functions that were already there. The copies differed in one
+   place: kind 1's did not count its datatype conversions, so
+   `Number_of_Datatype_Conversions` of kind-1 runs was too small (48 and 89
+   where 169 conversions happen in the two matrix cases that show it).
+3. **Dead code found on the way:** a pool for FP8 work tiles, created and
+   destroyed by kinds 8, 9 and 10 and never used.
+4. **GPU tile placement had four rules, and the warm-up a fifth.** Kinds 1
+   and 2 placed by global column (`n % gpus`), kinds 3 and 4 by row inside
+   the band and by `(n*NT+m) % gpus` outside, kind 5 by row (by `n/P` with
+   low-rank tiles), kinds 8 to 10 on the `gpu_rows x gpu_cols` grid; the
+   warm-up, which stages the tiles before the factorization and has to agree
+   with it, used kind 5's rule for kinds 1 to 4. Rules on global indices
+   leave GPUs nearly without tiles when the process grid shares a factor
+   with the GPU count. Measured on leconte with two ranks of four GPUs: under
+   the rule of kinds 3 and 4 (2 x 1 process grid), two GPUs of a rank ran
+   61 % of its GPU tasks and the other two 10 %; under the rule of kinds 1
+   and 2 (1 x 2 grid), 30 % against 2.4 %. Kind 5's `n/P` has the same
+   property on a 1 x 2 grid. `hicma_parsec_gpu_of_tile` is now the one rule,
+   on the tile's position among the tiles of its rank (`m/P`, `n/Q`): the
+   grid for a dense matrix, by column when only a band is dense. The same
+   two cases then give 16 to 20 % and 8 % per GPU. An interleaved comparison
+   of the candidate rules in one binary (release-readiness, section 5.17)
+   decided the choice: the grid is 1 to 10 % faster than by row or by column
+   for the dense layouts; for a dense band among low-rank tiles the rules do
+   not differ beyond the run-to-run spread, and by column is kept because it
+   reaches every GPU whatever the band width.
+5. **GPUs that cannot all read each other** (an 8-GPU server whose
+   cross-socket pairs have no NVLink): PaRSEC then copies the output of every
+   GPU task to host memory, since it cannot tell which GPU reads it next
+   (`parsec_gpu_task_update_pushout`, upstream policy). On leconte that is
+   90 GB instead of 6 GB for a dense N=40960 and four times the run time on
+   four GPUs taken across the sockets; all eight GPUs are slower than four
+   linked ones. Not a HiCMA-X defect and not changed here; rank 0 now says so
+   and names the remedy (`nvidia-smi topo -m`, `CUDA_VISIBLE_DEVICES`).
+6. **Several ranks on one node, each with its own GPUs,** are slower than
+   one process with all of them (leconte, dense N=40960: 1.05 s with one
+   process on four GPUs; 4.7 s with two ranks of four GPUs, 3.9 s with eight
+   ranks of one). The time goes to the path GPU, host, MPI, host, GPU between
+   ranks; pinned arenas and the shared-memory transport do not change it.
+   Documented in `TESTS.md`; one process per node is the recommendation.
+

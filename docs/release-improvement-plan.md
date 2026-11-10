@@ -186,3 +186,11 @@ after the library changes.
   fork commits reapplied, one conflict resolved). methane: PaRSEC 205 / 205,
   HiCMA 27 / 27 and 48 / 48, matrix identical, eviction reproducer 10 / 10.
   See `release-readiness.md` section 5.16.
+- 2026-11-10 (tenth pass, on request): code structure and several GPUs.
+  Kinds 5, 8 and 9 merged into one kernel, the low-rank CPU GEMM of kinds 1,
+  5 and 10 moved into two functions (`TODOs` item 2, in part; 6,076 lines
+  less in `src/`), one GPU placement rule chosen by an interleaved
+  comparison on four V100s, stochastic rounding for kinds 8 and 9, a note
+  for GPUs that are not all linked. Results unchanged on methane, hexane and
+  leconte; old against new timings within the spread. See
+  `release-readiness.md` section 5.17.

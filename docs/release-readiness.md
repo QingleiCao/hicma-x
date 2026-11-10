@@ -23,6 +23,8 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `a7ecff1` One kernel for kinds 5, 8 and 9; shared low-rank CPU GEMM; one GPU tile placement rule
+- `1d74b4c` Update dplasma: parsec rebased on ICLDisco master 2c16c652e
 - `c658f96` Cray MPICH without GPU support: no intra-node single copy for HIP runs
 - `a67bb1b` Cray MPICH without GPU support: keep remote transfers in host memory
 - `931c41b` AMD GPUs: BF16 for the adaptive low-precision tiles, chosen with --tensor_gemm
@@ -105,8 +107,9 @@ commit `8f7cb5e` (section 5.3), the one after the CI fixes (section 5.5), the
 one after the third pass (`ec39832`; sections 4, 5.1, 5.2, 5.6 and 5.7) and the
 final one, which includes the Frontier commits `6e01e6b` to `d6bf679`
 (section 5.8: CTest on CPU and CUDA, kind 3 on 2 ranks); the validation
-matrix was rerun after each later pass (sections 5.9 to 5.13), identical to
-the third pass on the A100.
+matrix was rerun after each later pass (sections 5.9 to 5.13, 5.16 and
+5.17), identical to the third pass on the A100; `a7ecff1` is the tree of
+section 5.17.
 Intermediate commits were not built individually.
 
 ## 3. Validation environment
@@ -966,6 +969,183 @@ default architectures, HIP):
   | V100, kind 5 FP64 | 5.9 | 5.88 and 5.86 |
   | 16 CPU cores, TLR | 2.0 s | 1.95 and 2.02 s |
 
+### 5.17 Tenth pass: code structure and several GPUs (methane, hexane, leconte)
+
+On request: another round of testing and optimization, with leave to redesign
+the code structure. `docs/code-review.md`, section 13, has the findings; this
+section has what was run. leconte is a node with eight V100s (GPUs 0 to 3 on
+socket 0, 4 to 7 on socket 1, NVLink between the GPUs of a socket and for
+some pairs across the sockets).
+
+**What changed.** Kinds 5, 8 and 9 run one kernel; the CPU GEMM into a
+low-rank tile of kinds 1, 5 and 10 is two functions; one rule places the
+tiles on the GPUs for every kind and for the warm-up; a note says when the
+GPUs in use cannot all read each other directly. `src/` lost 6,076 lines
+(888 added, 6,964 removed).
+
+**Results are unchanged.**
+
+- methane (A100), final tree: CTest 28 / 28 (CPU) and 50 / 50 (CUDA, with
+  the case added in this pass), `scripts/test_CI.sh` 49 passed and 1
+  skipped, the validation matrix 31 / 31
+  (CPU) and 50 / 50 (GPU) with the exit code and residual of the third pass
+  in every case they share. Three kind-1 cases print a larger
+  `Number_of_Datatype_Conversions` (169 where 48 and 89 were printed): kind
+  1's copy of the low-rank GEMM did not count its conversions. Kind 5, old
+  and new, and kind 1, new, give the same counts on the same command lines
+  (169, 169 and, at N=5400, 1335; kind 1 before: 48, 89, 244). The HIP tree
+  builds.
+- hexane: the validation matrix on the H100 and on the V100 is identical to
+  the one recorded before the pass in all 50 cases (three with the counter
+  above). Twelve FP8 and mixed layouts on the H100 give the residuals
+  recorded before to the last digit (static FP8 band 8.431338e-07, kind 9
+  adaptive 3.267401e-07, kind 10 7.459304e-09, FP8 band with low-rank tiles
+  1.577594e-05 and 1.769098e-04, ...); two ranks sharing the H100 and one
+  rank per GPU pass.
+- leconte: eleven layouts (kinds 1, 2, 3, 5, 8, 9, 10; FP64, adaptive,
+  static bands, FP16 band with low-rank tiles, TLR) give the same residual
+  on 1, 4 and 8 GPUs in one process; the four that were also run with two
+  ranks of four GPUs and the two run with eight ranks of one GPU give it
+  there too.
+  CTest 49 / 49 and the GPU matrix 50 / 50 on one V100; the TRMM on four
+  GPUs passes.
+
+**The restructuring costs no time.** The pushed revision (`7d66360`, built in
+a second tree) against the working tree, interleaved, same tile placement;
+medians, seconds:
+
+| Machine, case | Runs | Before | After |
+|---|---|---|---|
+| methane, 36 cores, kind 5 TLR (N=30720, NB=512, band 1) | 5 | 0.590 | 0.602 |
+| methane, 36 cores, kind 1 TLR | 5 | 0.592 | 0.596 |
+| methane, 36 cores, kind 1 adaptive TLR | 5 | 0.485 | 0.471 |
+| methane, 36 cores, kind 5 TLR, band 4 | 5 | 0.733 | 0.719 |
+| hexane, 16 cores, kind 5 TLR (N=30720, NB=1024) | 6 | 1.607 | 1.530 |
+| hexane, 16 cores, kind 1 TLR | 6 | 1.463 | 1.456 |
+| hexane, H100, kind 5 TLR, band 8 | 12 | 1.330 | 1.342 |
+| hexane, H100, kind 5 TLR, band 1 | 6 | 0.955 | 0.940 |
+| hexane, H100, kind 1 TLR, band 4 | 6 | 1.423 | 1.449 |
+| hexane, H100, kind 5 adaptive, dense | 6 | 0.624 | 0.593 |
+| hexane, H100, kind 8 adaptive, dense | 6 | 0.609 | 0.633 |
+| leconte, 4 V100, kind 5 FP64 (N=40960) | 5 | 1.085 | 1.078 |
+| leconte, 4 V100, kind 5 adaptive | 5 | 0.876 | 0.870 |
+| leconte, 4 V100, kind 8 adaptive | 5 | 0.829 | 0.830 |
+| leconte, 4 V100, kind 10 | 5 | 0.635 | 0.639 |
+| leconte, 4 V100, kind 5 TLR, band 8 | 5 | 0.682 | 0.693 |
+
+The ranges of the two columns overlap in every row except hexane's 16-core
+kind 5 (after is 5 % faster in six of six pairs). A first batch of six pairs
+of the H100 band-8 case had medians 7 % apart; the twelve further pairs in
+the table did not confirm it. The two builds also differ by 3 % on code the
+pass did not touch (kind 10, dense, on methane's CPUs: 7.43 and 7.68 s),
+which bounds what such a comparison can resolve.
+
+**Tile placement, measured.** One binary with a temporary switch between the
+rules (removed afterwards), five interleaved runs per rule, four linked
+V100s, N=40960, NB=1024; median and range in seconds:
+
+| Layout | By row | By column | Grid |
+|---|---|---|---|
+| kind 5, FP64 | 1.080 (1.071 to 1.084) | 1.133 (1.101 to 1.188) | **1.065** (1.037 to 1.090) |
+| kind 5, adaptive | 0.872 (0.864 to 0.880) | 0.912 (0.890 to 0.932) | **0.831** (0.820 to 0.843) |
+| kind 3, FP64/FP32 bands of 2/2, rest FP16 | 0.493 (0.490 to 0.498) | 0.488 (0.476 to 0.491) | **0.479** (0.475 to 0.489) |
+| kind 10 | 0.698 (0.677 to 0.701) | 0.652 (0.641 to 0.664) | **0.635** (0.628 to 0.641) |
+| kind 5, TLR, band 8 | 0.709 (0.614 to 0.812) | 0.753 (0.661 to 0.760) | 0.734 (0.710 to 0.769) |
+| kind 1, TLR, band 8 | 0.758 (0.637 to 0.789) | 0.735 (0.637 to 0.781) | 0.678 (0.648 to 0.736) |
+| kind 2, TLR, band 8 | 0.723 (0.659 to 0.746) | 0.715 (0.643 to 0.728) | 0.745 (0.675 to 0.796) |
+| kind 5, TLR, band 1 | | 0.602 (0.566 to 0.613) | 0.585 (0.571 to 0.620) |
+| kind 5, TLR, band 2 | | 0.662 (0.652 to 0.678) | 0.644 (0.636 to 0.685) |
+| kind 5, TLR, band 4 | | 0.662 (0.644 to 0.665) | 0.650 (0.636 to 0.702) |
+| kind 2, TLR, band 2 | | 0.647 (0.633 to 0.672) | 0.658 (0.643 to 0.670) |
+
+The grid is the fastest rule for every dense layout, by 1 to 10 %; the old
+rule of kinds 3 and 4 gave 0.494 s on the third row. With low-rank tiles no
+rule wins: each of the three is fastest for one kind at band 8, and the
+ranges overlap. On two GPUs kind 5 TLR was faster by row (0.623 against
+0.746 s) and kind 1 TLR by column (0.639 against 0.745 s) on the same task
+graph, and one binary with one rule gave 0.65 to 0.78 s for the first of
+these in three runs: this is the spread of the TLR runs, not an effect of
+the rule. By
+column is kept for a dense band because it reaches every GPU at any band
+width: with a diagonal band on four GPUs the grid gave two GPUs twice the
+tasks of the other two (2.6 and 2.8 % against 1.2 and 1.3 % of the rank's
+tasks), by column 1.9 to 2.2 % each. An earlier reading in this pass, "by
+column is up to 15 % faster for TLR", came from two runs per rule and did
+not survive the repetitions.
+
+For kind 5 this changes the dense placement from by row to the grid: 1.4 %
+(FP64) and 5 % (adaptive) faster on four GPUs; kind 3 gains 3 %.
+
+**Ranks whose GPUs were left nearly idle.** Two ranks with four GPUs each,
+share of a rank's GPU tasks per GPU (PaRSEC's device statistics):
+
+| Case | Rule before | Rule now |
+|---|---|---|
+| kind 3, 2 x 1 process grid | 27.9, 4.4, 33.1, 5.4 % | 17.1, 15.7, 19.7, 18.3 % |
+| kind 1 TLR, 1 x 2 process grid | 1.2, 15.0, 1.2, 15.0 % | 8.1, 8.1, 8.1, 8.1 % |
+
+(The rest of the tasks runs on the CPU.) The run times of these two cases
+did not change beyond their spread (2.16 and 2.07 s; 2.05 and 2.14 s): with
+several ranks on one node the time is in the transfers between the ranks,
+below.
+
+**Several GPUs, one process** (leconte, final tree, dense FP64, N=40960,
+NB=1024, three runs): 3.71 to 3.73 s on one GPU (6.1 Tflop/s; DPLASMA
+4.09 s), 1.95 to 1.98 s on two (11.7; DPLASMA 2.43 s), 1.05 to 1.07 s on
+four linked GPUs (21.5 to 21.8; DPLASMA 1.27 s). Mixed precision on four
+GPUs: adaptive 0.83 s, kind 9 adaptive 0.57 s, kind 10 0.63 to 0.64 s,
+FP64/FP32 bands with the rest in FP16 0.49 to 0.52 s. All eight GPUs take
+2.38 to 2.48 s: some pairs are not linked, and PaRSEC then copies the output of
+every GPU task to host memory (`parsec_gpu_task_update_pushout`). Measured
+with the device statistics before the pass: 6.4 GB of 89.7 GB copied out on
+GPUs 0 to 3, all 89.7 GB on GPUs 0, 1, 4, 5, which take 4.25 s; turning the
+direct copies off on GPUs 0 to 3 (`device_cuda_nvlink_mask=0`) gives 4.46 s.
+NUMA binding, interleaved memory and fewer cores change nothing. This is the
+runtime's policy and is not changed here. Rank 0 now prints a note when the
+GPUs in use are not all linked; it appears with eight GPUs and not with
+`CUDA_VISIBLE_DEVICES=0,1,2,3`.
+
+**Several ranks on one node** (same problem, before the pass): two ranks of
+four GPUs 4.7 s, four of two 6.2 to 6.4 s, eight of one 3.9 to 4.2 s, against
+1.06 s for one process with four GPUs. Pinned arenas
+(`--arena_pinned_memory 1`: 5.2, 7.1, 4.35 s) and the shared-memory transport
+alone do not help, and a CPU-only run does not show it (N=20480: 2.87 s with
+two ranks, 2.91 s with one): the time is in the path GPU, host, MPI, host,
+GPU.
+`TESTS.md` recommends one process per node.
+
+**Stochastic rounding for kinds 8 and 9** (they run kind 5's kernel, which
+implements it): on methane, kind 8 and kind 5 give the same residual with
+it (1.484178e-08 on the A100, 3.483492e-09 on the CPU; 1.144828e-08 and
+3.444675e-09 without), kind 9 gives 2.007399e-07 (1.989370e-07 without), and
+two ranks give the same values. With FP8 GEMMs and in kind 10 it is refused
+at start-up, as before.
+
+**Final tree on the GPU nodes.** After the placement rule and the
+stochastic-rounding change, rebuilt and rerun:
+
+- hexane: the H100 matrix again identical to the one recorded before the
+  pass (50 cases); four FP8 layouts to the last digit; kinds 8 and 9 with
+  stochastic rounding (`--fp8 0`) pass, kind 8 with kind 5's residual
+  (2.537443e-09 adaptive, 1.279413e-06 with static bands); the H100 and the
+  V100 in one process, where the placement rule decides, pass for kinds 1,
+  2, 3, 4, 5, 8, 9 and 10 (ten layouts), and one rank per GPU for kinds 1, 3
+  and 8. H100 at N=30720, two runs: FP64 17.8 and 18.1 Tflop/s, adaptive
+  15.6 and 16.4, kind 8 adaptive 14.3 and 15.7, kind 10 13.9 and 14.2 (before
+  the pass: 17.5 to 18.4, 16.3 to 16.8, 16.3 to 16.4, 13.2 to 14.3; six
+  further runs of the build before the placement change gave 17.8 to 18.6,
+  16.1 to 16.6, 15.1 to 16.5 and 13.1 to 14.4).
+- leconte: thirteen layouts, now with kind 4 and kind 8 with stochastic
+  rounding, give the same residual on 1, 4 and 8 GPUs; seven of them with
+  two ranks of four GPUs (kinds 1, 2 and 3 among them, kind 2 on a 1 x 2
+  process grid) and two with eight ranks of one GPU give it too. The GPU
+  matrix on one V100 is 50 / 50, the TRMM on four GPUs passes.
+- CTest, with the case added in this pass (`gpu_fp8_static_sr`, kind 8 with
+  stochastic rounding): 50 / 50 on the H100, on hexane's V100 and on one of
+  leconte's V100s; 50 / 50 (CUDA) and 28 / 28 (CPU) on methane. The HIP tree
+  builds and registers its 42 cases; it was not run (no AMD GPU here).
+
+
 ## 6. Release checklist
 
 | Item | Status |
@@ -989,6 +1169,7 @@ default architectures, HIP):
 | Eighth pass: H100 and two more rounds (section 5.13) | done; FP8 operands in the low-rank GEMMs fixed, documentation audited and corrected |
 | Complete hexane test, H100 and V100 (section 5.14) | done; correct on every configuration; notes for capped `--gpus` and oversubscribed cores added |
 | Ninth pass: Frontier, HIP on MI210 and MI250X, two rounds (section 5.15) | done; FP16 subnormal flush on gfx90a (kind 10 scaled, BF16 via `--tensor_gemm` for the static paths), HIP handle warm-up (FP64 1.84x faster on a GCD, multi-GCD scaling), Cray MPICH multi-rank GPU runs, script and test fixes |
+| Tenth pass: code structure and several GPUs (section 5.17) | done; kinds 5, 8 and 9 one kernel, the low-rank CPU GEMM shared, one measured GPU placement rule, a note for GPUs that are not all linked; results unchanged on A100, H100 and V100s, timings unchanged or better |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
@@ -1040,8 +1221,10 @@ remaining parts of P1-6, P1-11, P2-5, P2-7, P2-8. The project's own `TODOs`
 backlog (API, Python/Julia bindings, merging the potrf JDFs, hcore removal,
 tensor_gemm redesign) was out of scope by request; item 12 (tensor_gemm)
 was done on request in the seventh pass (section 5.12), item 1 (merge the
-tile/LAPACK conversions) was done on request in the second pass, and item 10
-(external users) partly (section 5.6).
+tile/LAPACK conversions) was done on request in the second pass, item 10
+(external users) partly (section 5.6), and item 2 (merge the potrf JDFs)
+partly in the tenth pass (section 5.17): kind 10 and the sparse kinds 6 and
+7 still have their own kernels.
 
 Found in the second pass and left for later:
 

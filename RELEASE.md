@@ -16,16 +16,16 @@ and the genomics (kernel ridge regression) applications.
 - A release-quality pass over the existing code: the correctness check is
   binding and drives the exit code, the diagonal shift is applied once, several
   memory-safety bugs in initialization and the file readers are fixed, the
-  installed package is usable, and the ten Cholesky wrappers share one
-  implementation. The full list is in `CHANGELOG.md`; the review that led to it
-  is in `docs/code-review.md`.
+  installed package is usable, the Cholesky wrappers share one
+  implementation, and kinds 5, 8 and 9 one kernel. The full list is in
+  `CHANGELOG.md`; the review that led to it is in `docs/code-review.md`.
 
 ### Supported configurations
 
 | Configuration | Status in 0.2.0 |
 |---|---|
 | Linux x86_64, CPU only (OpenBLAS or MKL, LAPACKE, Open MPI or MPICH) | tested (CI, 1 and 2 ranks) |
-| Linux x86_64 + CUDA 12 (A100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks) and one H100 (FP8; 1 and 2 ranks) |
+| Linux x86_64 + CUDA 12 (A100, V100; H100 for FP8) | tested on one A100 (1 and 2 ranks sharing it), one 8-A100 node (1 to 8 ranks), one H100 (FP8; 1 and 2 ranks) and one 8-V100 node (1 to 8 GPUs in one process, 2 and 8 ranks) |
 | Linux + ROCm 6 (HIP, gfx90a) | tested on Frontier: one MI210 (CTest 35 / 35) and one MI250X node (CTest 42 / 42 with the two-rank cases, `test_CI.sh`, the GPU validation matrix; 1 to 8 GCDs in one process, two ranks with one GCD each or sharing one); kinds 1 to 4 run on the CPU |
 | Fugaku (`ON_FUGAKU`), macOS, Windows | not supported |
 
@@ -47,8 +47,8 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
   affected. Low-rank (TLR) layouts have no BF16 variant and keep FP16.
   Kind 3 with a half-precision band runs on GPUs only (the CPU bodies have no
   half path; without GPUs the single-precision band is widened to the matrix).
-- `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the TRMM,
-  not for kinds 8 to 10 and not together with FP8 GEMMs.
+- `--enable_stochastic_rounding` is implemented for kinds 1 to 5, 8 and 9 and
+  the TRMM, not for kind 10 and not together with FP8 GEMMs.
 - `--tensor_gemm` variants other than 0x8 are not implemented on every path
   (`TESTS.md`, "GPU GEMM variants"); `--datatype_convert 2` needs GPUs.
 - A static FP8 band near the diagonal can make the matrix indefinite (the
@@ -156,6 +156,13 @@ before/after timing comparison.
   gave wrong results (residuals 10 to 59) or crashed. So do kind-8 runs with
   an FP8 band and low-rank tiles on GPUs with FP8 (residual 1.5e-2 before).
   Results of such runs change.
+- Kinds 8 and 9 run kind 5's kernel (same results) and accept
+  `--enable_stochastic_rounding` when no FP8 GEMM is in use. With several
+  GPUs every kind places its tiles by one rule (the GPU grid for a dense
+  matrix, by column for a dense band), which changes timings, not results;
+  rank 0 prints a note when the GPUs in use cannot all read each other
+  directly. `Number_of_Datatype_Conversions` of kind-1 runs is larger: the
+  conversions of its low-rank GEMMs were not counted.
 
 ## 0.1.0
 
