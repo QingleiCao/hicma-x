@@ -50,13 +50,11 @@ void  hicma_parsec_decisions_update( parsec_context_t *parsec,
     hicma_parsec_decision_count( parsec, (parsec_tiled_matrix_t*)&data->dcA, params );
 
     /* Analysis data convert type */
-    /* Serial version: hicma_parsec_decisions_send_analysis( params ) */
     hicma_parsec_decision_make_send( parsec, (parsec_tiled_matrix_t*)&data->dcA, params );
     params->time_decision_sender = sync_time_elapsed;
 
     if( params->verbose > 9 ) {
         print_decisions( params, params->decisions, params->uplo, params->NT, params->NT );
-        //print_decisions_gemm_gpu( params );
     }
 }
 

@@ -364,7 +364,6 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
             A = (parsec_tiled_matrix_t *)&data->dcAd;
         }
         SYNC_TIME_START();
-        //hicma_parsec_warmup_potrf(params->rank, params->uplo, 3872, parsec);
         hicma_parsec_potrf_L_warmup_dense( parsec, A, params );
         SYNC_TIME_PRINT(params->rank, ("Warmup\n"));
     }
@@ -960,12 +959,6 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
 #endif
     SYNC_TIME_PRINT(params->rank, ("sqr_sum_vec\n"));
 
-    //float totalA1 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
-    //       (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-    //if( 0 == params->rank ) {
-    //    fprintf(stderr, "sum of totalA1 matrix %e\n", totalA1);
-    // }
-
 #if GENOMICS_ALLOCATE_SP
     SYNC_TIME_START();
     parsec_convert_s2i(parsec, (parsec_tiled_matrix_t *)&A, 8);
@@ -1011,8 +1004,6 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
                     params->nodes, params->gpus, params->N, params->nsnp, params->lookahead, flops, params->P, params->Q, params->NB));
     }
 
-    //parsec_convert_i2s(parsec, (parsec_tiled_matrix_t *)&A, 8);
-
     //parsec_data_free(A.mat);
     parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t*)&A, params, 0); 
     parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&A);
@@ -1032,12 +1023,6 @@ void hicma_parsec_kernel_matrix(parsec_context_t *parsec,
     double iadd_kernel_time = tend.tv_sec + tend.tv_usec / 1.0e6 - params->start_time_kernel_add;
 
     SYNC_TIME_PRINT(params->rank, ("hicma_parsec_kernel_add \n"));
-
-    /*float totalA2 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
-      (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-      if( 0 == params->rank ) {
-      fprintf(stderr, "sum of totalA2 matrix %e\n", totalA2);
-      }*/
 }
 
 
@@ -1124,7 +1109,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         
         if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
             
-        //parsec_print_cm(parsec, (parsec_tiled_matrix_t *)B,  nodes, P, Q);
         parsec_data_free(phenoB);
 
     
@@ -1169,7 +1153,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
         
         if( 0 != hicma_parsec_Lapack_to_Tile_Single( parsec, (parsec_tiled_matrix_t *)B, phenoB, params->P, params->nodes/params->P) ) exit(1);  /* message printed by the conversion */
             
-        //parsec_print_cm(parsec, (parsec_tiled_matrix_t *)B,  nodes, P, Q);
         parsec_data_free(phenoB);
 
     #endif
@@ -1181,7 +1164,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
 
 #endif
 
-    //parsec_print_cm(parsec, &A,  params->nodes,  params->P, params->Q);
     
     SYNC_TIME_START();
     float *vec = (float *)malloc(sizeof(float)*params->N);
@@ -1200,12 +1182,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
     hicma_parsec_matrix_sum_vec(parsec, (parsec_tiled_matrix_t *)&A, params, vec);
 #endif
     SYNC_TIME_PRINT(params->rank, ("sqr_sum_vec\n"));
-
-    //float totalA1 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
-    //       (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-    //if( 0 == params->rank ) {
-    //    fprintf(stderr, "sum of totalA1 matrix %e\n", totalA1);
-    // }
 
 #if GENOMICS_ALLOCATE_SP
     SYNC_TIME_START();
@@ -1247,8 +1223,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
     //parsec_print_cm_sym(parsec, AA,  params->nodes,  params->P, params->Q);
     
 
-    //parsec_convert_i2s(parsec, (parsec_tiled_matrix_t *)&A, 8);
-
     //parsec_data_free(A.mat);
     parsec_memory_free_tile(parsec, (parsec_tiled_matrix_t*)&A, params, 0); 
     parsec_tiled_matrix_destroy( (parsec_tiled_matrix_t*)&A);
@@ -1268,12 +1242,6 @@ void hicma_parsec_kernel_matrix_file(parsec_context_t *parsec,
     double iadd_kernel_time = tend.tv_sec + tend.tv_usec / 1.0e6 - params->start_time_kernel_add;
 
     SYNC_TIME_PRINT(params->rank, ("hicma_parsec_kernel_add \n"));
-
-    /*float totalA2 = hicma_parsec_matrix_ssum( parsec, (parsec_tiled_matrix_t *)&A,
-      (parsec_tiled_matrix_t*)&data->dcAr, params->decisions );
-      if( 0 == params->rank ) {
-      fprintf(stderr, "sum of totalA2 matrix %e\n", totalA2);
-      }*/
 }
 
 void hicma_kernal_matrix(parsec_context_t *parsec,
@@ -1369,7 +1337,6 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
             }
         
             if( 0 != hicma_parsec_Lapack_to_Tile( parsec, (parsec_tiled_matrix_t *)&A, dgeneA, P, nodes/P) ) exit(1);  /* message printed by the conversion */
-            //parsec_print_cm( parsec, (parsec_tiled_matrix_t *)&A, rank, P, nodes/P);
         
             free(sgeneA);
             parsec_data_free(dgeneA);
@@ -1435,9 +1402,8 @@ void hicma_kernal_matrix(parsec_context_t *parsec,
     /* Notify start of kernel calculations */
     if(rank == 0) fprintf(stderr, RED "\nSTART KERNEL CAL:\n" RESET);
 
-    /* Apply kernel function to compute AA = kernel(sqrt(C)) */
-    /* Note: Currently commented out - uncomment to enable kernel computation */
-    //hicma_parsec_sqrt_kernel(parsec,(parsec_tiled_matrix_t *)&C, (parsec_tiled_matrix_t *)AA, radius, add_diag, kernel);
+    /* AA = kernel(sqrt(C)) is not computed here: that step was never enabled
+     * (its JDF, sqrt_kernel.jdf, was removed unused) */
     //parsec_print_cm_sym(parsec, (parsec_tiled_matrix_t *)AA,  nodes, P, Q);
 
     /* Clean up temporary matrices to free memory */

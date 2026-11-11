@@ -100,9 +100,6 @@ int main(int argc, char ** argv)
                        (parsec_tiled_matrix_t *)&A,  
                        params.nsnp, params.N, 0, 0, 0, 0);
 
-    // Uncomment the following line to print the matrix contents for debugging
-    // parsec_print_cm(parsec, (parsec_tiled_matrix_t *)&A, params.rank, params.P, params.nodes/params.P); 
-
     printf("Cleaning up allocated resources\n");
 
     /* Cleanup: Free allocated memory and destroy matrices */

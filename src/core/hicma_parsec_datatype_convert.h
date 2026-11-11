@@ -164,19 +164,6 @@ int parsec_convert_s2i(parsec_context_t *parsec,
                          parsec_tiled_matrix_t *A, int intype);
 
 /**
- * @brief Convert integer matrix to single precision format
- * 
- * Converts an integer matrix to single precision format.
- * 
- * @param[in] parsec PaRSEC context for task scheduling and execution
- * @param[in] A Tiled matrix to convert
- * @param[in] intype Source integer type (e.g., 8, 16, 32, 64 for int8_t, int16_t, int32_t, int64_t)
- * @return 0 on success, non-zero on failure
- */
-int parsec_convert_i2s(parsec_context_t *parsec,
-                         parsec_tiled_matrix_t *A, int intype);
-
-/**
  * @brief Convert single precision matrix to double precision (for correctness checking)
  * 
  * Converts a single precision matrix to double precision format.

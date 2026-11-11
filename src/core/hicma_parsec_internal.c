@@ -1303,7 +1303,7 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
 #endif
     MPI_Allreduce(MPI_IN_PLACE, &fp8_gpus_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
     /* Only kinds 8, 9 and 10 run FP8 tiles; the precision decisions
-     * (hicma_parsec_get_precision_tile, hicma_parsec_decisions_send_analysis)
+     * (hicma_parsec_get_precision_tile, hicma_parsec_decision_make_send)
      * are shared by every kind, so keep FP8 off for the others */
     int fp8_kind = DENSE_MP_GPU_FP8 == params->kind_of_cholesky
                    || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky

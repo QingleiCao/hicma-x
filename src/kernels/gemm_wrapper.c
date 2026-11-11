@@ -280,13 +280,6 @@ hicma_parsec_syrk_New_ex( dplasma_enum_t transA, dplasma_enum_t transB,
         return NULL;
     }
 
-    /* Currently using default implementation - SUMMA commented out for future use */
-    //if ( C->dtype & parsec_matrix_block_cyclic_type ) {
-    //    printf("\n %s %d\n", __FILE__, __LINE__);
-    //    gemm_tp = hicma_parsec_syrk_summa_new(transA, transB, alpha, A, B, beta, C, opt, params_tlr, data);
-    //    return gemm_tp;
-    //}
-
     /* Create taskpool using default GEMM implementation */
     gemm_tp = hicma_parsec_syrk_default_new(transA, transB, alpha, A, B, beta, C, opt, params_tlr, data);
 
