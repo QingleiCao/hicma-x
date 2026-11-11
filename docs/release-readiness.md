@@ -23,6 +23,7 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `02fa12c` Documentation: kinds 8 and 9 keep their own JDFs in TODOs and the deferred items
 - `b817e7a` Kinds 8 and 9 on their own kernels again
 - `91a64f0` Remove the prototype of a deleted function and comments naming removed ones
 - `a7ecff1` One kernel for kinds 5, 8 and 9; shared low-rank CPU GEMM; one GPU tile placement rule
@@ -1204,6 +1205,85 @@ same binaries run in the same session; residuals read through
   differed in section 5.17), kind 5 adaptive 0.843 / 0.833 s.
 - The HIP tree (gfx90a, methane) builds with the restored kernels; not run.
 
+### 5.19 Complete round on the head (2026-11-11)
+
+**Why.** Both CI jobs on `02fa12c` failed in `apt-get` (exit code 100)
+before building anything: the CUDA job's container could not resolve
+`archive.ubuntu.com`, and the CPU job gave up after 48 minutes. GitHub
+reported degraded service at the time, and a rerun of the failed jobs ended
+in `startup_failure`. `02fa12c` changes only documentation; the source is
+that of `b817e7a`. The round below replaces those jobs and repeats the
+earlier checks on this source.
+
+**methane, fresh HTTPS clone of `02fa12c`** (`--recursive`; DPLASMA
+`ae43716e`, PaRSEC `557a710f4`, HCORE `78028a59`, STARS-H `5d98f2c2`):
+
+- CPU build as `BUILD.md` says (`cmake -S . -B build -G Ninja`, only the
+  install prefix added): CTest 28 / 28 with `LD_LIBRARY_PATH` unset;
+  `test_CI.sh` 27 passed, 0 failed, 2 skipped (climate data; the GPU cases
+  without `HICMA_GPUS`); `cmake --install`; the install consumer's Cholesky
+  check passes and its conversion test runs 13 cases without failure; the
+  CPU validation matrix 31 / 31, exit codes and residuals identical to
+  section 5.18.
+- CUDA build (`-DHICMA_PARSEC_HAVE_CUDA=ON`, CUDA 12.6.2, the default
+  architectures): CTest 50 / 50 on the A100; `test_CI.sh` 49 passed, 1
+  skipped (climate data); the GPU validation matrix 50 / 50, identical to
+  section 5.18. Another user's job kept the A100 busy, so these runs used
+  half its memory (`PARSEC_MCA_device_cuda_memory_use=50`) and no timing was
+  taken on methane.
+- The HIP tree (gfx90a) is up to date with this source and registers 42
+  cases; not run.
+
+**hexane** (`build_fp8r`, same source; H100 = GPU 0, V100 = GPU 1):
+
+- CTest 50 / 50 on the H100 and 50 / 50 on the V100; `test_CI.sh` on the
+  H100 49 passed, 1 skipped (climate data).
+- The H100 validation matrix 50 / 50, identical to section 5.18 in exit
+  codes, residuals and GEMM counters; the V100 matrix 50 / 50, identical to
+  section 5.17's in the same three.
+- The 13 FP8 and low-precision cases with recorded values give them to the
+  last digit: kind 8 static FP8 band 8.431338e-07 (1 FP8 GEMM), with
+  `--fp8 0` 8.431506e-07, kind 9 adaptive 3.267401e-07, kind 9 FP8 band
+  8.879569e-07, kind 10 7.459304e-09 (3 FP8 GEMMs), FP8 band with low-rank
+  tiles 1.577594e-05 (kind 8, 34 FP8 GEMMs) and 3.263227e-05 (kind 9, 364),
+  the FP16 bands with low-rank tiles 4.414324e-05 (kind 5) and 1.654633e-04
+  (kind 1, `0x10`).
+- Stochastic rounding: kind 5 runs it (adaptive 2.537443e-09, bands
+  1.279413e-06); kinds 8, 9 and 10 refuse it at start-up with exit code 1,
+  with FP8 GEMMs and with `--fp8 0`.
+- Two ranks sharing the H100 give the one-rank residuals. Both GPUs in one
+  process (eleven layouts, kinds 1 to 5 and 8 to 10) and one rank per GPU
+  (four layouts) give, in the thirteen layouts section 5.17 also ran, the
+  same residuals and counters.
+- The TRMM on the H100 passes with the default variant, `--tensor_gemm_hp
+  0x80`, `--tensor_gemm 0xb`, stochastic rounding and `--accumulation_fp32 1`.
+- Timings, N=30720, NB=1024, numactl on the GPU's node, four runs (three for
+  DPLASMA, whose rate is DPLASMA's own count):
+
+  | Case | Time | Rate |
+  |---|---|---|
+  | H100, kind 5 FP64 | 0.520–0.535 s | 18.1–18.6 Tflop/s |
+  | H100, DPLASMA `dpotrf` | 0.629–0.642 s | 12.1–12.3 Tflop/s |
+  | H100, kind 5 adaptive | 0.586–0.616 s | 15.7–16.5 Tflop/s |
+  | H100, kind 8 adaptive (FP8) | 0.595–0.625 s | 15.5–16.2 Tflop/s |
+  | H100, kind 9 adaptive (FP8) | 0.538–0.576 s | 16.8–17.9 Tflop/s |
+  | H100, TLR kind 2 | 1.578–1.589 s | 6.1 Tflop/s |
+  | V100, kind 5 FP64 | 1.630–1.644 s | 5.9 Tflop/s |
+  | V100, DPLASMA `dpotrf` | 1.771–1.783 s | 5.0 Tflop/s |
+
+  Kind 10 took 0.89 and 1.05 s in two of its four runs (0.71 and 0.72 s in
+  the others). Its files have not changed since `a7ecff1`; eight interleaved
+  pairs against the tenth-pass build give 0.671–0.728 s on the head and
+  0.667–0.727 s on `a7ecff1`, and the slow runs did not recur: run-to-run
+  noise.
+- Harness notes: the session that ran the first script ended during the
+  timings, which were rerun in a second allocation. DPLASMA's
+  `testing_dpotrf` carries no BLAS run-time path (the HiCMA-X drivers do),
+  so on hexane it needs `LD_LIBRARY_PATH` set to MKL.
+
+**leconte** was not run: it was taken by other jobs, and this round skips it
+on request. Section 5.18's leconte results are on this source.
+
 
 ## 6. Release checklist
 
@@ -1230,6 +1310,7 @@ same binaries run in the same session; residuals read through
 | Ninth pass: Frontier, HIP on MI210 and MI250X, two rounds (section 5.15) | done; FP16 subnormal flush on gfx90a (kind 10 scaled, BF16 via `--tensor_gemm` for the static paths), HIP handle warm-up (FP64 1.84x faster on a GCD, multi-GCD scaling), Cray MPICH multi-rank GPU runs, script and test fixes |
 | Tenth pass: code structure and several GPUs (section 5.17) | done; kinds 5, 8 and 9 one kernel, the low-rank CPU GEMM shared, one measured GPU placement rule, a note for GPUs that are not all linked; results unchanged on A100, H100 and V100s, timings unchanged or better |
 | Kinds 8 and 9 on their own kernels again, on request (section 5.18) | done; results identical to the merged kernel on A100, H100 (FP8) and V100s, timings within the spread; kinds 8 to 10 refuse stochastic rounding again |
+| Complete round on the head (section 5.19) | done; fresh clone on methane (CPU and CUDA builds, install, both matrices) and hexane (H100 with FP8, V100, both GPUs) pass and match the earlier results; leconte not run |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
