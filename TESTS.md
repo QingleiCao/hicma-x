@@ -152,8 +152,8 @@ CUDA build; see `BUILD.md`.
   `--fixedacc 1e-8`. A HIP run that uses FP16 tiles prints how many. Kind 10
   scales its FP16 operands on HIP and is not affected; the HIP builds' CTest
   cases of adaptive kinds 5, 8 and 9 use 0x20.
-- `--enable_stochastic_rounding` is implemented for kinds 1 to 5, 8 and 9 and
-  the TRMM, not for kind 10, and not together with FP8 GEMMs.
+- `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the
+  TRMM, not for kinds 8, 9 and 10.
 - The GPU GEMM variants other than the default are not implemented
   everywhere ("GPU GEMM variants" below); the drivers refuse the others
   before the factorization.
@@ -186,9 +186,10 @@ CUDA build; see `BUILD.md`.
 | 9 | `DENSE_MP_GPU_FP8_SP` | kind 8 with every tile at FP32 or lower | CPU, CUDA, HIP (as kind 8) |
 | 10 | `DENSE_MP_GPU_FP8_ADAPTIVE` | GEMM precisions decided at run time from the operand norms (`--adaptive_decision_runtime 1`) | CPU, CUDA, HIP |
 
-Kinds 5, 8 and 9 run the same kernel (`src/kernels/potrf_L_dense_mp_gpu.jdf`)
-and differ in the precision decisions they are given: kind 8 may decide FP8
-for a tile, and kind 9 has no FP64 tile.
+Kinds 8 and 9 have their own kernels, `src/kernels/potrf_L_dense_mp_gpu_fp8.jdf`
+and `potrf_L_dense_mp_gpu_fp8_sp.jdf`: kind 5's (`potrf_L_dense_mp_gpu.jdf`)
+with FP8 branches, and for kind 9 FP32 diagonal tiles, since kind 9 has no
+FP64 tile.
 
 ## Problem kinds (`--kind_of_problem`)
 
@@ -307,7 +308,7 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--datatype_convert` | int | Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive |
 | `--band_size_termination` | double | --auto_band on CPUs: widen the dense band while the TLR operations of the next band times this factor exceed the dense ones (default 0.67); with GPUs the factor comes from the GPU/CPU performance model and this value is ignored |
 | `--left_looking` | int | Modified left-looking Cholesky (row) |
-| `--enable_stochastic_rounding` | int | Stochastic rounding for the down-conversions (0 or 1); not with FP8 GEMMs |
+| `--enable_stochastic_rounding` | int | Stochastic rounding for the down-conversions (0 or 1); not in kinds 8, 9 and 10 |
 | `--nruns` | int | Number of Cholesky runs (default: 1); more than one needs the dense layout without --check, --auto_band, --adaptive_memory or --sparse |
 | `--accumulation_fp32` | int | TRMM: store the FP16 tiles of B in FP32 and accumulate their GEMMs in FP32 (0 or 1) |
 | `--time_slots` | int | Time slots in kernels |

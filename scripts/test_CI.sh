@@ -153,7 +153,7 @@ if [ "$GPUS" -gt 0 ]; then
     run gpu_band_sp_hp          1 $P $G --kind_of_cholesky 4 --band_dense_sp 4 --check_tol 1e-5
     run gpu_band_hp_fp16acc     1 $P $G --kind_of_cholesky 3 --band_dense_dp 2 --band_dense_sp 4 --tensor_gemm 0x10 --check_tol 1e-4
     run gpu_tlr_mp_hp_band      1 $P $L --kind_of_cholesky 1 --band_dense 4 --band_dense_dp 1 --band_dense_sp 2 --check_tol 3e-4
-    run gpu_fp8_static_sr       1 $P $G --kind_of_cholesky 8 --adaptive_decision 1 --enable_stochastic_rounding 1 --fp8 0
+    run gpu_dense_adaptive_sr   1 $P $G --adaptive_decision 1 --enable_stochastic_rounding 1
     else
     print_warning "GPU cases of kinds 1-4 (CUDA bodies only, refused on HIP)"; skipped=$((skipped+1))
     fi

@@ -495,11 +495,7 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             break;
 
         case DENSE_MP_GPU:
-        case DENSE_MP_GPU_FP8:
-        case DENSE_MP_GPU_FP8_SP:
-            /* Mixed precision GPU-accelerated Cholesky. Kind 8 has FP8 tiles
-             * in its decisions and kind 9 no FP64 tile; the one kernel
-             * follows the decisions */
+            /* Mixed precision GPU-accelerated Cholesky */
             rc = potrf_L_dense_mp_gpu( parsec, data, params );
             break;
 
@@ -511,6 +507,16 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
         case SPARSE_TLR_DP_BALANCE:
             /* Sparse tile low-rank double precision balanced Cholesky */
             rc = potrf_L_sparse_tlr_dp_balance( parsec, data, params, analysis );
+            break;
+
+        case DENSE_MP_GPU_FP8:
+            /* Mixed precision GPU-accelerated Cholesky with FP8 */
+            rc = potrf_L_dense_mp_gpu_fp8( parsec, data, params );
+            break;
+
+        case DENSE_MP_GPU_FP8_SP:
+            /* Mixed precision GPU-accelerated Cholesky with FP8 and single precision */
+            rc = potrf_L_dense_mp_gpu_fp8_sp( parsec, data, params );
             break;
 
         case DENSE_MP_GPU_FP8_ADAPTIVE: 

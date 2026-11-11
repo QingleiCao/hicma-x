@@ -16,8 +16,8 @@ and the genomics (kernel ridge regression) applications.
 - A release-quality pass over the existing code: the correctness check is
   binding and drives the exit code, the diagonal shift is applied once, several
   memory-safety bugs in initialization and the file readers are fixed, the
-  installed package is usable, the Cholesky wrappers share one
-  implementation, and kinds 5, 8 and 9 one kernel. The full list is in
+  installed package is usable, and the Cholesky wrappers share one
+  implementation. The full list is in
   `CHANGELOG.md`; the review that led to it is in `docs/code-review.md`.
 
 ### Supported configurations
@@ -47,8 +47,8 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
   affected. Low-rank (TLR) layouts have no BF16 variant and keep FP16.
   Kind 3 with a half-precision band runs on GPUs only (the CPU bodies have no
   half path; without GPUs the single-precision band is widened to the matrix).
-- `--enable_stochastic_rounding` is implemented for kinds 1 to 5, 8 and 9 and
-  the TRMM, not for kind 10 and not together with FP8 GEMMs.
+- `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the
+  TRMM, not for kinds 8, 9 and 10.
 - `--tensor_gemm` variants other than 0x8 are not implemented on every path
   (`TESTS.md`, "GPU GEMM variants"); `--datatype_convert 2` needs GPUs.
 - A static FP8 band near the diagonal can make the matrix indefinite (the
@@ -156,9 +156,7 @@ before/after timing comparison.
   gave wrong results (residuals 10 to 59) or crashed. So do kind-8 runs with
   an FP8 band and low-rank tiles on GPUs with FP8 (residual 1.5e-2 before).
   Results of such runs change.
-- Kinds 8 and 9 run kind 5's kernel (same results) and accept
-  `--enable_stochastic_rounding` when no FP8 GEMM is in use. With several
-  GPUs every kind places its tiles by one rule (the GPU grid for a dense
+- With several GPUs every kind places its tiles by one rule (the GPU grid for a dense
   matrix, by column for a dense band), which changes timings, not results;
   rank 0 prints a note when the GPUs in use cannot all read each other
   directly. `Number_of_Datatype_Conversions` of kind-1 runs is larger: the

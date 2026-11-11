@@ -300,7 +300,7 @@ static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t 
         {"datatype_convert", "Convert datatype: 0=receiver convert always, 1=sender convert always (only in DENSE_MP_BAND), 2=adaptive", 0, &params->datatype_convert},
         {"band_size_termination", "--auto_band on CPUs: widen the dense band while the TLR operations of the next band times this factor exceed the dense ones (default 0.67); with GPUs the factor comes from the GPU/CPU performance model and this value is ignored", 1, &params->band_size_auto_tuning_termination},
         {"left_looking", "Modified left-looking Cholesky (row)", 0, &params->left_looking},
-        {"enable_stochastic_rounding", "Stochastic rounding for the down-conversions (0 or 1); not with FP8 GEMMs", 0, &params->enable_stochastic_rounding},
+        {"enable_stochastic_rounding", "Stochastic rounding for the down-conversions (0 or 1); not in kinds 8, 9 and 10", 0, &params->enable_stochastic_rounding},
         {"nruns", "Number of Cholesky runs (default: 1); more than one needs the dense layout without --check, --auto_band, --adaptive_memory or --sparse", 0, &params->nruns},
         {"accumulation_fp32", "TRMM: store the FP16 tiles of B in FP32 and accumulate their GEMMs in FP32 (0 or 1)", 0, &params->accumulation_fp32},
         
@@ -1309,15 +1309,6 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
                    || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
                    || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky;
     params->fp8_enabled = fp8_gpus_ok && params->fp8 && fp8_kind;
-    /* The FP8 GEMMs have no stochastic rounding: refuse here rather than in
-     * the middle of the factorization (every rank has the same values) */
-    if( params->fp8_enabled && params->enable_stochastic_rounding ) {
-        if( 0 == params->rank ) {
-            fprintf(stderr, "--enable_stochastic_rounding is not supported with FP8 GEMMs "
-                    "(kinds 8, 9 and 10 on GPUs with compute capability >= 8.9): add --fp8 0\n");
-        }
-        exit(1);
-    }
     /* Every CUDA build has FP8 GEMMs: on V100/A100 warn only for kinds 8 and
      * 9, which exist to use FP8 (hicma_parsec_params_print_initial prints
      * fp8_enabled for every kind) */
@@ -1333,14 +1324,18 @@ parsec_context_t* hicma_parsec_setup_parsec(int argc, char **argv, hicma_parsec_
         params->band_size_dense_hp = params->band_size_dense;
     }
 
-    /* Kind 10 converts with round-to-nearest in its own bodies while the
-     * shared kernels would honor stochastic rounding: refuse the mix instead
-     * of silently rounding two different ways. Kinds 8 and 9 run kind 5's
-     * kernel, which implements it (without FP8 GEMMs, checked above). */
-    if( params->enable_stochastic_rounding && DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky ) {
+    /* Kinds 8, 9 and 10 convert with round-to-nearest in their own bodies
+     * and FP8 GEMMs, while the shared kernels would honor stochastic
+     * rounding: refuse the mix instead of silently rounding two different
+     * ways (FP8 GEMMs run only in these kinds). */
+    if( params->enable_stochastic_rounding
+        && (DENSE_MP_GPU_FP8 == params->kind_of_cholesky
+            || DENSE_MP_GPU_FP8_SP == params->kind_of_cholesky
+            || DENSE_MP_GPU_FP8_ADAPTIVE == params->kind_of_cholesky) ) {
         if( 0 == params->rank ) {
-            fprintf(stderr, RED "--enable_stochastic_rounding is not implemented for kind_of_cholesky 10 "
-                    "(--adaptive_decision_runtime); use kind 5, 8 or 9\n" RESET);
+            fprintf(stderr, RED "--enable_stochastic_rounding is not implemented for kind_of_cholesky %d "
+                    "(kinds 8, 9 and 10); use kind 5 or --enable_stochastic_rounding 0\n" RESET,
+                    params->kind_of_cholesky);
         }
         exit(1);
     }

@@ -10,13 +10,6 @@ extern "C" %{
 
 #include "hicma_parsec.h"
 
-/* The diagonal tile (k, k). Its arena follows its decision: FULL_DP, or FULL_SP
- * when it is stored in FP32 (kind 9, where no tile is FP64). potrf_dpotrf_send
- * converts it to FP32 for the TRSMs of column k when it is FP64 and they want
- * FP32; otherwise they read it as POTRF left it. */
-#define DIAG_ADT(k) (&__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu(params_tlr->decisions, (k), (k), descA->lmt)])
-#define DIAG_CONVERT(k) (params_tlr->decisions_send[(k)*params_tlr->NT+(k)] != DENSE_DP && params_tlr->decisions[(k)*params_tlr->NT+(k)] == DENSE_DP)
-
 /**
  * @file potrf_L_dense_mp_gpu.jdf
  * @brief Cholesky factorization (POTRF) task graph for dense matrices with mixed precision support
@@ -24,11 +17,6 @@ extern "C" %{
  * This file implements a task-based Cholesky factorization algorithm using PaRSEC runtime.
  * It supports multiple precision formats (double, single, half, FP8) and can execute on both
  * CPU and GPU devices. The algorithm uses a left-looking approach with tile-based computation.
- *
- * One kernel for kinds 5, 8 and 9 (DENSE_MP_GPU, DENSE_MP_GPU_FP8, DENSE_MP_GPU_FP8_SP),
- * which were three copies of it: every task follows the per-tile precision decisions, so
- * the kinds differ only in the decisions they are given (FP8 tiles in kinds 8 and 9, no
- * FP64 tile in kind 9, diagonal included) and in the tile placement on the GPUs.
  * 
  * Key features:
  * - Mixed precision computation (DP, SP, HP, FP8)
@@ -159,9 +147,9 @@ n = %{ return parsec_imax(m-params_tlr->band_size_dense+1, 0); %} .. m
 
 // Data flow - bind matrix tile A to appropriate computational tasks
 READ A <- descA(m, n)       
-       -> (m == 0 && n == 0) ? T potrf_dpotrf(0)                      [ type_remote = %{ return DIAG_ADT(m); %} ]  /* First diagonal tile goes to POTRF */
+       -> (m == 0 && n == 0) ? T potrf_dpotrf(0)                      [ type_remote = FULL_DP ]  /* First diagonal tile goes to POTRF */
        -> (n == 0)? C potrf_dtrsm(m, n)                               [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu(params_tlr->decisions, m, n, descA->lmt)]; %} ]  /* First column tiles go to TRSM */
-       -> (m == n && n > 0) ? T potrf_dsyrk(0, m)                     [ type_remote = %{ return DIAG_ADT(m); %} ]  /* Diagonal tiles go to SYRK */
+       -> (m == n && n > 0) ? T potrf_dsyrk(0, m)                     [ type_remote = FULL_DP ]  /* Diagonal tiles go to SYRK */
        -> (m != n && n > 0) ? C potrf_dgemm(m, n, 0)                  [ type_remote = %{ return &__parsec_tp->super.arenas_datatypes[decision_datatype_tile_potrf_L_dense_mp_gpu(params_tlr->decisions, m, n, descA->lmt)]; %} ]  /* Other tiles go to GEMM */
 
 BODY
@@ -234,8 +222,8 @@ info = 0  /* Return code for recursive calls (0 = success) */
 :descA(k, k)
 
 // Data flow - input from binding or previous SYRK, output to send task and final storage
-RW T <- (k == 0) ? A potrf_bind_A(k, k) : T potrf_dsyrk(k-1, k)   [ type_remote = %{ return DIAG_ADT(k); %} ]  /* Input: first tile from binding, others from SYRK */
-     -> (k < descA->mt-1) ? T0 potrf_dpotrf_send(k)                                   [ type_remote = %{ return DIAG_ADT(k); %} ]  /* Output: send to TRSM tasks */
+RW T <- (k == 0) ? A potrf_bind_A(k, k) : T potrf_dsyrk(k-1, k)   [ type_remote = FULL_DP ]  /* Input: first tile from binding, others from SYRK */
+     -> (k < descA->mt-1) ? T0 potrf_dpotrf_send(k)                                   [ type_remote = FULL_DP ]  /* Output: send to TRSM tasks */
      -> descA(k, k)                                               /* Output: store final result */
 
 // Control flow - trigger termination when last diagonal block is processed
@@ -250,10 +238,6 @@ BODY [type=CUDA]
     /* GPU execution path for Cholesky factorization */
     //printf("POTRF GPU: %d\n", k);
     hicma_parsec_core_potrf_gpu( descA, params_tlr, ws_gpu, cuda_device, gpu_task, cuda_stream, T, k );
-#if ENABLE_PROFILING
-    /* Stop profiling after a few panels */
-    if( 10 == k) cudaProfilerStop();
-#endif
 #endif
 }
 END
@@ -342,11 +326,11 @@ k = 0 .. descA->mt-2  /* potrf_dpotrf_send(mt-1) would have no successor: a sink
 :descA(k, k)
 
 // Data flow - input from POTRF, output to TRSM tasks with precision conversion
-READ T0 <- T potrf_dpotrf(k)                                                   [ type_remote = %{ return DIAG_ADT(k); %} ]  /* Input: the Cholesky factor */
-        -> (%{ return !DIAG_CONVERT(k); %})? T potrf_dtrsm(k+1..descA->lmt-1, k) [ type_remote = %{ return DIAG_ADT(k); %} ]  /* Pass-through when no conversion is needed */
+READ T0 <- T potrf_dpotrf(k)                                                                                               [ type_remote = FULL_DP ]  /* Input: double precision Cholesky factor */
+        -> (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] == DENSE_DP; %})? T potrf_dtrsm(k+1..descA->lmt-1, k) [ type_remote = FULL_DP ]  /* Direct pass-through for double precision */
 
-RW   T  <- (%{ return DIAG_CONVERT(k); %})? NEW: NULL                             [ type = FULL_SP ]  /* Allocate single precision buffer if needed */
-        -> (%{ return DIAG_CONVERT(k); %})? T potrf_dtrsm(k+1..descA->lmt-1, k)  [ type_remote = FULL_SP ]  /* Send single precision to TRSM tasks */
+RW   T  <- (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP; %})? NEW: NULL                           [ type = FULL_SP ]  /* Allocate single precision buffer if needed */
+        -> (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP; %})? T potrf_dtrsm(k+1..descA->lmt-1, k) [ type_remote = FULL_SP ]  /* Send single precision to TRSM tasks */
 
 // Priority calculation - same as POTRF task
 ; (k >= (descA->mt - PRI_CHANGE)) ? (descA->mt - k) * (descA->mt - k) * (descA->mt - k) : PRI_MAX
@@ -354,7 +338,7 @@ RW   T  <- (%{ return DIAG_CONVERT(k); %})? NEW: NULL                           
 BODY [type=CUDA]
 {
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
-    if( DIAG_CONVERT(k) ) {
+    if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
         if( params_tlr->enable_stochastic_rounding) {
             double2float_round_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, hicma_parsec_sr_seed(k, k), cuda_stream->cuda_stream );
@@ -372,7 +356,7 @@ END
 BODY [type=HIP]
 {
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
-    if( DIAG_CONVERT(k) ) {
+    if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
         if( params_tlr->enable_stochastic_rounding) {
             double2float_round_GPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, hicma_parsec_sr_seed(k, k), cuda_stream->cuda_stream );
@@ -390,7 +374,7 @@ END
 
 BODY
 {
-    if( DIAG_CONVERT(k) ) {
+    if( params_tlr->decisions_send[k*params_tlr->NT+k] != DENSE_DP ) {
         hicma_parsec_count_datatype_conversion(params_tlr, es->th_id);
         if( params_tlr->enable_stochastic_rounding) {
             double2float_round_CPU( descA->mb, descA->nb, T0, descA->mb, T, descA->mb, hicma_parsec_sr_seed(k, k) );
@@ -440,7 +424,7 @@ band_size_dense_local = params_tlr->band_size_dense  /* Local copy for GPU evalu
 
 // Parameters - Input data dependencies
 /* Triangular factor L from diagonal block k */
-READ  T <- (%{ return !DIAG_CONVERT(k); %})? T0 potrf_dpotrf_send(k)  [ type_remote = %{ return DIAG_ADT(k); %} ] 
+READ  T <- (%{ return params_tlr->decisions_send[k*params_tlr->NT+k] == DENSE_DP; %})? T0 potrf_dpotrf_send(k)  [ type_remote = FULL_DP ] 
         <- T potrf_dpotrf_send(k)                                                                                 [ type_remote = FULL_SP ]
 
 /* Matrix block C to be updated */
@@ -581,7 +565,7 @@ BODY
     /* Update send size, how many bytes */
     if( DENSE_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
-    } else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m] || DENSE_FP8 == params_tlr->decisions[k*descA->lmt+m] ) {
+    } else if( DENSE_SP == params_tlr->decisions[k*descA->lmt+m] || DENSE_HP == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
     } else if( LOW_RANK_DP == params_tlr->decisions[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * ((int *)Cr)[0] * 2 * sizeof(double);
@@ -660,8 +644,6 @@ BODY [type=CUDA]
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
     } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * 2;
-    } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = hicma_fp8_tile_bytes(descA->mb);
     }
 
     if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
@@ -696,17 +678,6 @@ BODY [type=CUDA]
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                     float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
                 }
-            } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
-#if HAVE_FP8
-                /* Scaled per tile, in the FP8 GEMM operand layout; the scale
-                 * follows the entries (hicma_fp8_tile_scale) */
-                int tempmm = (m == descA->mt-1) ? descA->m - m*descA->mb : descA->mb;
-                int fp8_ld = hicma_fp8_ld(descA->mb);
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                hicma_fp8_scaled_convert_GPU( (DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m]) ? (int)sizeof(double) : (int)sizeof(float),
-                        tempmm, descA->nb, C0, descA->mb, C, fp8_ld, fp8_ld, fp8_ld,
-                        hicma_fp8_tile_scale(C, descA->mb), params_tlr->fp8_scaling, cuda_stream->cuda_stream );
-#endif
             }
         }
     }
@@ -730,8 +701,6 @@ BODY [type=HIP]
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
     } else if( DENSE_HP == params_tlr->decisions_send[k*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * 2;
-    } else if( DENSE_FP8 == params_tlr->decisions_send[k*descA->lmt+m] ) {
-        this_task->locals.size.value = hicma_fp8_tile_bytes(descA->mb);
     }
 
     if( hicma_parsec_convert_in_trsm(params_tlr, m, k) ) {
@@ -766,17 +735,6 @@ BODY [type=HIP]
                     hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
                     float2half_GPU( descA->mb, descA->nb, C0, descA->mb, C, descA->mb, cuda_stream->cuda_stream );
                 }
-            } else if( DENSE_FP8 == params_tlr->decisions_send[k*params_tlr->NT+m] ) {
-#if HAVE_FP8
-                /* Scaled per tile, in the FP8 GEMM operand layout; the scale
-                 * follows the entries (hicma_fp8_tile_scale) */
-                int tempmm = (m == descA->mt-1) ? descA->m - m*descA->mb : descA->mb;
-                int fp8_ld = hicma_fp8_ld(descA->mb);
-                hicma_parsec_count_datatype_conversion(params_tlr, hicma_parsec_gpu_counter_id(params_tlr, cuda_device, cuda_stream));
-                hicma_fp8_scaled_convert_GPU( (DENSE_DP == params_tlr->decisions[k*params_tlr->NT+m]) ? (int)sizeof(double) : (int)sizeof(float),
-                        tempmm, descA->nb, C0, descA->mb, C, fp8_ld, fp8_ld, fp8_ld,
-                        hicma_fp8_tile_scale(C, descA->mb), params_tlr->fp8_scaling, cuda_stream->cuda_stream );
-#endif
             }
         }
     }
@@ -837,8 +795,8 @@ READ  A <- C potrf_dtrsm(m, k)                                                  
 READ  Ar <- (m-k >= params_tlr->band_size_dense) ? Cr potrf_dtrsm(m, k): NULL    [ type_remote = AR ]
 
 /* Diagonal block T to be updated */
-RW    T <- (k == 0) ? A potrf_bind_A(m, m) : T potrf_dsyrk(k-1, m)               [ type_remote = %{ return DIAG_ADT(m); %} ] 
-        -> (m == k+1) ? T potrf_dpotrf(m) : T potrf_dsyrk(k+1, m)                [ type_remote = %{ return DIAG_ADT(m); %} ] 
+RW    T <- (k == 0) ? A potrf_bind_A(m, m) : T potrf_dsyrk(k-1, m)               [ type_remote = FULL_DP ] 
+        -> (m == k+1) ? T potrf_dpotrf(m) : T potrf_dsyrk(k+1, m)                [ type_remote = FULL_DP ] 
 
 /* Control flow for lookahead optimization */
 CTL ctl -> (params_tlr->lookahead == 1 && m == k+1)? ctl potrf_dtrsm(params_tlr->lookahead+m .. descA->mt-1, k)
@@ -1020,16 +978,11 @@ BODY [type=CUDA]
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
     } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-    } else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
+    } else {
         if( n-1 == k)
             this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
         else
             this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 2;
-    } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
-        if( n-1 == k)
-            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-        else
-            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 4;
     }
 
     /* C, A, B are dense */
@@ -1084,16 +1037,11 @@ BODY [type=HIP]
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(double);
     } else if( DENSE_SP == params_tlr->decisions[n*descA->lmt+m] ) {
         this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-    } else if( DENSE_HP == params_tlr->decisions[n*descA->lmt+m] ) {
+    } else {
         if( n-1 == k)
             this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
         else
             this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 2;
-    } else if( DENSE_FP8 == params_tlr->decisions[n*descA->lmt+m] ) {
-        if( n-1 == k)
-            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float);
-        else
-            this_task->locals.size.value = descA->mb * descA->mb * sizeof(float) / 4;
     }
 
     /* C, A, B are dense */
