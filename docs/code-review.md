@@ -1549,6 +1549,11 @@ all in the Cholesky kernels. After this pass: 4,177 of 26,879.
    size than kind 8's.
    `--enable_stochastic_rounding` now works for kinds 8 and 9 without FP8
    GEMMs (it was refused); with FP8 GEMMs and in kind 10 it stays refused.
+   **Reverted on request (2026-11-11):** kinds 8 and 9 run their own JDFs
+   again, restored from before this pass with items 2 to 4 applied (the
+   shared low-rank CPU GEMM, no FP8 pool, the one placement rule); kind 5's
+   JDF is back to its own precision types, and kinds 8 to 10 refuse
+   stochastic rounding again.
 2. **The CPU GEMM into a low-rank tile was pasted in five kernels** (kinds
    1, 5, 8, 9, 10; 665 lines each, both the dense-B and the low-rank-B case).
    It is `hicma_parsec_core_gemm_lrC_lrA_denseB_cpu` and
@@ -1558,7 +1563,8 @@ all in the Cholesky kernels. After this pass: 4,177 of 26,879.
    `Number_of_Datatype_Conversions` of kind-1 runs was too small (48 and 89
    where 169 conversions happen in the two matrix cases that show it).
 3. **Dead code found on the way:** a pool for FP8 work tiles, created and
-   destroyed by kinds 8, 9 and 10 and never used.
+   destroyed by kinds 8, 9 and 10 and never used (also left out of the
+   restored kinds 8 and 9).
 4. **GPU tile placement had four rules, and the warm-up a fifth.** Kinds 1
    and 2 placed by global column (`n % gpus`), kinds 3 and 4 by row inside
    the band and by `(n*NT+m) % gpus` outside, kind 5 by row (by `n/P` with

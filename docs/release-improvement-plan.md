@@ -194,3 +194,9 @@ after the library changes.
   for GPUs that are not all linked. Results unchanged on methane, hexane and
   leconte; old against new timings within the spread. See
   `release-readiness.md` section 5.17.
+- 2026-11-11 (on request): kinds 8 and 9 run their own JDFs again
+  (`potrf_L_dense_mp_gpu_fp8{,_sp}.jdf` and wrappers restored, with the
+  shared CPU GEMM and the placement rule of the tenth pass), so kinds 8 to
+  10 refuse stochastic rounding again. Also removed: the prototype of the
+  deleted `parsec_convert_i2s` and commented-out calls to removed
+  functions. See `release-readiness.md` section 5.18.

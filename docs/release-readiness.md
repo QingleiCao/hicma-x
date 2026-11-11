@@ -23,6 +23,8 @@ SONAME `libhicma_parsec.so.0`.
 
 ## 2. Commits on the branch
 
+- `b817e7a` Kinds 8 and 9 on their own kernels again
+- `91a64f0` Remove the prototype of a deleted function and comments naming removed ones
 - `a7ecff1` One kernel for kinds 5, 8 and 9; shared low-rank CPU GEMM; one GPU tile placement rule
 - `1d74b4c` Update dplasma: parsec rebased on ICLDisco master 2c16c652e
 - `c658f96` Cray MPICH without GPU support: no intra-node single copy for HIP runs
@@ -109,7 +111,7 @@ final one, which includes the Frontier commits `6e01e6b` to `d6bf679`
 (section 5.8: CTest on CPU and CUDA, kind 3 on 2 ranks); the validation
 matrix was rerun after each later pass (sections 5.9 to 5.13, 5.16 and
 5.17), identical to the third pass on the A100; `a7ecff1` is the tree of
-section 5.17.
+section 5.17, and `b817e7a` the tree of section 5.18.
 Intermediate commits were not built individually.
 
 ## 3. Validation environment
@@ -297,7 +299,9 @@ multi-GPU measurement was possible on this machine.
 ### 5.4 Not validated
 
 - HIP on AMD GPUs other than gfx90a (MI210 and MI250X ran, section 5.15), and
-  more than one MI250X node.
+  more than one MI250X node. The changes of sections 5.17 and 5.18 (shared
+  low-rank CPU GEMM, placement rule, kinds 8 and 9 on their own kernels
+  again) compile for gfx90a but were not run on AMD GPUs.
 - More than one node. (Several GPUs per node: guyot, section 5.6; FP8 on an
   H100: section 5.13.)
 - The climate emulator driver (`testing_climate_emulator`): compiled in every
@@ -1146,6 +1150,60 @@ stochastic-rounding change, rebuilt and rerun:
   leconte's V100s; 50 / 50 (CUDA) and 28 / 28 (CPU) on methane. The HIP tree
   builds and registers its 42 cases; it was not run (no AMD GPU here).
 
+### 5.18 Kinds 8 and 9 on their own kernels again (2026-11-11, on request)
+
+**What changed.** `potrf_L_dense_mp_gpu_fp8.jdf`,
+`potrf_L_dense_mp_gpu_fp8_sp.jdf` and their wrappers are back (`b817e7a`),
+taken from `7d66360` (the tree before section 5.17) with the parts of the
+tenth pass that are not the merge: the shared
+low-rank CPU GEMM, `hicma_parsec_gpu_of_tile` for the placement, and no
+unused FP8 work pool. Kind 5's JDF and wrapper lost the merge hunks
+(`DIAG_ADT`, `DIAG_CONVERT`, the FP8 branches, the prediction-mode
+submatrix of kind 9), and the datatype functions, prototypes and dispatch of
+kinds 8 and 9 are back. The restored kernels have no stochastic rounding, so
+kinds 8 to 10 refuse `--enable_stochastic_rounding` again, with one message
+(the separate check for FP8 GEMMs, which suggested `--fp8 0`, is gone: FP8
+GEMMs run only in these kinds). The CTest and `test_CI.sh` case
+`gpu_fp8_static_sr` becomes `gpu_dense_adaptive_sr`, the same stochastic
+rounding through kind 5. Each restored JDF differs from its `7d66360`
+version only in the pool declaration, the placement call and the CPU GEMM,
+whose code is kind 5's.
+
+Also in this round (`91a64f0`): the installed `hicma_parsec_datatype_convert.h`
+no longer declares `parsec_convert_i2s`, whose definition was deleted in
+`bac0083`, and 15 commented-out calls to removed functions are gone.
+
+**Validation.** `build_fp8r` (the restored tree, CUDA 12.6.2, default
+architectures) against `build_rc_h100` (the merged kernel of section 5.17),
+same binaries run in the same session; residuals read through
+`--check_tol 1e-12`.
+
+- methane: CTest 50 / 50 (CUDA, A100) and 28 / 28 (CPU); the validation
+  matrix identical between the two trees in its 50 GPU-mode and 31 CPU-mode
+  cases (exit codes, residuals, GEMM counters); 17 direct comparisons of
+  kinds 8, 9 and 5 (adaptive, static bands, band with low-rank tiles, A100,
+  CPU, two ranks on the A100 and on the CPU) give the same residual and
+  precision counts.
+- hexane: CTest 50 / 50 on the H100 and on the V100; the H100 matrix
+  identical to the merged kernel's (section 5.17) in all 50 cases and, apart
+  from the three kind-1 conversion counters of section 5.17, to the one
+  before the merge; 23 direct comparisons with FP8 GEMMs on (static FP8
+  bands: one FP8 GEMM, residuals 8.431338e-07 and 8.879569e-07; FP8 band
+  with low-rank tiles: 34 and 364 FP8 GEMMs, 1.577594e-05 and 3.263227e-05;
+  `--fp8 0`, `--fp8_scaling 0`, lookahead, two ranks on the H100, H100 and
+  V100 in one process and one rank each) all identical. H100, N=30720,
+  five interleaved pairs, medians merged / own: kind 8 adaptive 0.627 /
+  0.597 s, kind 9 adaptive 0.574 / 0.572 s, kind 8 static bands 0.576 /
+  0.576 s, kind 5 adaptive 0.616 / 0.623 s, kind 5 FP64 0.540 / 0.534 s;
+  every pair of ranges overlaps.
+- leconte: CTest 50 / 50 on one V100; 24 direct comparisons of kinds 8, 9
+  and 5 on 1, 4 and 8 GPUs, two ranks of four GPUs and eight ranks of one
+  GPU all identical. Four GPUs, N=40960, five interleaved pairs, medians
+  merged / own: kind 8 adaptive 0.834 / 0.830 s, kind 9 adaptive 0.566 /
+  0.575 s (1.6 %, under the 3 % by which two builds of identical code
+  differed in section 5.17), kind 5 adaptive 0.843 / 0.833 s.
+- The HIP tree (gfx90a, methane) builds with the restored kernels; not run.
+
 
 ## 6. Release checklist
 
@@ -1171,6 +1229,7 @@ stochastic-rounding change, rebuilt and rerun:
 | Complete hexane test, H100 and V100 (section 5.14) | done; correct on every configuration; notes for capped `--gpus` and oversubscribed cores added |
 | Ninth pass: Frontier, HIP on MI210 and MI250X, two rounds (section 5.15) | done; FP16 subnormal flush on gfx90a (kind 10 scaled, BF16 via `--tensor_gemm` for the static paths), HIP handle warm-up (FP64 1.84x faster on a GCD, multi-GCD scaling), Cray MPICH multi-rank GPU runs, script and test fixes |
 | Tenth pass: code structure and several GPUs (section 5.17) | done; kinds 5, 8 and 9 one kernel, the low-rank CPU GEMM shared, one measured GPU placement rule, a note for GPUs that are not all linked; results unchanged on A100, H100 and V100s, timings unchanged or better |
+| Kinds 8 and 9 on their own kernels again, on request (section 5.18) | done; results identical to the merged kernel on A100, H100 (FP8) and V100s, timings within the spread; kinds 8 to 10 refuse stochastic rounding again |
 | Review by the maintainer of the behaviour changes (binding check, `--adddiag`, `N % NB`, genomics option) | **open** |
 | Tag `v0.2.0`, GitHub release, merge to `main` | **open** (authorization required) |
 
