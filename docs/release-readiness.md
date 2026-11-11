@@ -304,8 +304,9 @@ multi-GPU measurement was possible on this machine.
   configuration, not run (needs the external data set).
 - The genomics drivers: see section 4; not run (data files).
 - The Fugaku (`ON_FUGAKU`) build.
-- The machine build scripts on their machines: only `install_icl.sh` was run
-  as written (methane); the others were configured on methane with their
+- The machine build scripts on their machines: only `install_icl.sh`
+  (methane, section 5.8) and `install_frontier.sh` (Frontier, section 5.15)
+  were run as written; the others were configured on methane with their
   modules stubbed, and the Fugaku and Shaheen scripts not at all (section 5.8).
 - The intermediate commits individually (only the final tree).
 

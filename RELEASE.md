@@ -67,7 +67,7 @@ GPU builds (`90a` architecture needs 12.0); GSL optional (Matérn kernels).
 ### Validation
 
 `docs/release-readiness.md` records what was built and run for this release:
-CPU, CUDA (A100, H100) and HIP (MI210, MI250X on Frontier) configurations, the CTest suite, the
+CPU, CUDA (A100, H100, V100) and HIP (MI210, MI250X on Frontier) configurations, the CTest suite, the
 validation matrix (`scripts/validation_matrix.sh`), the install consumer and a
 before/after timing comparison.
 
