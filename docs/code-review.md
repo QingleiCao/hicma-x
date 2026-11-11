@@ -1159,7 +1159,7 @@ CHECKSOLVE && GENOMICS` vs `#if PREDICTION || CHECKSOLVE`, the climate emulator'
 
 | Item | Why deferred |
 |---|---|
-| Merging the remaining Cholesky JDFs: kind 10 with kind 5 (about 500 shared code lines), kinds 6 and 7 with kind 2 (about 500, among them the FP64 copy of the HCORE two-step GEMM) | kinds 5, 8 and 9 and the mixed-precision low-rank GEMM were merged in the tenth pass (section 13); the rest needs the per-GEMM runtime decisions (kind 10) or the sparse task graphs (kinds 6, 7) folded in, with results to compare at scale |
+| Sharing more code among the Cholesky JDFs, each of which stays: kind 10 with kind 5 (about 500 shared code lines), kinds 6 and 7 with kind 2 (about 500, among them the FP64 copy of the HCORE two-step GEMM) | the mixed-precision low-rank CPU GEMM has been shared since the tenth pass (section 13), whose merge of kinds 5, 8 and 9 into one JDF was reverted on request; the rest needs the per-GEMM runtime decisions (kind 10) or the sparse task graphs (kinds 6, 7) folded in, with results to compare at scale |
 | Merging the `Lapack_to_Tile`/`Tile_to_Lapack` family (9 JDFs) | TODO backlog |
 | GENOMICS macro consolidation, params restructure, public/internal header split, API redesign, hcore removal, Python/Julia | TODO backlog (the tensor_gemm redesign was done on request, section 11) |
 | Single-source CUDA/HIP kernels (D12) | cannot be validated on AMD hardware here; documented with the drift table |

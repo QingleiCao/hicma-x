@@ -982,7 +982,7 @@ section has what was run. leconte is a node with eight V100s (GPUs 0 to 3 on
 socket 0, 4 to 7 on socket 1, NVLink between the GPUs of a socket and for
 some pairs across the sockets).
 
-**What changed.** Kinds 5, 8 and 9 run one kernel; the CPU GEMM into a
+**What changed.** Kinds 5, 8 and 9 run one kernel (reverted in section 5.18); the CPU GEMM into a
 low-rank tile of kinds 1, 5 and 10 is two functions; one rule places the
 tiles on the GPUs for every kind and for the warm-up; a note says when the
 GPUs in use cannot all read each other directly. `src/` lost 6,076 lines
@@ -1119,7 +1119,7 @@ two ranks, 2.91 s with one): the time is in the path GPU, host, MPI, host,
 GPU.
 `TESTS.md` recommends one process per node.
 
-**Stochastic rounding for kinds 8 and 9** (they run kind 5's kernel, which
+**Stochastic rounding for kinds 8 and 9** (undone in section 5.18; they ran kind 5's kernel, which
 implements it): on methane, kind 8 and kind 5 give the same residual with
 it (1.484178e-08 on the A100, 3.483492e-09 on the CPU; 1.144828e-08 and
 3.444675e-09 without), kind 9 gives 2.007399e-07 (1.989370e-07 without), and
