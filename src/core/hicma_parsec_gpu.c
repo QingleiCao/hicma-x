@@ -692,6 +692,13 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
             status_cusolver = cusolverDnDpotrf_bufferSize(handle_cusolver, CUBLAS_FILL_MODE_LOWER, nb, NULL, mb, &workspace_size);
             HICMA_GPU_HANDLE_CHECK(CUSOLVER_STATUS_SUCCESS == status_cusolver, "cuSOLVER handle setup");
+            /* FP32 diagonal tiles run cusolverDnSpotrf with the same element
+             * count: on a V100 with NB = 512 it needs more than Dpotrf, and
+             * with the smaller buffer every FP32 POTRF failed (info = 1) */
+            int workspace_size_sp;
+            status_cusolver = cusolverDnSpotrf_bufferSize(handle_cusolver, CUBLAS_FILL_MODE_LOWER, nb, NULL, mb, &workspace_size_sp);
+            HICMA_GPU_HANDLE_CHECK(CUSOLVER_STATUS_SUCCESS == status_cusolver, "cuSOLVER handle setup");
+            if( workspace_size_sp > workspace_size ) workspace_size = workspace_size_sp;
 #endif
 
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
