@@ -2459,6 +2459,15 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
 }
 
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+/* Memory registration hook of a collection whose memory is already pinned */
+static int hicma_parsec_memory_noop(parsec_data_collection_t *dc, parsec_device_module_t *device)
+{
+    (void)dc; (void)device;
+    return PARSEC_SUCCESS;
+}
+#endif
+
 /**
  * @brief Initialize data descriptors and GPU workspace
  * 
@@ -2540,8 +2549,11 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
          * no GPU is used) PaRSEC keeps its own lazy per-tile registration */
         params->dcAd_host_registered = 0;
         if( params->gpus > 0 && cudaSuccess == cudaHostRegister(data->dcAd.mat, allocate_size, cudaHostRegisterDefault) ) {
-            data->dcAd.super.super.register_memory = NULL;
-            data->dcAd.super.super.unregister_memory = NULL;
+            /* No-ops rather than NULL: DPLASMA's wrapped collections
+             * (dplasma_lapack_adtt.c) call these hooks without a NULL check,
+             * so a DPLASMA GPU routine on dcAd (dpotrs, dtrmm) jumped to 0 */
+            data->dcAd.super.super.register_memory = hicma_parsec_memory_noop;
+            data->dcAd.super.super.unregister_memory = hicma_parsec_memory_noop;
             params->dcAd_host_registered = 1;
         }
 #endif
