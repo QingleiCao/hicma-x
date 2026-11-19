@@ -239,6 +239,17 @@ static int is_negative_number(const char *str) {
  * @note This function skips PaRSEC/MPI specific arguments
  * @note Help is displayed and program exits if --help is requested
  */
+/* Whether --name or --name=value appears on the command line (before a "--") */
+static int hicma_option_given(int argc, char **argv, const char *name) {
+    size_t len = strlen(name);
+    for (int i = 1; i < argc; i++) {
+        if (0 == strcmp(argv[i], "--")) break;
+        if (0 == strncmp(argv[i], "--", 2) && 0 == strncmp(argv[i] + 2, name, len)
+            && ('\0' == argv[i][2 + len] || '=' == argv[i][2 + len])) return 1;
+    }
+    return 0;
+}
+
 static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t *params) {
     config_option_t options[] = {
         // PaRSEC specific options
@@ -1030,11 +1041,12 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     }
 
     /* Kernel Parameter Default Adjustment */
-    // Adjust default kernel parameters for certain problem types (0-7)
+    // Adjust default kernel parameters for certain problem types (0-7) when
+    // none of them was given: an explicit --beta 0.03 used to become 0.1
     if( params->kind_of_problem <= 7
-            && params->sigma == 1.0  
-            && params->beta == 0.03
-            && params->nu == 1.0 ) {
+            && !hicma_option_given(argc, argv, "sigma")
+            && !hicma_option_given(argc, argv, "beta")
+            && !hicma_option_given(argc, argv, "nu") ) {
         params->sigma = 1.0;    // Standard deviation
         params->beta = 0.1;     // Spatial correlation (increased from 0.03)
         params->nu = 0.5;       // Smoothness parameter (decreased from 1.0)
