@@ -125,12 +125,12 @@ Deviations from the literature:
 **Summary, against the research question.**
 
 - **Accuracy: yes, adaptive precision cuts the refinement work, where the matrix has tile-norm decay** (sections 4.3 and 4.4).
-  - **Classic IR range.** An adaptive factor at ε extends classic IR from κ ≈ 6e5 (FP16) to κ ≈ 6e6, 6e7 and 7e8 for ε = 1e-4, 1e-6 and 1e-8.
-  - **GMRES-IR work.** It reduces the number of preconditioner applications 8 to 40 times at κ = 7e8 to 7e9.
-  - **RAP against AP.** RAP needs the same or fewer steps than AP at the same ε, while running two to three times more of its GEMMs in FP16.
+  - **Classic IR range.** FP16 + IR converges up to κ ≈ 6e5. AP at ε = 1e-4, 1e-6 and 1e-8 extends that to κ ≈ 6e6, 6e7 and 7e8; RAP at the same ε to κ ≈ 6e5, 6e7 and 7e8.
+  - **GMRES-IR work.** At κ = 7e8 to 7e9, ε = 1e-6 and 1e-8 reduce the number of preconditioner applications 8 to 40 times against FP16; ε = 1e-4 only 1.3 to 2 times.
+  - **RAP against AP.** At ε = 1e-6 and 1e-8, RAP needs the same or fewer steps than AP, while running two to three times more of its GEMMs in FP16. At ε = 1e-4 its factor is five times less accurate than AP's (1.5e-6 against 3.1e-7) and it needs more steps.
   - **No norm decay, no gain.** On a matrix with uniform tile norms, AP collapses to a uniform precision and gains nothing.
 - **Time to solution: not yet with this implementation** (section 4.5).
-  - **Factorization plus refinement:** on the V100, RAP with ε = 1e-6 (2 steps) would beat FP16 with IR (6 steps) and FP64 direct (1.68 s against 2.15 s and 3.77 s at N = 40960). On the H100, FP64 direct is faster than every mixed strategy up to N = 40960.
+  - **Factorization plus refinement:** on the V100, AP 1e-4, RAP 1e-4 and RAP 1e-6 beat FP16 with IR, and RAP with ε = 1e-6 (2 steps) is fastest: 1.68 s against 2.15 s for FP16 + IR (6 steps) and 3.77 s for FP64 direct at N = 40960. On the H100, FP64 direct is faster than every mixed strategy up to N = 40960; AP at all three ε comes within 0.1 s of it.
   - **What decides the totals now:** about 2 s of CPU conversions and re-sending of the factor that every mixed strategy pays, and about 0.15 to 0.2 s of task overhead per refinement step.
 
 
@@ -293,19 +293,23 @@ GMRES-IR:
 
   | Factor | Classic IR still converges at κ₁ | M⁻¹ applications there |
   |---|---|---|
+  | FP16 | 5.7e5 | 20 |
   | AP ε = 1e-4 | 6.1e6 | 22 |
   | AP ε = 1e-6 | 6.5e7 | 12 |
   | AP ε = 1e-8 | 6.6e8 | 15 |
+  | RAP ε = 1e-4 | 5.7e5 | 7 |
+  | RAP ε = 1e-6 | 6.5e7 | 7 |
   | RAP ε = 1e-8 | 6.6e8 | 6 |
 
-- **With GMRES-IR, they cut the work by large factors:**
+  RAP at ε = 1e-4 does not extend the range: its factor error is 1.5e-6 against AP's 3.1e-7, and classic IR diverges at κ₁ = 6.1e6. It still needs only 7 M⁻¹ applications at 5.7e5, where FP16 needs 20.
+- **With GMRES-IR, ε = 1e-6 and 1e-8 cut the work by large factors; ε = 1e-4 by little.** M⁻¹ applications, with the reduction against FP16 in parentheses:
 
-  | κ₁ | FP16 | AP 1e-6 | AP 1e-8 | RAP 1e-8 | Reduction |
-  |---|---|---|---|---|---|
-  | 6.6e8 | 287 | 37 | 15 | 10 | 8 to 29 times |
-  | 6.8e9 | 809 | 67 | 28 | 20 | 12 to 40 times |
+  | κ₁ | FP16 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
+  |---|---|---|---|---|---|---|---|
+  | 6.6e8 | 287 | 144 (2.0) | 37 (7.8) | 15 (19) | 138 (2.1) | 23 (12) | 10 (29) |
+  | 6.8e9 | 809 | 398 (2.0) | 67 (12) | 28 (29) | 607 (1.3) | 62 (13) | 20 (40) |
 
-  FP32 (all off-diagonal tiles FP32) sits between AP 1e-6 and AP 1e-8. AP and RAP reach that accuracy with 30 to 60% of the GEMMs in FP16.
+  FP32 (all off-diagonal tiles FP32) sits between ε = 1e-6 and 1e-8. AP and RAP reach that accuracy with 30 to 60% of the GEMMs in FP16.
 - **The control shows where the gain comes from.** On the uniform-norm matrices, AP has no advantage over a uniform precision. It picks FP32 (or FP64) everywhere and matches FP32's steps, and the gain disappears.
 - **Scaling to the FP16 range makes no difference here.** Unscaled FP16 and AP 1e-6 need the same steps as scaled ones. These kernel matrices have a constant diagonal and entries of order one, so μ only shifts the FP16 range.
 - **Breakdown.** FP16 factors broke down from κ ≈ 6e6 (kind 2) and κ ≈ 5e5 (control). They were rescued by shifts of c = 8 up to 2048, at a factor error of up to 1.1e-4. The shift is counted: every failed attempt is in the time.
@@ -393,7 +397,7 @@ At κ₁ = 6.8e9, GMRES-IR:
 
 ### 4.5 Cost per phase (B0)
 
-**Setup.** N = 30720 and 40960, NB = 1024, kind 2 β = 0.1 noise 1e-1 (κ₁ about 1e5). Times are the medians of runs 2 and 3, for the first right-hand side.
+**Setup.** N = 30720 and 40960, NB = 1024, kind 2 β = 0.1 noise 1e-1 (κ₁ about 1e5). Times are the medians of runs 2 and 3, for the first right-hand side. The ε = 1e-8 rows come from a later allocation. Three cases repeated there (FP64, AP 1e-6 and RAP 1e-6 at N = 40960) matched the first session within 2% in every phase, except RAP's factorization on the H100: it varies from 0.74 to 1.08 s between runs in both sessions.
 
 **Column definitions.**
 - **decide+convert+stage** is the pre-analysis: precision decisions, FP64→FP32 conversion of the low-precision tiles (CPU), and the warm-up transfer of A to the GPU.
@@ -415,6 +419,8 @@ H100:
 | 30720 | rap1e-4 | 0.56 | 0.37 | 0.57 | 0.23 | 0.36 | 3 | 2.09 | 1.32 |
 | 30720 | ap1e-6 | 0.56 | 0.39 | 0.58 | 0.23 | 0.24 | 2 | 2.00 | 1.34 |
 | 30720 | rap1e-6 | 0.56 | 0.38 | 0.58 | 0.23 | 0.25 | 2 | 2.00 | 1.33 |
+| 30720 | ap1e-8 | 0.44 | 0.44 | 0.37 | 0.24 | 0.16 | 1 | 1.64 | 1.34 |
+| 30720 | rap1e-8 | 0.44 | 0.50 | 0.45 | 0.23 | 0.16 | 1 | 1.77 | 1.34 |
 | 40960 | fp64 | 0.37 | 1.04 | 0.00 | 0.05 | - | 0 | 1.46 | 1.35 |
 | 40960 | fp16 | 0.99 | 0.52 | 1.04 | 0.40 | 0.90 | 5 | 3.86 | 2.39 |
 | 40960 | fp16_gm | 1.00 | 0.50 | 1.04 | 0.40 | 1.38 | 2 | 4.33 | 2.35 |
@@ -424,6 +430,8 @@ H100:
 | 40960 | rap1e-4 | 1.00 | 0.73 | 1.06 | 0.41 | 0.69 | 4 | 3.89 | 2.37 |
 | 40960 | ap1e-6 | 1.01 | 0.84 | 1.05 | 0.40 | 0.36 | 2 | 3.66 | 2.38 |
 | 40960 | rap1e-6 | 1.02 | 0.91 | 1.06 | 0.41 | 0.37 | 2 | 3.77 | 2.39 |
+| 40960 | ap1e-8 | 0.80 | 0.93 | 0.71 | 0.41 | 0.22 | 1 | 3.08 | 2.41 |
+| 40960 | rap1e-8 | 0.80 | 0.97 | 0.85 | 0.40 | 0.23 | 1 | 3.25 | 2.39 |
 
 V100:
 
@@ -438,6 +446,8 @@ V100:
 | 30720 | rap1e-4 | 0.61 | 0.54 | 0.59 | 0.33 | 0.40 | 3 | 2.48 | 1.34 |
 | 30720 | ap1e-6 | 0.61 | 0.81 | 0.59 | 0.33 | 0.28 | 2 | 2.62 | 1.33 |
 | 30720 | rap1e-6 | 0.61 | 0.63 | 0.59 | 0.33 | 0.27 | 2 | 2.43 | 1.34 |
+| 30720 | ap1e-8 | 0.50 | 1.22 | 0.37 | 0.33 | 0.19 | 1 | 2.62 | 1.36 |
+| 30720 | rap1e-8 | 0.50 | 0.95 | 0.45 | 0.33 | 0.17 | 1 | 2.39 | 1.35 |
 | 40960 | fp64 | 0.54 | 3.71 | 0.00 | 0.06 | - | 0 | 4.31 | 1.33 |
 | 40960 | fp16 | 1.10 | 0.90 | 1.07 | 0.57 | 1.25 | 6 | 4.89 | 2.37 |
 | 40960 | fp16_gm | 1.08 | 0.89 | 1.05 | 0.57 | 1.62 | 2 | 5.22 | 2.34 |
@@ -447,26 +457,31 @@ V100:
 | 40960 | rap1e-4 | 1.10 | 1.06 | 1.07 | 0.57 | 0.90 | 4 | 4.69 | 2.38 |
 | 40960 | ap1e-6 | 1.08 | 1.78 | 1.07 | 0.57 | 0.42 | 2 | 4.92 | 2.35 |
 | 40960 | rap1e-6 | 1.09 | 1.27 | 1.07 | 0.57 | 0.41 | 2 | 4.41 | 2.35 |
+| 40960 | ap1e-8 | 0.90 | 2.66 | 0.70 | 0.57 | 0.26 | 1 | 5.10 | 2.36 |
+| 40960 | rap1e-8 | 0.90 | 1.90 | 0.84 | 0.57 | 0.40 | 2 | 4.61 | 2.37 |
 
 **Findings.**
 - **Without overheads, adaptive precision would win on the V100 but not on the H100.**
 
-  | Factorize + refine only (s) | FP64 direct | FP16+IR | AP 1e-6 | RAP 1e-6 |
-  |---|---|---|---|---|
-  | V100, FP64 at 7.8 Tflop/s | 3.77 | 2.15 (6 steps) | 2.20 | **1.68** (2 steps) |
-  | H100, FP64 tensor cores | **1.09** | 1.42 | 1.20 | 1.28 |
+  Seconds at N = 40960, with the refinement steps in parentheses (FP64 direct: factorize and one solve):
 
-  - **V100:** RAP's two steps beat FP16's six, and the gap to FP64 is 2.2 times.
-  - **H100:** at these sizes the FP64 factorization is only twice as slow as the FP16 one. With no conversions, each refinement step costs about as much as 20% of the FP64 factorization, so no mixed factor wins up to N = 40960.
-- **The overheads currently decide the totals.** Every mixed strategy pays about 2.1 s at N = 40960 on top of the table above:
+  | GPU | FP64 direct | FP16+IR | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
+  |---|---|---|---|---|---|---|---|---|
+  | V100, FP64 at 7.8 Tflop/s | 3.77 | 2.15 (6) | 2.04 (3) | 2.20 (2) | 2.92 (1) | 1.95 (4) | **1.68** (2) | 2.30 (2) |
+  | H100, FP64 tensor cores | **1.09** | 1.42 (5) | 1.17 (3) | 1.19 (2) | 1.16 (1) | 1.42 (4) | 1.28 (2) | 1.20 (1) |
 
-  | Overhead | Time at N = 40960 |
-  |---|---|
-  | Pre-analysis conversion | 0.6 s |
-  | Converting the factor back to FP64 (convert_s2d) | 1.05 s |
-  | Re-sending the FP64 factor | 0.35 s |
+  - **V100:** AP 1e-4, RAP 1e-4 and RAP 1e-6 beat FP16+IR; AP 1e-6 and both ε = 1e-8 factors do not. RAP 1e-6 is fastest: its two steps beat FP16's six, and the gap to FP64 is 2.2 times. At this κ (about 1e5) ε = 1e-8 saves at most one step against 1e-6, but its larger FP64 and FP32 share (AP keeps about 300 of the 820 tiles in FP64) costs more on the V100 than the step saves.
+  - **H100:** at these sizes the FP64 factorization is only twice as slow as the FP16 one. With no conversions, each refinement step costs about as much as 20% of the FP64 factorization. AP at all three ε comes within 0.1 s of FP64 direct, but no mixed factor beats it up to N = 40960.
+- **The overheads currently decide the totals.** Every mixed strategy pays them at N = 40960 on top of the table above; ε = 1e-8 pays less because it converts fewer tiles:
 
-  As a result, no mixed strategy beats FP64 direct on either GPU at these sizes, and RAP 1e-6 is the fastest mixed one on the V100.
+  | Overhead at N = 40960 | FP16, FP32, ε = 1e-4 and 1e-6 | ε = 1e-8 |
+  |---|---|---|
+  | Pre-analysis conversion | 0.6 s | 0.4 s |
+  | Converting the factor back to FP64 (convert_s2d) | 1.05 s | 0.7 to 0.85 s |
+  | Re-sending the FP64 factor | 0.35 to 0.5 s | 0.35 to 0.5 s |
+  | Total | about 2.1 s | about 1.6 s |
+
+  As a result, no mixed strategy beats FP64 direct on either GPU at these sizes. The fastest mixed one is RAP 1e-6 on the V100 (4.41 s against 4.31 s) and AP 1e-8 on the H100 (3.08 s against 1.46 s).
 - **Each refinement step costs 0.15 to 0.2 s at N = 40960** (one A·v, one M⁻¹). With one right-hand side, the time goes into task and launch overhead of the tiled kernels, not into bandwidth.
 - **What would close the gap** (plan stage C):
   - a triangular solve that reads each tile in its storage precision on the GPU, which removes the conversion back and the re-send;
