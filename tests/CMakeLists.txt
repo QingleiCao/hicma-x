@@ -21,6 +21,10 @@ set(HICMA_GPU HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
 
 # ---- Cholesky and TRMM drivers ----
 hicma_add_driver(testing_potrf_tlr testing_potrf.c)
+# Cholesky in mixed precision plus iterative refinement (dense FP64 dcAd; not in GENOMICS builds)
+if(NOT HICMA_PARSEC_GENOMICS)
+    hicma_add_driver(testing_potrf_ir testing_potrf_ir.c)
+endif()
 hicma_add_driver(testing_trmm_mp testing_trmm.c $<TARGET_OBJECTS:dplasma_tests_common>)
 hicma_add_driver(testing_trmm_performance testing_trmm_performance.c $<TARGET_OBJECTS:dplasma_tests_common>)
 hicma_add_driver(testing_trmm_performance_static testing_trmm_performance_static.c $<TARGET_OBJECTS:dplasma_tests_common>)
@@ -115,6 +119,10 @@ function(hicma_add_test name nproc)
 endfunction()
 
 set(P $<TARGET_FILE:testing_potrf_tlr>)
+set(PIR)
+if(TARGET testing_potrf_ir)
+    set(PIR $<TARGET_FILE:testing_potrf_ir>)
+endif()
 set(T $<TARGET_FILE:testing_trmm_mp>)
 set(COMMON --kind_of_problem 2 --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --check 1)
 
@@ -146,6 +154,24 @@ hicma_add_test(matrix_sum              1 $<TARGET_FILE:testing_matrix_sum>)
 hicma_add_test(tensor_gemm_invalid     1 ${P} ${COMMON} --tensor_gemm 0x18)
 if(TEST tensor_gemm_invalid)
     set_tests_properties(tensor_gemm_invalid PROPERTIES PASS_REGULAR_EXPRESSION "give exactly one FP16 GEMM variant")
+endif()
+# Iterative refinement (testing_potrf_ir exits 1 unless the backward error
+# meets the LAPACK dsposv test): FP32 factor (kind 10, FP64 diagonal) with
+# classic IR and GMRES-IR, an adaptive factor, and the refused setups
+if(PIR)
+    set(IRC --kind_of_problem 2 --N 2048 --NB 256 --noise 0.1)
+    hicma_add_test(ir_fp32                1 ${PIR} ${IRC} --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 8 --ir 1)
+    hicma_add_test(ir_fp32_gmres          1 ${PIR} ${IRC} --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 8 --ir 2)
+    hicma_add_test(ir_adaptive            1 ${PIR} ${IRC} --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --ir 1)
+    hicma_add_test(ir_fp32_np2            2 ${PIR} ${IRC} --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 8 --ir 2)
+    # two runs and a shifted factorization: the restore of A between runs
+    hicma_add_test(ir_fp32_nruns_shift    1 ${PIR} ${IRC} --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 8 --ir 1 --nruns 2 --ir_shift 1)
+    hicma_add_test(ir_refused_check       1 ${PIR} ${IRC} --check 1)
+    hicma_add_test(ir_refused_admem       1 ${PIR} ${IRC} --adaptive_decision 1 --adaptive_memory 1)
+    if(TEST ir_refused_check)
+        set_tests_properties(ir_refused_check PROPERTIES PASS_REGULAR_EXPRESSION "iterative refinement needs no --check")
+        set_tests_properties(ir_refused_admem PROPERTIES PASS_REGULAR_EXPRESSION "iterative refinement needs the dense layout")
+    endif()
 endif()
 # two ranks
 hicma_add_test(potrf_dense_fp64_np2    2 ${P} ${COMMON})
@@ -180,6 +206,26 @@ if(HICMA_PARSEC_HAVE_CUDA OR HICMA_PARSEC_HAVE_HIP)
     hicma_add_test(gpu_fp8_sp            1 ${P} ${G} --kind_of_cholesky 9 --adaptive_decision 1 --check_tol 1e-6 ${HP_VARIANT})
     hicma_add_test(gpu_runtime_decision  1 ${P} ${G} --adaptive_decision_runtime 1 --check_tol 1e-7)
     hicma_add_test(gpu_runtime_admem     1 ${P} ${G} --adaptive_decision_runtime 1 --adaptive_memory 1 --check_tol 1e-7)
+    # kind 10 with static decisions (the FP16 and adaptive factors of the
+    # iterative refinement): bit for bit the results of kind 5 (residuals
+    # 7.4e-6 and 2.2e-7), and the run-time decision started from the norm map
+    hicma_add_test(gpu_k10_static_fp16   1 ${P} ${G} --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --fp8 0 --check_tol 1e-4 ${HP_VARIANT})
+    hicma_add_test(gpu_k10_static_adaptive 1 ${P} ${G} --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --fp8 0 --check_tol 1e-5 ${HP_VARIANT})
+    hicma_add_test(gpu_runtime_adaptive1 1 ${P} ${G} --adaptive_decision_runtime 1 --adaptive_decision 1 --check_tol 1e-7)
+    if(PIR)
+        # kappa about 1e3, so that the BF16 GEMMs of HIP (HP_VARIANT) converge as well
+        set(IRG --kind_of_problem 2 --N 4096 --NB 512 --noise 1 --gpus 1 --fp8 0)
+        hicma_add_test(gpu_ir_fp16           1 ${PIR} ${IRG} --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --ir 1 ${HP_VARIANT})
+        hicma_add_test(gpu_ir_fp16_magma     1 ${PIR} ${IRG} --kind_of_cholesky 9 --band_dense_sp 1 --ir 1 ${HP_VARIANT})
+        hicma_add_test(gpu_ir_adaptive       1 ${PIR} ${IRG} --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --ir 1 ${HP_VARIANT})
+        hicma_add_test(gpu_ir_runtime        1 ${PIR} ${IRG} --adaptive_decision_runtime 1 --adaptive_decision 1 --fixedacc 1e-4 --ir 1)
+        hicma_add_test(gpu_ir_fp16_gmres     1 ${PIR} ${IRG} --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --ir 2 ${HP_VARIANT})
+        hicma_add_test(gpu_ir_fp16_unscaled  1 ${PIR} ${IRG} --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --ir 1 --ir_scale 0 ${HP_VARIANT})
+        hicma_add_test(gpu_ir_fp64           1 ${PIR} ${IRG} --kind_of_cholesky 5 --band_dense_dp 8 --ir 1 --ir_scale 0 --ir_trials 2)
+        # two runs: the FP16 factor is converted and its GPU copies dropped, then A is restored
+        hicma_add_test(gpu_ir_adaptive_nruns 1 ${PIR} ${IRG} --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --ir 2 --nruns 2 ${HP_VARIANT})
+        hicma_add_test(gpu_ir_runtime_nruns  1 ${PIR} ${IRG} --adaptive_decision_runtime 1 --fixedacc 1e-4 --ir 1 --nruns 2)
+    endif()
     hicma_add_test(gpu_trmm_adaptive     1 ${T} --N 2000 --K 1500 --NB 256 --gpus 1 --check 1 --adaptive_decision 1 --fixedacc 1e-4)
     if(HICMA_PARSEC_HAVE_CUDA)
         # kinds 1 and 2 have CUDA bodies only

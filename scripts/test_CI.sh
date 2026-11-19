@@ -125,6 +125,21 @@ run matrix_sum              1 ./tests/testing_matrix_sum
 run matrix_sum_np2          2 ./tests/testing_matrix_sum
 run_refused tensor_gemm_invalid "give exactly one FP16 GEMM variant" $P $COMMON --tensor_gemm 0x18
 
+# Iterative refinement (exits 1 unless the backward error meets the LAPACK dsposv test)
+PIR=./tests/testing_potrf_ir
+IRC="--kind_of_problem 2 --N 2048 --NB 256 --noise 0.1"
+if [ -x $PIR ]; then
+    run ir_fp32                 1 $PIR $IRC --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 8 --ir 1
+    run ir_fp32_gmres           1 $PIR $IRC --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 8 --ir 2
+    run ir_adaptive             1 $PIR $IRC --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --ir 1
+    run ir_fp32_np2             2 $PIR $IRC --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 8 --ir 2
+    run ir_fp32_nruns_shift     1 $PIR $IRC --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 8 --ir 1 --nruns 2 --ir_shift 1
+    run_refused ir_refused_check "iterative refinement needs no --check" $PIR $IRC --check 1
+    run_refused ir_refused_admem "iterative refinement needs the dense layout" $PIR $IRC --adaptive_decision 1 --adaptive_memory 1
+else
+    print_warning "$PIR not built (GENOMICS build)"; skipped=$((skipped+1))
+fi
+
 # 3-D RBF mesh (needs the SARS-CoV-2 mesh shipped with stars-h)
 if [ -f "$MESH" ]; then
     run potrf_mesh_sparse   1 $P --N 10370 --NB 1037 --fixedacc 1e-4 --maxrank 50 --adddiag 0.1 --kind_of_problem 6 --band_dense 1 --send_full_tile 0 --lookahead 1 --auto_band 0 --mesh_file "$MESH" --numobj 1 --rbf_kernel 0 --radius 4.63e-04 --order 2 --density -1 --sparse 1 --check 1
@@ -145,6 +160,21 @@ if [ "$GPUS" -gt 0 ]; then
     run gpu_fp8_sp              1 $P $G --kind_of_cholesky 9 --adaptive_decision 1 --check_tol 1e-6 $HPV
     run gpu_runtime_decision    1 $P $G --adaptive_decision_runtime 1 --check_tol 1e-7
     run gpu_runtime_admem       1 $P $G --adaptive_decision_runtime 1 --adaptive_memory 1 --check_tol 1e-7
+    run gpu_k10_static_fp16     1 $P $G --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --fp8 0 --check_tol 1e-4 $HPV
+    run gpu_k10_static_adaptive 1 $P $G --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --fp8 0 --check_tol 1e-5 $HPV
+    run gpu_runtime_adaptive1   1 $P $G --adaptive_decision_runtime 1 --adaptive_decision 1 --check_tol 1e-7
+    if [ -x $PIR ]; then
+    IRG="--kind_of_problem 2 --N 4096 --NB 512 --noise 1 --gpus $GPUS --fp8 0"
+    run gpu_ir_fp16             1 $PIR $IRG --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --ir 1 $HPV
+    run gpu_ir_fp16_magma       1 $PIR $IRG --kind_of_cholesky 9 --band_dense_sp 1 --ir 1 $HPV
+    run gpu_ir_adaptive         1 $PIR $IRG --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --ir 1 $HPV
+    run gpu_ir_runtime          1 $PIR $IRG --adaptive_decision_runtime 1 --adaptive_decision 1 --fixedacc 1e-4 --ir 1
+    run gpu_ir_fp16_gmres       1 $PIR $IRG --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --ir 2 $HPV
+    run gpu_ir_fp16_unscaled    1 $PIR $IRG --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --ir 1 --ir_scale 0 $HPV
+    run gpu_ir_fp64             1 $PIR $IRG --kind_of_cholesky 5 --band_dense_dp 8 --ir 1 --ir_scale 0 --ir_trials 2
+    run gpu_ir_adaptive_nruns   1 $PIR $IRG --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --ir 2 --nruns 2 $HPV
+    run gpu_ir_runtime_nruns    1 $PIR $IRG --adaptive_decision_runtime 1 --fixedacc 1e-4 --ir 1 --nruns 2
+    fi
     if [ "$HIP_BUILD" -eq 0 ]; then
     run gpu_tlr_mp              1 $P $COMMON --gpus $GPUS --kind_of_cholesky 1 --band_dense 1000 --adaptive_decision 1 --check_tol 1e-7
     run gpu_tlr_dp_band2        1 $P $COMMON --gpus $GPUS --kind_of_cholesky 2 --band_dense 2

@@ -104,6 +104,15 @@ run gpu_dense_k8_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1
 run gpu_dense_k9_adapt      1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 9 --adaptive_decision 1 --check 1 --check_tol 1e-6 --verbose 2 $HPV
 run gpu_runtime_k10         1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --check 1 --verbose 2
 run gpu_runtime_k10_admem   1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --check_tol 1e-7 --adaptive_memory 1 --check 1 --verbose 2
+run gpu_k10_static_fp16     1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --fp8 0 --check 1 --check_tol 1e-4 --verbose 2 $HPV
+run gpu_k10_static_adapt    1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --fp8 0 --check 1 --check_tol 1e-5 --verbose 2 $HPV
+run gpu_runtime_k10_adapt1  1 $P --N 8192 --NB 1024 --kind_of_problem 2 --gpus 1 --adaptive_decision_runtime 1 --adaptive_decision 1 --check_tol 1e-7 --check 1 --verbose 2
+if [ -x tests/testing_potrf_ir ]; then
+run gpu_ir_fp16             1 tests/testing_potrf_ir --N 8192 --NB 512 --kind_of_problem 2 --gpus 1 --fp8 0 --kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp 1 --ir 1 --verbose 2 $HPV
+run gpu_ir_fp16_magma       1 tests/testing_potrf_ir --N 8192 --NB 512 --kind_of_problem 2 --gpus 1 --fp8 0 --kind_of_cholesky 9 --band_dense_sp 1 --ir 1 --verbose 2 $HPV
+run gpu_ir_adapt            1 tests/testing_potrf_ir --N 8192 --NB 512 --kind_of_problem 2 --gpus 1 --fp8 0 --kind_of_cholesky 10 --adaptive_decision 1 --fixedacc 1e-4 --ir 1 --verbose 2 $HPV
+run gpu_ir_runtime          1 tests/testing_potrf_ir --N 8192 --NB 512 --kind_of_problem 2 --gpus 1 --fp8 0 --adaptive_decision_runtime 1 --adaptive_decision 1 --fixedacc 1e-4 --ir 2 --verbose 2
+fi
 if [ "$HIP_BUILD" -eq 0 ]; then
 run gpu_tlr_kind2_band2     1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 2 --band_dense 2 --gpus 1 --check 1 --verbose 2
 run gpu_tlr_kind1_band2     1 $P --N 2700 --NB 270 --fixedacc 1e-8 --maxrank 130 --kind_of_problem 2 --kind_of_cholesky 1 --band_dense 2 --adaptive_decision 1 --gpus 1 --check 1 --check_tol 1e-7 --verbose 2

@@ -507,6 +507,7 @@ install(FILES
     src/core/hicma_parsec_gpu.h
     src/core/hicma_parsec_distribution.h
     src/core/hicma_parsec_check.h
+    src/core/hicma_parsec_ir.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
