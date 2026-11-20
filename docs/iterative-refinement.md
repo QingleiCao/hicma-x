@@ -1,10 +1,12 @@
 # Mixed-precision iterative refinement
 
 Branch `qinglei/mixed-precision-ir`. This page covers the solver
-(`testing_potrf_ir`), the experiment protocol and the results. The research
-question is whether an adaptive-precision Cholesky factor (AP, RAP) needs
-enough fewer refinement steps than an FP16 factor to recover FP64 accuracy
-faster.
+(`testing_potrf_ir`, sections 1 to 3) and the results. The research question
+is whether an adaptive-precision Cholesky factor (AP, RAP) needs enough fewer
+refinement iterations than an FP16 factor to recover FP64 accuracy faster.
+Section 4 compares the accuracy of the factorizations: how many iterations
+each needs, matrix by matrix, and where it stops converging. Section 5 has
+the other measurements, including time to solution.
 
 ## 1. Usage
 
@@ -20,7 +22,7 @@ supports kinds 5, 9 and 10 in the dense layout, and refuses `--check`,
 | Option | Default | Meaning |
 |---|---|---|
 | `--ir` | 1 | 0: one solve, no refinement; 1: classic IR; 2: GMRES-IR |
-| `--ir_maxit` | 30 (classic), 10 (GMRES-IR) | refinement steps |
+| `--ir_maxit` | 30 (classic), 10 (GMRES-IR) | refinement iterations |
 | `--gmres_tol` | 1e-4 | GMRES stopping test: ‖M⁻¹(r−Ad)‖₂ ≤ tol·‖M⁻¹r‖₂ |
 | `--gmres_maxit` | min(N, 500) | GMRES iterations per refinement step (no restart) |
 | `--ir_scale` | 1 | factorize F = μ(D⁻¹AD⁻¹ + c·u·I), D = diag(A)^½, μ = 0.1·65504/(1+c·u); 0: F = A + c·u·diag(A) |
@@ -31,7 +33,7 @@ supports kinds 5, 9 and 10 in the dense layout, and refuses `--check`,
 | `--ir_trials` | 1 | right-hand sides solved with one factorization (seeds seed, seed+1, …) |
 | `--ir_probe` | 0 | power iterations estimating ‖F − L̂L̂ᵀ‖₂/‖F‖₂ |
 | `--ir_condest` | 0 | 1: Hager–Higham estimates ‖A‖₁‖M⁻¹‖₁ and ‖H‖₁‖DM⁻¹D‖₁ (H = D⁻¹AD⁻¹): κ₁(A) and κ₁(H) for an FP64 factor |
-| `--ir_stop_slow` | 0 | 1: stop once the contraction is ≥ 0.5 for two steps (timing runs) |
+| `--ir_stop_slow` | 0 | 1: stop once the contraction is ≥ 0.5 for two iterations (timing runs) |
 | `--ir_xsave FILE`, `--ir_xref FILE` | | write the first solution / read a reference for the forward error of `--ir_rhs 1` |
 
 The unit roundoff u of the shift is chosen per factor:
@@ -49,7 +51,7 @@ The six strategies of the study:
 | RAP + IR | `--adaptive_decision_runtime 1 --adaptive_decision 1 --fixedacc ε --fp8 0` |
 | FP16-MAGMA + IR | `--kind_of_cholesky 9 --band_dense_sp 1 --fp8 0` |
 | FP32 + IR | `--kind_of_cholesky 10 --band_dense_dp 1 --band_dense_sp NT --fp8 0` |
-| FP64 direct | `--kind_of_cholesky 5 --band_dense_dp NT --ir_scale 0` (0 steps) |
+| FP64 direct | `--kind_of_cholesky 5 --band_dense_dp NT --ir_scale 0` (0 iterations) |
 
 Precision of each strategy's operations:
 - **FP16 + IR, AP + IR, RAP + IR and FP32 + IR** run on kind 10.
@@ -118,23 +120,348 @@ Deviations from the literature:
 - **`dcAd` memory hooks** are no-ops instead of NULL once the matrix is pinned. DPLASMA's wrapped collections call them unchecked, so `dplasma_dpotrs` on `dcAd` crashed.
 - **POTRF GPU workspace** is sized for `cusolverDnSpotrf` too. On a V100 at NB = 512, every factorization with an FP32 diagonal (kinds 4 and 9) failed with info = 1. This bug is also on the release branch.
 - **Kernel parameters.** `--sigma`, `--beta` and `--nu` are kept when given. An explicit `--beta 0.03` used to be replaced by 0.1.
-- **Kind 10 static decisions** (`--adaptive_decision_runtime 0`) have GPU tests now. They match kind 5 bit for bit for the FP16, FP32, FP64 and adaptive maps on the H100 (section 4.1).
+- **Kind 10 static decisions** (`--adaptive_decision_runtime 0`) have GPU tests now. They match kind 5 bit for bit for the FP16, FP32, FP64 and adaptive maps on the H100 (section 5.1).
 
-## 4. Results
+## 4. Accuracy comparison
 
-**Summary, against the research question.**
+**Question.** How many refinement iterations does each factorization need to reach FP64 accuracy, and from which condition number does it stop converging?
 
-- **Accuracy: yes, adaptive precision cuts the refinement work, where the matrix has tile-norm decay** (sections 4.3 and 4.4).
-  - **Classic IR range.** FP16 + IR converges up to κ ≈ 6e5. AP at ε = 1e-4, 1e-6 and 1e-8 extends that to κ ≈ 6e6, 6e7 and 7e8; RAP at the same ε to κ ≈ 6e5, 6e7 and 7e8.
-  - **GMRES-IR work.** At κ = 7e8 to 7e9, ε = 1e-6 and 1e-8 reduce the number of preconditioner applications 8 to 40 times against FP16; ε = 1e-4 only 1.3 to 2 times.
-  - **RAP against AP.** At ε = 1e-6 and 1e-8, RAP needs the same or fewer steps than AP, while running two to three times more of its GEMMs in FP16. At ε = 1e-4 its factor is five times less accurate than AP's (1.5e-6 against 3.1e-7) and it needs more steps.
-  - **No norm decay, no gain.** On a matrix with uniform tile norms, AP collapses to a uniform precision and gains nothing.
-- **Time to solution: not yet with this implementation** (section 4.5).
-  - **Factorization plus refinement:** on the V100, AP 1e-4, RAP 1e-4 and RAP 1e-6 beat FP16 with IR, and RAP with ε = 1e-6 (2 steps) is fastest: 1.68 s against 2.15 s for FP16 + IR (6 steps) and 3.77 s for FP64 direct at N = 40960. On the H100, FP64 direct is faster than every mixed strategy up to N = 40960; AP at all three ε comes within 0.1 s of it.
-  - **What decides the totals now:** about 2 s of CPU conversions and re-sending of the factor that every mixed strategy pays, and about 0.15 to 0.2 s of task overhead per refinement step.
+Nine factorizations are compared on 19 matrices with κ₁(A) from 25 to 7e10, each with classic IR and with GMRES-IR. FP64 direct solves every matrix with 0 iterations; it is the accuracy reference.
 
+**Main findings.**
 
-### 4.1 Kind 10 static against kind 5 (H100, `--check`, residual ‖LLᵀ−A‖_F/‖A‖_F)
+1. **The factor's accuracy decides the outcome.** Over all 19 matrices, classic IR converged whenever κ₁(A) × factor error was at most 5, and failed whenever it was 11 or more (section 4.8). Everything below follows from how each factorization sets that error.
+2. **On matrices whose tile norms decay (family D), AP and RAP at ε = 1e-6 and 1e-8 converge where FP16 cannot.**
+   - Classic IR with FP16 converges up to κ₁ = 5.7e5, with 17–19 iterations there.
+   - With ε = 1e-6 it converges up to 6.5e7 (AP 11 iterations, RAP 6).
+   - With ε = 1e-8 it converges up to 6.6e8 (AP 13–15 iterations, RAP 4–5).
+3. **With GMRES-IR almost every factorization converges, and the difference moves into the GMRES iterations.** At κ₁ = 6.8e9, FP16 needs 800 GMRES iterations. ε = 1e-6 needs 59–97 and ε = 1e-8 needs 17–26: 8 to 47 times fewer.
+4. **ε = 1e-4 gains little.** AP 1e-4 extends classic IR by one decade, to κ₁ = 6.1e6 with 21–23 iterations, and halves FP16's GMRES iterations. RAP 1e-4 extends classic IR not at all.
+5. **RAP against AP.** On family D, at ε = 1e-6 and 1e-8, RAP converges as far as AP with the same or fewer iterations. At ε = 1e-4 its factor is about five times less accurate than AP's, and it does worse. On E and U, AP 1e-8 is an FP64 factorization and needs 0 iterations where RAP 1e-8 needs 1–2.
+6. **Without tile-norm decay there is nothing to adapt.** On families E (except E1) and U, AP puts every off-diagonal tile in one precision and needs the same iterations as that uniform precision. The only differences are on U5 with GMRES-IR, where the breakdown shifts differ.
+7. **FP16-MAGMA** (an FP32 instead of an FP64 diagonal) is within one iteration of FP16 everywhere.
+8. **No run failed outright, but low-precision Cholesky breaks down at large κ.**
+   - FP16 broke down from κ₁ ≈ 5e5 to 6e6, depending on the family.
+   - AP, RAP and FP32 broke down from 6.5e7 to 6.8e9 on family D, and at 8.3e9 on family U.
+   - A diagonal shift rescued every breakdown. The shifted cases are marked †.
+
+### 4.1 Setup
+
+- **Hardware and size.** One H100 (hexane), N = 20480, NB = 512: 40 × 40 tiles, so 820 tiles in the lower triangle, 40 of them diagonal.
+- **Right-hand sides.** Three per matrix, b = A·x_true with a random x_true, all solved with one factorization.
+- **Preprocessing.** Every factorization except FP64 direct uses the scaling of Higham and Pranesh, F = μ·D⁻¹AD⁻¹ (section 1). A diagonal shift is added only if Cholesky breaks down (section 4.8).
+- **Stopping test.** LAPACK `dsposv`'s ‖b − Ax‖∞ ≤ √N·u·‖A‖∞‖x‖∞, with u = 1.1e-16. A run that meets it has an FP64-level backward error: between 6e-18 and 2e-14 here.
+- **Limits.**
+  - Classic IR: 30 iterations.
+  - GMRES-IR: 10 refinement iterations, each solving the correction equation with at most 100 GMRES iterations to a relative tolerance τ = 1e-4.
+- **Tables.** Generated from the `ir_results.tsv` files that `scripts/ir_sweep.sh` writes.
+
+### 4.2 Factorizations compared
+
+All run on kind 10, except FP16-MAGMA (kind 9) and FP64 (kind 5). On kind 10, the diagonal tiles (POTRF, SYRK) are always FP64, and TRSM is FP32 on every off-diagonal tile; only the GEMMs change precision.
+
+| Factorization | Off-diagonal GEMMs | How the precision is chosen |
+|---|---|---|
+| FP16 | all FP16 (tensor cores, FP32 accumulation) | fixed |
+| FP16-MAGMA | all FP16, with an FP32 diagonal, as MAGMA's `dshposv` | fixed |
+| AP ε (ε = 1e-4, 1e-6, 1e-8) | FP16, FP32 or FP64 per tile | before the factorization, from the tile norms of A: a tile is FP16 if ‖A_ij‖·NT/‖A‖ < ε/u₁₆, FP32 if below ε/u₃₂, FP64 otherwise. Every GEMM that updates a tile runs in that tile's precision |
+| RAP ε | FP16, FP32 or FP64 per GEMM | during the factorization: the same test applied to each GEMM's ‖L_ik‖·‖L_jk‖ |
+| FP32 | all FP32 | fixed |
+| FP64 direct | all FP64 | fixed; one solve, no refinement |
+
+The precision maps AP and RAP choose depend on the matrix; section 4.8 lists them.
+
+### 4.3 Test matrices
+
+Three families of kernel matrices, with κ swept by the noise added to the diagonal. Every diagonal entry is the same (1 + noise), so the scaling does not change κ. κ₁(A) is the Hager–Higham estimate from the FP64 factor.
+
+| Family | Kernel | What it tests |
+|---|---|---|
+| D | kind 2 (2-D squared exponential), β = 0.1 | Tile norms decay away from the diagonal, so AP mixes precisions (at ε = 1e-4, 525 to 653 of the 780 off-diagonal tiles are FP16). The main test. |
+| E | kind 4 (3-D exponential) | E1 (β = 0.1) has decay. E2–E4 (β = 1) have nearly uniform tile norms. κ of kind 4 cannot exceed about 1.6e6 (section 5.2). |
+| U | kind 2, β = 10 | The control: all tiles have almost the same norm, so AP chooses one precision for every off-diagonal tile. |
+
+| Matrix | Kernel | β | noise | κ₁(A) |
+|---|---|---|---|---|
+| D1 | kind 2 | 0.1 | 1e2 | 2.5e1 |
+| D2 | kind 2 | 0.1 | 1e1 | 3.7e2 |
+| D3 | kind 2 | 0.1 | 1 | 4.5e3 |
+| D4 | kind 2 | 0.1 | 1e-1 | 5.2e4 |
+| D5 | kind 2 | 0.1 | 1e-2 | 5.7e5 |
+| D6 | kind 2 | 0.1 | 1e-3 | 6.1e6 |
+| D7 | kind 2 | 0.1 | 1e-4 | 6.5e7 |
+| D8 | kind 2 | 0.1 | 1e-5 | 6.6e8 |
+| D9 | kind 2 | 0.1 | 1e-6 | 6.8e9 |
+| D10 | kind 2 | 0.1 | 1e-7 | 6.8e10 |
+| E1 | kind 4 | 0.1 | 1 | 9.3e2 |
+| E2 | kind 4 | 1 | 1 | 2.9e4 |
+| E3 | kind 4 | 1 | 1e-1 | 2.4e5 |
+| E4 | kind 4 | 1 | 1e-2 | 1.0e6 |
+| U1 | kind 2 | 10 | 1e3 | 4.2e1 |
+| U2 | kind 2 | 10 | 1e1 | 4.1e3 |
+| U3 | kind 2 | 10 | 1e-1 | 4.9e5 |
+| U4 | kind 2 | 10 | 1e-3 | 8.4e7 |
+| U5 | kind 2 | 10 | 1e-5 | 8.3e9 |
+
+### 4.4 How to read the tables
+
+| Cell | Meaning |
+|---|---|
+| a number, e.g. `4` | converged after that many refinement iterations; `0` means the first solve already met the test |
+| a range, e.g. `17–19` | the three right-hand sides needed different numbers of iterations |
+| `2 / 25` (GMRES-IR) | 2 refinement iterations with 25 GMRES iterations in total. Each GMRES iteration costs one solve with the factor and one product with A |
+| `(1 of 3)` | only that many of the three right-hand sides converged |
+| `NC` | not converged: the iteration limit was reached (in a few cases one right-hand side diverged instead) |
+| `DIV` | diverged on all three right-hand sides: the correction grew in two consecutive iterations, and the run stopped |
+| `†` | Cholesky broke down on the unshifted matrix; the cell is for a factor of the shifted matrix (section 4.8) |
+
+### 4.5 Classic IR
+
+**Family D (tile-norm decay)**
+
+| matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| D1 | 2.5e1 | 2 | 2 | 2 | 1 | 1 | 2 | 1 | 1 | 1 |
+| D2 | 3.7e2 | 2 | 2 | 2 | 1 | 1 | 2 | 1 | 1 | 1 |
+| D3 | 4.5e3 | 3 | 3 | 2 | 2 | 1 | 3 | 2 | 1 | 1 |
+| D4 | 5.2e4 | 5 | 5 | 3 | 2 | 1 | 3–4 | 2 | 1 | 2 |
+| D5 | 5.7e5 | 17–19 | 16–18 | 5 | 2–3 | 2 | 6–7 | 2 | 2 | 2 |
+| D6 | 6.1e6 | NC† | NC† | 21–23 | 4 | 2 | DIV | 3 | 2 | 3 |
+| D7 | 6.5e7 | NC† | NC† | NC† | 11 | 3–4 | NC† | 6 | 3 | 5 |
+| D8 | 6.6e8 | NC† | NC† | NC† | NC† | 13–15 | DIV† | DIV† | 4–5 | DIV |
+| D9 | 6.8e9 | NC† | NC† | NC† | NC† | NC† | NC† | NC† | DIV† | NC† |
+| D10 | 6.8e10 | NC† | NC† | NC† | NC† | NC† | NC† | NC† | DIV† | NC† |
+
+- **FP16 and FP16-MAGMA** need 2–5 iterations up to κ₁ = 5.2e4 and 16–19 at 5.7e5, and do not converge beyond that.
+- **AP** converges one decade further for each two decades of ε: to 6.1e6 with ε = 1e-4 (21–23 iterations), to 6.5e7 with 1e-6 (11), to 6.6e8 with 1e-8 (13–15). Where FP16 needs 17–19 iterations (D5), AP needs 5, 2–3 and 2.
+- **RAP** at ε = 1e-6 and 1e-8 converges as far as AP, with fewer iterations near the limit: 6 against 11 at D7 and 4–5 against 13–15 at D8. RAP 1e-4 stops at D5, like FP16, though with 6–7 iterations against FP16's 17–19.
+- **FP32** converges up to 6.5e7 (5 iterations), between AP 1e-6 and AP 1e-8.
+- **No factorization** converges with classic IR at κ₁ ≥ 6.8e9.
+
+**Family E (kind 4)**
+
+| matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| E1 | 9.3e2 | 3 | 3 | 2 | 1 | 1 | 2 | 2 | 1 | 1 |
+| E2 | 2.9e4 | 6 | 6 | 2 | 2 | 0 | 3 | 2 | 1 | 2 |
+| E3 | 2.4e5 | NC | NC | 2 | 2 | 0 | 4 | 2 | 1 | 2 |
+| E4 | 1.0e6 | DIV† | DIV† | 2 | 2 | 0 | 5 | 2 | 1 | 2 |
+
+- **FP16 and FP16-MAGMA** do not converge from E3 (κ₁ = 2.4e5).
+- **Every other factorization** converges on all four matrices in at most 5 iterations. On E2–E4, AP 1e-4 and 1e-6 put every off-diagonal tile in FP32 and match FP32; AP 1e-8 puts every tile in FP64 and needs 0 iterations.
+- **RAP 1e-4** needs 3–5 iterations where AP 1e-4 needs 2. Its runtime test still runs most GEMMs in FP16 (section 4.8).
+
+**Family U (control, uniform tile norms)**
+
+| matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| U1 | 4.2e1 | 2 | 2 | 2 | 1 | 1 | 2 | 1 | 1 | 1 |
+| U2 | 4.1e3 | 4 | 4 | 2 | 2 | 0 | 2 | 2 | 1 | 2 |
+| U3 | 4.9e5 | DIV† | DIV† | 2 | 2 | 0 | 2 | 2 | 1 | 2 |
+| U4 | 8.4e7 | NC† | NC† | 8 | 8 | 0 | 8 | 8 | 1 | 8 |
+| U5 | 8.3e9 | NC† | NC† | NC† | NC† | 0 | NC† | NC† | 2 | NC† |
+
+- **FP16 and FP16-MAGMA** fail from U3 (κ₁ = 4.9e5).
+- **AP and RAP at ε = 1e-4 and 1e-6** choose FP32 for every off-diagonal tile and give exactly FP32's counts. The exception is U1 at ε = 1e-4, where they choose FP16 and need FP16's 2 iterations. Adapting gains nothing here.
+- **AP 1e-8** is an FP64 factorization on U2–U5 (0 iterations). RAP 1e-8 keeps most tiles in FP32 and still converges everywhere, in at most 2 iterations.
+
+### 4.6 GMRES-IR
+
+**Family D**
+
+| matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| D1 | 2.5e1 | 2 / 2 | 2 / 2 | 2 / 2 | 1 / 1 | 1 / 1 | 2 / 2 | 1 / 1 | 1 / 1 | 1 / 1 |
+| D2 | 3.7e2 | 1–2 / 2–3 | 1 / 2 | 2 / 2 | 1 / 1 | 1 / 1 | 2 / 2 | 1 / 1 | 1 / 1 | 1 / 1 |
+| D3 | 4.5e3 | 2 / 4 | 2 / 4 | 1 / 2 | 2 / 2 | 1 / 1 | 2 / 4 | 2 / 2 | 1 / 1 | 1 / 1 |
+| D4 | 5.2e4 | 2 / 6 | 2 / 6 | 2 / 4 | 2 / 2 | 1 / 1 | 2 / 4 | 2 / 2 | 1 / 1 | 2 / 2 |
+| D5 | 5.7e5 | 2–3 / 10–15 | 2–3 / 10–15 | 2 / 6 | 1–2 / 2–4 | 1–2 / 2–3 | 2 / 6 | 1 / 2 | 2 / 2 | 1 / 2 |
+| D6 | 6.1e6 | 3 / 36† | 3 / 36† | 2 / 11–12 | 2 / 4–5 | 1 / 2 | 2–3 / 20–30 | 2 / 4 | 1 / 2 | 2 / 4 |
+| D7 | 6.5e7 | 3 / 108–109† | 3 / 107–109† | 3 / 45–46† | 2 / 10 | 1 / 3 | 3 / 54–56† | 2 / 7–8 | 2 / 4 | 2 / 6 |
+| D8 | 6.6e8 | 3 / 283–286† | 3 / 282–284† | 3 / 140† | 2–3 / 22–33† | 2 / 11–12 | 3 / 128–159† | 2 / 20† | 1–2 / 4–7 | 2 / 19 |
+| D9 | 6.8e9 | 8 / 800† | 8 / 800† | 4 / 393–394† | 2–3 / 63–97† | 2 / 25–26† | 6–7 / 600–700† | 2 / 59–60† | 2 / 17–18† | 2 / 55–56† |
+| D10 | 6.8e10 | NC† | NC† | 10 / 1000 (1 of 3)† | 2–3 / 178–277† | 2 / 77–79† | NC† | 2–3 / 171–264† | 3 / 53–59† | 2 / 161–163† |
+
+- **Every factorization converges up to D9 (κ₁ = 6.8e9).** At D10, FP16, FP16-MAGMA and RAP 1e-4 do not converge, and AP 1e-4 converges for one right-hand side of three.
+- **The cost moves into the GMRES iterations**, which grow with κ × factor error:
+
+  | | FP16 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+  |---|---|---|---|---|---|---|---|---|
+  | D8 (κ₁ 6.6e8) | 283–286 | 140 | 22–33 | 11–12 | 128–159 | 20 | 4–7 | 19 |
+  | D9 (κ₁ 6.8e9) | 800 | 393–394 | 63–97 | 25–26 | 600–700 | 59–60 | 17–18 | 55–56 |
+
+  At D9 that is 1.1 to 2 times fewer GMRES iterations than FP16 for ε = 1e-4, 8 to 14 times fewer for ε = 1e-6, and 31 to 47 times fewer for ε = 1e-8.
+- **FP16's 8 / 800 at D9** means every GMRES solve stopped at its 100-iteration limit, and the refinement still converged after 8 of them.
+
+**Family E**
+
+| matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| E1 | 9.3e2 | 2 / 4 | 2 / 4 | 2 / 2 | 1 / 1 | 1 / 1 | 2 / 3 | 2 / 2 | 1 / 1 | 1 / 1 |
+| E2 | 2.9e4 | 2 / 5–6 | 2 / 5–6 | 2 / 2 | 2 / 2 | 0 / 0 | 2 / 4 | 2 / 2 | 1 / 1 | 2 / 2 |
+| E3 | 2.4e5 | 2–3 / 10–14 | 2–3 / 10–14 | 1 / 2 | 1 / 2 | 0 / 0 | 2 / 4 | 1 / 2 | 1 / 1 | 1 / 2 |
+| E4 | 1.0e6 | 3 / 19–21† | 3 / 19–21† | 1 / 2 | 1 / 2 | 0 / 0 | 2 / 6 | 1 / 2 | 1 / 1 | 1 / 2 |
+
+All factorizations converge. FP16 and FP16-MAGMA need the most GMRES iterations (19–21 at E4); the others need at most 6.
+
+**Family U**
+
+| matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| U1 | 4.2e1 | 2 / 2 | 2 / 2 | 2 / 2 | 1 / 1 | 1 / 1 | 2 / 2 | 1 / 1 | 1 / 1 | 1 / 1 |
+| U2 | 4.1e3 | 2 / 4 | 2 / 4 | 2 / 2 | 2 / 2 | 0 / 0 | 2 / 2 | 2 / 2 | 1 / 1 | 2 / 2 |
+| U3 | 4.9e5 | 3–4 / 24–33† | 3–4 / 24–33† | 1 / 2 | 1 / 2 | 0 / 0 | 1 / 2 | 1 / 2 | 1 / 1 | 1 / 2 |
+| U4 | 8.4e7 | 2–3 / 19–30† | 2–3 / 19–30† | 2 / 9 | 2 / 9 | 0 / 0 | 2 / 9 | 2 / 9 | 1 / 2 | 2 / 9 |
+| U5 | 8.3e9 | 3 / 30–32† | 3 / 30–32† | 3 / 31† | 3 / 37–38† | 0 / 0 | 3 / 31† | 3 / 37–38† | 1 / 3 | 3 / 40–41† |
+
+All factorizations converge with at most 41 GMRES iterations, even FP16 with a shift as large as the diagonal (U4, U5). The U matrices are a numerically low-rank kernel plus noise·I: apart from a few large eigenvalues, every eigenvalue equals the noise. GMRES therefore converges in a few dozen iterations with almost any preconditioner, and these runs do not separate the factorizations.
+
+### 4.7 Where each factorization stops converging
+
+Largest κ₁(A) at which all three right-hand sides converged, with the iterations there. On families E and U, GMRES-IR converged on every matrix for every factorization. 1.0e6 and 8.3e9 are the largest matrices of E and U, so those entries mean "converged on every matrix".
+
+| strategy | D, classic IR | D, GMRES-IR | E, classic IR | U, classic IR |
+|---|---|---|---|---|
+| FP16 | 5.7e5 (17–19) | 6.8e9 (8 / 800†) | 2.9e4 (6) | 4.1e3 (4) |
+| FP16-MAGMA | 5.7e5 (16–18) | 6.8e9 (8 / 800†) | 2.9e4 (6) | 4.1e3 (4) |
+| AP 1e-4 | 6.1e6 (21–23) | 6.8e9 (4 / 393–394†) | 1.0e6 (2) | 8.4e7 (8) |
+| AP 1e-6 | 6.5e7 (11) | 6.8e10 (2–3 / 178–277†) | 1.0e6 (2) | 8.4e7 (8) |
+| AP 1e-8 | 6.6e8 (13–15) | 6.8e10 (2 / 77–79†) | 1.0e6 (0) | 8.3e9 (0) |
+| RAP 1e-4 | 5.7e5 (6–7) | 6.8e9 (6–7 / 600–700†) | 1.0e6 (5) | 8.4e7 (8) |
+| RAP 1e-6 | 6.5e7 (6) | 6.8e10 (2–3 / 171–264†) | 1.0e6 (2) | 8.4e7 (8) |
+| RAP 1e-8 | 6.6e8 (4–5) | 6.8e10 (3 / 53–59†) | 1.0e6 (1) | 8.3e9 (2) |
+| FP32 | 6.5e7 (5) | 6.8e10 (2 / 161–163†) | 1.0e6 (2) | 8.4e7 (8) |
+
+### 4.8 Why: factor error, precision maps and breakdowns
+
+**Factor error and precision map.** The error is ‖F − L̂L̂ᵀ‖₂/‖F‖₂ by power iteration. The map gives the tiles stored in FP64/FP32/FP16; one matrix of each family near κ₁ = 5e5.
+
+| strategy | D (κ₁ 5.7e5) | E (κ₁ 2.4e5) | U (κ₁ 4.9e5) |
+|---|---|---|---|
+| FP16 | 8.7e-6, 40/0/780 | 6.2e-5, 40/0/780 | 1.1e-4, 40/0/780 |
+| FP16-MAGMA | 8.8e-6, 0/40/780 | 6.2e-5, 0/40/780 | 1.1e-4, 0/40/780 |
+| AP 1e-4 | 3.1e-7, 40/255/525 | 2.3e-9, 40/780/0 | 1.2e-8, 40/780/0 |
+| AP 1e-6 | 3.1e-8, 40/463/317 | 2.3e-9, 40/780/0 | 1.2e-8, 40/780/0 |
+| AP 1e-8 | 2.5e-9, 301/319/200 | 9.8e-17, 820/0/0 | 7.9e-17, 820/0/0 |
+| RAP 1e-4 | 1.5e-6, 40/746/34 | 2.7e-6, 40/780/0 | 2.5e-8, 40/780/0 |
+| RAP 1e-6 | 2.8e-8, 40/751/29 | 1.1e-8, 40/780/0 | 1.7e-8, 40/780/0 |
+| RAP 1e-8 | 5.4e-9, 164/633/23 | 2.9e-10, 88/732/0 | 1.3e-10, 79/741/0 |
+| FP32 | 2.9e-8, 40/780/0 | 2.3e-9, 40/780/0 | 1.2e-8, 40/780/0 |
+
+- **AP's error follows ε** on D (3.1e-7, 3.1e-8, 2.5e-9). On E3 and U3 it uses no FP16 tiles at all.
+- **RAP's error at ε = 1e-4 is five times AP's on D** (1.5e-6 against 3.1e-7), and a thousand times AP's on E3 (2.7e-6 against 2.3e-9), where both store every off-diagonal tile in FP32. RAP tests each GEMM's ‖L_ik‖·‖L_jk‖ instead of the tile's norm. A single update is much smaller than the whole tile, so many more GEMMs pass the FP16 test (91% against AP's 57% on D6, section 4.9). Each passing GEMM contributes its own FP16 error to the tile, so at a loose ε these errors add up. At ε = 1e-6 and 1e-8, only small updates pass, and RAP's error matches AP's.
+
+**κ × factor error decides classic IR.** Each classic IR iteration multiplies the error by roughly κ × ‖E‖/‖A‖. The table gives κ₁(A) × factor error at the last matrix of family D where each factorization converged and at the first where it did not:
+
+| strategy | last converged | first not converged |
+|---|---|---|
+| FP16 | 4.9 (κ₁ 5.7e5) | 53 (κ₁ 6.1e6) |
+| FP16-MAGMA | 5 (κ₁ 5.7e5) | 54 (κ₁ 6.1e6) |
+| AP 1e-4 | 2.2 (κ₁ 6.1e6) | 24 (κ₁ 6.5e7) |
+| AP 1e-6 | 2.3 (κ₁ 6.5e7) | 24 (κ₁ 6.6e8) |
+| AP 1e-8 | 4 (κ₁ 6.6e8) | 48 (κ₁ 6.8e9) |
+| RAP 1e-4 | 0.86 (κ₁ 5.7e5) | 11 (κ₁ 6.1e6) |
+| RAP 1e-6 | 2.2 (κ₁ 6.5e7) | 24 (κ₁ 6.6e8) |
+| RAP 1e-8 | 2.9 (κ₁ 6.6e8) | 27 (κ₁ 6.8e9) |
+| FP32 | 2 (κ₁ 6.5e7) | 19 (κ₁ 6.6e8) |
+
+The threshold is between 5 and 11 for every factorization, and the same holds on E (at most 2.8 converged, at least 14.8 not) and U (at most 1.0 converged, at least 54 not). It lies above 1 because κ₁ overestimates the 2-norm condition number of the theory.
+
+**Breakdowns and shifts.** At large κ the low-precision factor of a positive definite matrix can meet a non-positive pivot. The solver then refactorizes F + s·I with s = c·u (u is the unit roundoff of the factor; ε for AP and RAP), trying c = 2, 8, 32, … up to eight attempts. Shift s needed, relative to the unit diagonal of F (blank: no breakdown):
+
+| D matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| D6 | 6.1e6 | 3.9e-3 (c=8) | 3.9e-3 (c=8) |  |  |  |  |  |  |  |
+| D7 | 6.5e7 | 3.9e-3 (c=8) | 3.9e-3 (c=8) | 8.0e-4 (c=8) |  |  | 8.0e-4 (c=8) |  |  |  |
+| D8 | 6.6e8 | 3.9e-3 (c=8) | 3.9e-3 (c=8) | 8.0e-4 (c=8) | 3.2e-5 (c=32) |  | 8.0e-4 (c=8) | 8.0e-6 (c=8) |  |  |
+| D9 | 6.8e9 | 3.9e-3 (c=8) | 3.9e-3 (c=8) | 8.0e-4 (c=8) | 3.2e-5 (c=32) | 5.1e-6 (c=512) | 3.2e-3 (c=32) | 3.2e-5 (c=32) | 3.2e-7 (c=32) | 3.1e-5 (c=512) |
+| D10 | 6.8e10 | 3.9e-3 (c=8) | 3.9e-3 (c=8) | 8.0e-4 (c=8) | 3.2e-5 (c=32) | 5.1e-6 (c=512) | 3.2e-3 (c=32) | 3.2e-5 (c=32) | 1.3e-6 (c=128) | 3.1e-5 (c=512) |
+
+| E matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| E4 | 1.0e6 | 1.6e-2 (c=32) | 1.6e-2 (c=32) |  |  |  |  |  |  |  |
+
+| U matrix | κ₁(A) | FP16 | FP16-MAGMA | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 | FP32 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| U3 | 4.9e5 | 2.5e-1 (c=512) | 2.5e-1 (c=512) |  |  |  |  |  |  |  |
+| U4 | 8.4e7 | 1.0e0 (c=2048) | 1.0e0 (c=2048) |  |  |  |  |  |  |  |
+| U5 | 8.3e9 | 1.0e0 (c=2048) | 1.0e0 (c=2048) | 8.0e-4 (c=8) | 5.1e-4 (c=512) |  | 8.0e-4 (c=8) | 5.1e-4 (c=512) |  | 4.9e-4 (c=8192) |
+
+- **No breakdown went unrescued.** The eighth and last attempt was needed once, for FP32 on U5 (c = 8192).
+- **Shifts limit refinement.** A shifted factor approximates F + s·I, so the refinement also has to remove s. The factor errors above are measured against the shifted F and do not include s.
+- **The FP16 shifts on U are large.** On U4 and U5, s equals the diagonal itself. GMRES-IR still converges there, for the spectral reason given in section 4.6; classic IR does not.
+
+### 4.9 Effect of ε
+
+AP and RAP over ε from 1e-2 to 1e-10 on two matrices of family D: D6 (κ₁ = 6.1e6) and D9 (κ₁ = 6.8e9). These runs used four A100s (guyot), and nine cases were rerun on the hexane V100. Where they overlap with sections 4.5 and 4.6, the counts are close to the H100 ones.
+
+| ε | AP D6 classic | RAP D6 classic | AP D6 GMRES-IR | RAP D6 GMRES-IR | AP D9 GMRES-IR | RAP D9 GMRES-IR |
+|---|---|---|---|---|---|---|
+| 1e-2 | NC† | NC† | 3 / 64–66† | 3 / 64–66† | NC† | NC† |
+| 3e-3 | NC† | NC† | 3 / 41–42† | 3 / 41–42† | 10 / 1000† | 10 / 1000 (2 of 3)† |
+| 1e-3 | NC† | DIV† | 3 / 28† | 3 / 45† | NC† | 10 / 1000 (1 of 3)† |
+| 3e-4 | DIV | DIV† | 2 / 19 | 2–3 / 32–48† | 6 / 600† | 6–7 / 600–700† |
+| 1e-4 | 20–23 | DIV | 2 / 11–12 | 2–3 / 22–31 | 3–4 / 295–393† | 7 / 700† |
+| 3e-5 | 8 | 14–15 | 2 / 8 | 2 / 10 | 3 / 251–253† | 3–4 / 298–400† |
+| 1e-5 | 6–7 | 6–7 | 2 / 7 | 2 / 7–8 | 3 / 254–256† | 3 / 258–261† |
+| 3e-6 | 4 | 4 | 2 / 6 | 2 / 6 | 2–3 / 97–152† | 3 / 149† |
+| 1e-6 | 4 | 3 | 2 / 4–5 | 2 / 4 | 2 / 63† | 2 / 59–60† |
+| 1e-7 | 3 | 3 | 2 / 4 | 2 / 4 | 2 / 40–42† | 2 / 37† |
+| 1e-8 | 2 | 2 | 1 / 2 | 1 / 2 | 2 / 25† | 2 / 18–20† |
+| 1e-9 | 2 | 1 | 1 / 2 | 1 / 1 | 2 / 29† | 1 / 3 |
+| 1e-10 | 2 | 1 | 1 / 2 | 1 / 1 | 2 / 19–20† | 1 / 2–3 |
+
+| ε | AP FP16 GEMMs | AP factor error | RAP FP16 GEMMs | RAP factor error |
+|---|---|---|---|---|
+| 1e-2 | 100% | 9.1e-6 | 100% | 9.1e-6 |
+| 3e-3 | 100% | 9.3e-6 | 100% | 8.6e-6 |
+| 1e-3 | 87% | 4.9e-6 | 100% | 9.2e-6 |
+| 3e-4 | 69% | 1.1e-6 | 96% | 4.4e-6 |
+| 1e-4 | 57% | 3.4e-7 | 91% | 2.1e-6 |
+| 3e-5 | 52% | 2.0e-7 | 85% | 5.3e-7 |
+| 1e-5 | 45% | 1.2e-7 | 80% | 1.8e-7 |
+| 3e-6 | 35% | 4.9e-8 | 73% | 5.9e-8 |
+| 1e-6 | 29% | 2.6e-8 | 67% | 2.8e-8 |
+| 1e-7 | 22% | 1.0e-8 | 57% | 1.7e-8 |
+| 1e-8 | 16% | 3.1e-9 | 47% | 3.5e-9 |
+| 1e-9 | 13% | 2.5e-9 | 37% | 5.7e-10 |
+| 1e-10 | 8% | 1.9e-9 | 30% | 2.8e-10 |
+
+- **ε ≥ 3e-3 is FP16.** Every GEMM runs in FP16, and AP and RAP behave like FP16.
+- **The factor error falls steadily as ε decreases**, from 9e-6 (all FP16) to 2e-9 for AP and 3e-10 for RAP at ε = 1e-10, and the iterations follow it. Classic IR on D6 converges from ε = 1e-4 for AP and from 3e-5 for RAP.
+- **For ε ≤ 1e-5, RAP reaches AP's error, or a smaller one, with two to four times more FP16 GEMMs.** For ε ≥ 3e-5 it is less accurate than AP at the same ε.
+
+### 4.10 Scaling and GMRES tolerance
+
+**Scaling.** Classic IR on family D, with and without the Higham–Pranesh scaling:
+
+| matrix | κ₁(A) | FP16 scaled | FP16 unscaled | AP 1e-6 scaled | AP 1e-6 unscaled |
+|---|---|---|---|---|---|
+| D1 | 2.5e1 | 2 | 2 | 1 | 1 |
+| D2 | 3.7e2 | 2 | 2 | 1 | 1 |
+| D3 | 4.5e3 | 3 | 3 | 2 | 2 |
+| D4 | 5.2e4 | 5 | 5 | 2 | 2 |
+| D5 | 5.7e5 | 17–19 | 17–18 | 2–3 | 2–3 |
+| D6 | 6.1e6 | NC† | NC† | 4 | 4 |
+| D7 | 6.5e7 | NC† | NC† | 11 | 9–10 |
+| D8 | 6.6e8 | NC† | NC† | NC† | NC† |
+| D9 | 6.8e9 | NC† | NC† | NC† | NC† |
+| D10 | 6.8e10 | NC† | NC† | NC† | NC† |
+
+Scaling changes the counts by at most two iterations on these matrices. Their diagonal is constant and their entries are of order one, so the scaling only multiplies the matrix by a scalar, and the precision maps stay the same.
+
+**GMRES tolerance τ.** GMRES-IR with τ = 1e-2, 1e-4 and 1e-6 (A100 runs):
+
+| matrix | κ₁(A) | FP16 τ = 1e-2 | FP16 τ = 1e-4 | FP16 τ = 1e-6 | AP 1e-6 τ = 1e-2 | AP 1e-6 τ = 1e-4 | AP 1e-6 τ = 1e-6 |
+|---|---|---|---|---|---|---|---|
+| D8 | 6.6e8 | 5 / 264–271† | 3 / 282–284† | 3 / 300† | 4 / 22–23† | 3 / 33† | 2 / 31–32† |
+| D9 | 6.8e9 | 8 / 746–752† | 7–8 / 700–800† | 7–8 / 700–800† | 4 / 66–68† | 2 / 63† | 2 / 95–96† |
+
+τ changes the GMRES iterations by at most 50%. The factor's accuracy decides the cost, not τ.
+
+## 5. Other measurements
+
+### 5.1 Kind 10 static against kind 5 (H100, `--check`, residual ‖LLᵀ−A‖_F/‖A‖_F)
 
 | N, NB | map | kind 5 | kind 10 static | RAP (runtime, `--adaptive_decision` 1 = 0) |
 |---|---|---|---|---|
@@ -153,7 +480,7 @@ Deviations from the literature:
 - **RAP:** `--adaptive_decision` 1 and 0 give the same residual and GEMM counts.
 - **Kind 9 (FP16-MAGMA)** gives 7.535071e-06 (N = 8192) and 1.428111e-05 (N = 20480).
 
-### 4.2 Condition numbers of the test matrices (A1a)
+### 5.2 Condition numbers of the generated matrices (A1a)
 
 The table gives κ₁(A) from Hager–Higham with the FP64 factor, measured on the H100 at N = 20480, NB = 512, with σ = 1. For kinds 2 and 4 the diagonal is constant (σ + noise), so κ₁(D⁻¹AD⁻¹) = κ₁(A). The FP64 forward error follows κ₁·2e-16 throughout.
 
@@ -186,216 +513,11 @@ How κ behaves:
 - **The control** is kind 2 with β = 10. That correlation length is much longer than the unit square, so all tiles have nearly the same norm.
 
 
-### 4.3 Refinement work against κ (A1b)
+### 5.3 Cost per phase and time to solution (B0)
 
-**Setup.**
-- Hardware and size: H100, N = 20480, NB = 512 (NT = 40).
-- Right-hand sides: three per matrix, b = A·x_true.
-- Preprocessing: scaled, with shift-and-retry on breakdown.
-- GMRES: τ = 1e-4, at most 100 iterations per step.
-- Counts: the cells give M⁻¹ applications (the initial solve included) for runs that met the LAPACK test.
-- Failure labels: "no (slow)" means no convergence in 30 steps (10 for GMRES-IR); "div." means diverged; "max" means the step limit was reached.
-
-**Matrices with norm decay: kind 2, β = 0.1, noise from 1e2 to 1e-7.**
-
-Classic IR:
-
-| κ₁ | FP16 | FP16-MAGMA | FP32 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
-|---|---|---|---|---|---|---|---|---|---|
-| 2.5e1 | 3 | 3 | 2 | 3 | 2 | 2 | 3 | 2 | 2 |
-| 3.7e2 | 3 | 3 | 2 | 3 | 2 | 2 | 3 | 2 | 2 |
-| 4.5e3 | 4 | 4 | 2 | 3 | 3 | 2 | 4 | 3 | 2 |
-| 5.2e4 | 6 | 6 | 3 | 4 | 3 | 2 | 5 | 3 | 2 |
-| 5.7e5 | 20 | 19 | 3 | 6 | 4 | 3 | 7 | 3 | 3 |
-| 6.1e6 | no (slow) | no (slow) | 4 | 22 | 5 | 3 | no (div.) | 4 | 3 |
-| 6.5e7 | no (slow) | no (slow) | 6 | no (slow) | 12 | 5 | no (slow) | 7 | 4 |
-| 6.6e8 | no (slow) | no (slow) | no (div.) | no (slow) | no (slow) | 15 | no (div.) | no (div.) | 6 |
-| 6.8e9 | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | no (div.) |
-| 6.8e10 | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | no (div.) |
-
-GMRES-IR:
-
-| κ₁ | FP16 | FP16-MAGMA | FP32 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
-|---|---|---|---|---|---|---|---|---|---|
-| 2.5e1 | 5 | 5 | 3 | 5 | 3 | 3 | 5 | 3 | 3 |
-| 3.7e2 | 4 | 4 | 3 | 5 | 3 | 3 | 5 | 3 | 3 |
-| 4.5e3 | 7 | 7 | 3 | 4 | 5 | 3 | 7 | 5 | 3 |
-| 5.2e4 | 9 | 9 | 5 | 7 | 5 | 3 | 7 | 5 | 3 |
-| 5.7e5 | 19 | 13 | 4 | 9 | 7 | 6 | 9 | 4 | 5 |
-| 6.1e6 | 40 | 40 | 7 | 15 | 7 | 4 | 34 | 7 | 4 |
-| 6.5e7 | 113 | 112 | 9 | 50 | 13 | 5 | 59 | 10 | 7 |
-| 6.6e8 | 287 | 287 | 22 | 144 | 37 | 15 | 138 | 23 | 10 |
-| 6.8e9 | 809 | 809 | 59 | 398 | 67 | 28 | 607 | 62 | 20 |
-| 6.8e10 | no (max) | no (max) | 165 | 1011 (1/3) | 279 | 81 | no (max) | 174 | 62 |
-
-**Kind 4 (3-D exp, β = 1 and 0.1).**
-
-Classic IR:
-
-| κ₁ | FP16 | FP16-MAGMA | FP32 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
-|---|---|---|---|---|---|---|---|---|---|
-| 9.3e2 | 4 | 4 | 2 | 3 | 2 | 2 | 3 | 3 | 2 |
-| 2.9e4 | 7 | 7 | 3 | 3 | 3 | 1 | 4 | 3 | 2 |
-| 2.4e5 | no (slow) | no (slow) | 3 | 3 | 3 | 1 | 5 | 3 | 2 |
-| 1.0e6 | no (div.) | no (div.) | 3 | 3 | 3 | 1 | 6 | 3 | 2 |
-
-GMRES-IR:
-
-| κ₁ | FP16 | FP16-MAGMA | FP32 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
-|---|---|---|---|---|---|---|---|---|---|
-| 9.3e2 | 7 | 7 | 3 | 5 | 3 | 3 | 6 | 5 | 3 |
-| 2.9e4 | 9 | 9 | 5 | 5 | 5 | 1 | 7 | 5 | 3 |
-| 2.4e5 | 13 | 13 | 4 | 4 | 4 | 1 | 7 | 4 | 3 |
-| 1.0e6 | 24 | 24 | 4 | 4 | 4 | 1 | 9 | 4 | 3 |
-
-**Control with uniform tile norms: kind 2, β = 10.** All tile-norm ratios lie between 1.32 and 1.42, so AP and RAP choose one precision for every off-diagonal tile:
-- FP32 at ε = 1e-4 and 1e-6;
-- FP64 at ε = 1e-8, where they need 0 steps.
-
-Classic IR:
-
-| κ₁ | FP16 | FP16-MAGMA | FP32 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
-|---|---|---|---|---|---|---|---|---|---|
-| 4.2e1 | 3 | 3 | 2 | 3 | 2 | 2 | 3 | 2 | 2 |
-| 4.1e3 | 5 | 5 | 3 | 3 | 3 | 1 | 3 | 3 | 2 |
-| 4.9e5 | no (div.) | no (div.) | 3 | 3 | 3 | 1 | 3 | 3 | 2 |
-| 8.4e7 | no (slow) | no (slow) | 9 | 9 | 9 | 1 | 9 | 9 | 2 |
-| 8.3e9 | no (slow) | no (slow) | no (slow) | no (slow) | no (slow) | 1 | no (slow) | no (slow) | 3 |
-
-GMRES-IR:
-
-| κ₁ | FP16 | FP16-MAGMA | FP32 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
-|---|---|---|---|---|---|---|---|---|---|
-| 4.2e1 | 5 | 5 | 3 | 5 | 3 | 3 | 5 | 3 | 3 |
-| 4.1e3 | 7 | 7 | 5 | 5 | 5 | 1 | 5 | 5 | 3 |
-| 4.9e5 | 29 | 29 | 4 | 4 | 4 | 1 | 4 | 4 | 3 |
-| 8.4e7 | 34 | 34 | 12 | 12 | 12 | 1 | 12 | 12 | 4 |
-| 8.3e9 | 35 | 35 | 44 | 35 | 42 | 1 | 35 | 42 | 5 |
-
-**Factor error and precision map** for two matrices of κ₁ ≈ 5e5. The error is ‖F−L̂L̂ᵀ‖₂/‖F‖₂ by power iteration; c is the shift that was needed.
-
-| strategy | kind 2 error | kind 2 tiles | control error | control tiles |
-|---|---|---|---|---|
-| FP16 | 8.7e-6 | 40/0/780 | 1.1e-4 (c=512) | 40/0/780 |
-| FP16-MAGMA | 8.8e-6 | 0/40/780 | 1.1e-4 (c=512) | 0/40/780 |
-| FP32 | 2.9e-8 | 40/780/0 | 1.2e-8 | 40/780/0 |
-| AP 1e-4 | 3.1e-7 | 40/255/525 | 1.2e-8 | 40/780/0 |
-| AP 1e-6 | 3.1e-8 | 40/463/317 | 1.2e-8 | 40/780/0 |
-| AP 1e-8 | 2.5e-9 | 301/319/200 | 7.9e-17 | 820/0/0 |
-| RAP 1e-4 | 1.5e-6 | 40/746/34 | 2.5e-8 | 40/780/0 |
-| RAP 1e-6 | 2.8e-8 | 40/751/29 | 1.7e-8 | 40/780/0 |
-| RAP 1e-8 | 5.4e-9 | 164/633/23 | 1.3e-10 | 79/741/0 |
-
-**Findings.**
-- **FP16 + IR fails beyond κ ≈ 6e5.** Classic IR with an FP16 factor needs 20 M⁻¹ applications at κ₁ = 5.7e5 and stops converging beyond that. This matches the FP16-TC error bound (Blanchard et al.): the factor error is about 1e-5 relative here, so κ·err is above 1 near κ = 1e5 to 1e6.
-- **FP16-MAGMA behaves like FP16**, within a step. In this setup, the FP32 diagonal of MAGMA's design does not matter.
-- **AP and RAP extend the range of classic IR**, about one decade of κ for every two decades of ε:
-
-  | Factor | Classic IR still converges at κ₁ | M⁻¹ applications there |
-  |---|---|---|
-  | FP16 | 5.7e5 | 20 |
-  | AP ε = 1e-4 | 6.1e6 | 22 |
-  | AP ε = 1e-6 | 6.5e7 | 12 |
-  | AP ε = 1e-8 | 6.6e8 | 15 |
-  | RAP ε = 1e-4 | 5.7e5 | 7 |
-  | RAP ε = 1e-6 | 6.5e7 | 7 |
-  | RAP ε = 1e-8 | 6.6e8 | 6 |
-
-  RAP at ε = 1e-4 does not extend the range: its factor error is 1.5e-6 against AP's 3.1e-7, and classic IR diverges at κ₁ = 6.1e6. It still needs only 7 M⁻¹ applications at 5.7e5, where FP16 needs 20.
-- **With GMRES-IR, ε = 1e-6 and 1e-8 cut the work by large factors; ε = 1e-4 by little.** M⁻¹ applications, with the reduction against FP16 in parentheses:
-
-  | κ₁ | FP16 | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
-  |---|---|---|---|---|---|---|---|
-  | 6.6e8 | 287 | 144 (2.0) | 37 (7.8) | 15 (19) | 138 (2.1) | 23 (12) | 10 (29) |
-  | 6.8e9 | 809 | 398 (2.0) | 67 (12) | 28 (29) | 607 (1.3) | 62 (13) | 20 (40) |
-
-  FP32 (all off-diagonal tiles FP32) sits between ε = 1e-6 and 1e-8. AP and RAP reach that accuracy with 30 to 60% of the GEMMs in FP16.
-- **The control shows where the gain comes from.** On the uniform-norm matrices, AP has no advantage over a uniform precision. It picks FP32 (or FP64) everywhere and matches FP32's steps, and the gain disappears.
-- **Scaling to the FP16 range makes no difference here.** Unscaled FP16 and AP 1e-6 need the same steps as scaled ones. These kernel matrices have a constant diagonal and entries of order one, so μ only shifts the FP16 range.
-- **Breakdown.** FP16 factors broke down from κ ≈ 6e6 (kind 2) and κ ≈ 5e5 (control). They were rescued by shifts of c = 8 up to 2048, at a factor error of up to 1.1e-4. The shift is counted: every failed attempt is in the time.
-- **Forward error.** The LAPACK test stops on the backward error (√N·u), so converged runs end with forward errors up to about 100 times FP64's. The error is κ·berr in both cases, with a larger berr allowed.
-
-### 4.4 ε sweep (A2) and GMRES tolerance (A3)
-
-**Setup.** Kind 2, β = 0.1, N = 20480, NB = 512, three right-hand sides. The runs used four A100s on guyot; the nine cases lost when that allocation ended were rerun on the hexane V100.
-
-**Columns.**
-- AP and RAP give M⁻¹ applications.
-- The FP16 GEMMs column is the share of off-diagonal GEMMs run in FP16.
-- The error column is the factor error.
-
-At κ₁ = 6.1e6, classic IR:
-
-| ε | AP | AP FP16 GEMMs | AP error | RAP | RAP FP16 GEMMs | RAP error |
-|---|---|---|---|---|---|---|
-| 1e-2 | no (slow) | 100% | 9.1e-6 | no (slow) | 100% | 9.1e-6 |
-| 3e-3 | no (slow) | 100% | 9.3e-6 | no (slow) | 100% | 8.6e-6 |
-| 1e-3 | no (slow) | 87% | 4.9e-6 | no (div.) | 100% | 9.2e-6 |
-| 3e-4 | no (div.) | 69% | 1.1e-6 | no (div.) | 96% | 4.4e-6 |
-| 1e-4 | 22 | 57% | 3.4e-7 | no (div.) | 91% | 2.1e-6 |
-| 3e-5 | 9 | 52% | 2.0e-7 | 15 | 85% | 5.3e-7 |
-| 1e-5 | 7 | 45% | 1.2e-7 | 7 | 80% | 1.8e-7 |
-| 3e-6 | 5 | 35% | 4.9e-8 | 5 | 73% | 5.9e-8 |
-| 1e-6 | 5 | 29% | 2.6e-8 | 4 | 67% | 2.8e-8 |
-| 1e-7 | 4 | 22% | 1.0e-8 | 4 | 57% | 1.7e-8 |
-| 1e-8 | 3 | 16% | 3.1e-9 | 3 | 47% | 3.5e-9 |
-| 1e-9 | 3 | 13% | 2.5e-9 | 2 | 37% | 5.7e-10 |
-| 1e-10 | 3 | 8% | 1.9e-9 | 2 | 30% | 2.8e-10 |
-
-At κ₁ = 6.1e6, GMRES-IR:
-
-| ε | AP | AP FP16 GEMMs | AP error | RAP | RAP FP16 GEMMs | RAP error |
-|---|---|---|---|---|---|---|
-| 1e-2 | 69 | 100% | 9.1e-6 | 69 | 100% | 9.1e-6 |
-| 3e-3 | 46 | 100% | 9.3e-6 | 45 | 100% | 8.6e-6 |
-| 1e-3 | 32 | 87% | 4.9e-6 | 49 | 100% | 9.2e-6 |
-| 3e-4 | 22 | 69% | 1.1e-6 | 48 | 96% | 4.4e-6 |
-| 1e-4 | 15 | 57% | 3.4e-7 | 34 | 91% | 2.1e-6 |
-| 3e-5 | 11 | 52% | 2.0e-7 | 13 | 85% | 5.3e-7 |
-| 1e-5 | 10 | 45% | 1.2e-7 | 11 | 80% | 1.8e-7 |
-| 3e-6 | 9 | 35% | 4.9e-8 | 9 | 73% | 5.9e-8 |
-| 1e-6 | 8 | 29% | 2.6e-8 | 7 | 67% | 2.8e-8 |
-| 1e-7 | 7 | 22% | 1.0e-8 | 7 | 57% | 1.7e-8 |
-| 1e-8 | 4 | 16% | 3.1e-9 | 4 | 47% | 3.5e-9 |
-| 1e-9 | 4 | 13% | 2.5e-9 | 3 | 37% | 5.7e-10 |
-| 1e-10 | 4 | 8% | 1.9e-9 | 3 | 30% | 2.8e-10 |
-
-At κ₁ = 6.8e9, GMRES-IR:
-
-| ε | AP | AP FP16 GEMMs | AP error | RAP | RAP FP16 GEMMs | RAP error |
-|---|---|---|---|---|---|---|
-| 1e-2 | no (max) | 100% | 9.1e-6 | no (max) | 100% | 9.1e-6 |
-| 3e-3 | 1011 | 100% | 9.1e-6 | 1011 (2/3) | 100% | 9.1e-6 |
-| 1e-3 | no (max) | 87% | 4.4e-6 | 1011 (1/3) | 100% | 8.1e-6 |
-| 3e-4 | 607 | 69% | 1.0e-6 | 708 | 96% | 3.7e-6 |
-| 1e-4 | 299 | 57% | 3.9e-7 | 708 | 92% | 1.7e-6 |
-| 3e-5 | 256 | 52% | 2.4e-7 | 404 | 85% | 4.8e-7 |
-| 1e-5 | 259 | 45% | 1.5e-7 | 263 | 79% | 1.8e-7 |
-| 3e-6 | 154 | 35% | 5.8e-8 | 153 | 72% | 5.9e-8 |
-| 1e-6 | 66 | 29% | 3.9e-8 | 62 | 65% | 3.1e-8 |
-| 1e-7 | 44 | 22% | 1.5e-8 | 40 | 53% | 1.8e-8 |
-| 1e-8 | 28 | 16% | 7.1e-9 | 22 | 39% | 3.1e-9 |
-| 1e-9 | 32 | 13% | 5.2e-9 | 5 | 31% | 4.5e-10 |
-| 1e-10 | 23 | 8% | 3.8e-9 | 5 | 25% | 2.1e-10 |
-
-**GMRES tolerance τ:**
-
-| matrix | FP16 τ=1e-2 | 1e-4 | 1e-6 | AP 1e-6 τ=1e-2 | 1e-4 | 1e-6 |
-|---|---|---|---|---|---|---|
-| κ₁ 6.6e8 | 272 | 286 | 304 | 28 | 37 | 35 |
-| κ₁ 6.8e9 | 756 | 809 | 809 | 72 | 66 | 99 |
-
-**Findings.**
-- **ε controls the factor error almost linearly**, from 9e-6 (all FP16, ε ≥ 3e-3) down to 2e-9 (ε = 1e-10). The refinement work follows the factor error, as theory predicts: classic IR converges once κ·error is below about 1.
-- **RAP gets the same factor error with two to three times more FP16 GEMMs than AP**, because it decides each GEMM from the computed L. Examples:
-  - ε = 1e-6: 67% FP16 for RAP against 29% for AP, both at 3e-8.
-  - ε = 1e-8: 47% against 16%, at 3e-9.
-
-  That is why its factorization is faster at the same accuracy (section 4.5).
-- **At the largest ε, RAP fails more often than AP.** It diverges with classic IR at ε = 1e-3 to 1e-4, where AP converges slowly. In that range a few large tiles of L in FP32 storage dominate the error.
-- **τ hardly matters.** 1e-2, 1e-4 and 1e-6 change the work by at most 50%, both for FP16 and for AP. The factor's quality decides it.
-
-### 4.5 Cost per phase (B0)
+**Summary.** Time to solution does not improve yet with this implementation.
+- **Factorization plus refinement only:** on the V100, AP 1e-4, RAP 1e-4 and RAP 1e-6 beat FP16 with IR, and RAP with ε = 1e-6 (2 iterations) is fastest: 1.68 s against 2.15 s for FP16 + IR (6 iterations) and 3.77 s for FP64 direct at N = 40960. On the H100, FP64 direct is faster than every mixed strategy up to N = 40960; AP at all three ε comes within 0.1 s of it.
+- **What decides the totals now:** about 2 s of CPU conversions and re-sending of the factor that every mixed strategy pays, and about 0.15 to 0.2 s of task overhead per refinement iteration.
 
 **Setup.** N = 30720 and 40960, NB = 1024, kind 2 β = 0.1 noise 1e-1 (κ₁ about 1e5). Times are the medians of runs 2 and 3, for the first right-hand side. The ε = 1e-8 rows come from a later allocation. Three cases repeated there (FP64, AP 1e-6 and RAP 1e-6 at N = 40960) matched the first session within 2% in every phase, except RAP's factorization on the H100: it varies from 0.74 to 1.08 s between runs in both sessions.
 
@@ -408,7 +530,7 @@ At κ₁ = 6.8e9, GMRES-IR:
 
 H100:
 
-| N | strategy | decide+convert+stage | factorize | factor to FP64 | first solve | refine | steps | sum | copy A + scale |
+| N | strategy | decide+convert+stage | factorize | factor to FP64 | first solve | refine | iterations | sum | copy A + scale |
 |---|---|---|---|---|---|---|---|---|---|
 | 30720 | fp64 | 0.21 | 0.47 | 0.00 | 0.03 | - | 0 | 0.71 | 0.73 |
 | 30720 | fp16 | 0.56 | 0.26 | 0.58 | 0.23 | 0.56 | 5 | 2.19 | 1.35 |
@@ -435,7 +557,7 @@ H100:
 
 V100:
 
-| N | strategy | decide+convert+stage | factorize | factor to FP64 | first solve | refine | steps | sum | copy A + scale |
+| N | strategy | decide+convert+stage | factorize | factor to FP64 | first solve | refine | iterations | sum | copy A + scale |
 |---|---|---|---|---|---|---|---|---|---|
 | 30720 | fp64 | 0.31 | 1.62 | 0.00 | 0.03 | - | 0 | 1.95 | 0.76 |
 | 30720 | fp16 | 0.61 | 0.44 | 0.59 | 0.33 | 0.68 | 5 | 2.66 | 1.33 |
@@ -463,15 +585,15 @@ V100:
 **Findings.**
 - **Without overheads, adaptive precision would win on the V100 but not on the H100.**
 
-  Seconds at N = 40960, with the refinement steps in parentheses (FP64 direct: factorize and one solve):
+  Seconds at N = 40960, with the refinement iterations in parentheses (FP64 direct: factorize and one solve):
 
   | GPU | FP64 direct | FP16+IR | AP 1e-4 | AP 1e-6 | AP 1e-8 | RAP 1e-4 | RAP 1e-6 | RAP 1e-8 |
   |---|---|---|---|---|---|---|---|---|
   | V100, FP64 at 7.8 Tflop/s | 3.77 | 2.15 (6) | 2.04 (3) | 2.20 (2) | 2.92 (1) | 1.95 (4) | **1.68** (2) | 2.30 (2) |
   | H100, FP64 tensor cores | **1.09** | 1.42 (5) | 1.17 (3) | 1.19 (2) | 1.16 (1) | 1.42 (4) | 1.28 (2) | 1.20 (1) |
 
-  - **V100:** AP 1e-4, RAP 1e-4 and RAP 1e-6 beat FP16+IR; AP 1e-6 and both ε = 1e-8 factors do not. RAP 1e-6 is fastest: its two steps beat FP16's six, and the gap to FP64 is 2.2 times. At this κ (about 1e5) ε = 1e-8 saves at most one step against 1e-6, but its larger FP64 and FP32 share (AP keeps about 300 of the 820 tiles in FP64) costs more on the V100 than the step saves.
-  - **H100:** at these sizes the FP64 factorization is only twice as slow as the FP16 one. With no conversions, each refinement step costs about as much as 20% of the FP64 factorization. AP at all three ε comes within 0.1 s of FP64 direct, but no mixed factor beats it up to N = 40960.
+  - **V100:** AP 1e-4, RAP 1e-4 and RAP 1e-6 beat FP16+IR; AP 1e-6 and both ε = 1e-8 factors do not. RAP 1e-6 is fastest: its two iterations beat FP16's six, and the gap to FP64 is 2.2 times. At this κ (about 1e5) ε = 1e-8 saves at most one iteration against 1e-6, but its larger FP64 and FP32 share (AP keeps about 300 of the 820 tiles in FP64) costs more on the V100 than the iteration saves.
+  - **H100:** at these sizes the FP64 factorization is only twice as slow as the FP16 one. With no conversions, each refinement iteration costs about as much as 20% of the FP64 factorization. AP at all three ε comes within 0.1 s of FP64 direct, but no mixed factor beats it up to N = 40960.
 - **The overheads currently decide the totals.** Every mixed strategy pays them at N = 40960 on top of the table above; ε = 1e-8 pays less because it converts fewer tiles:
 
   | Overhead at N = 40960 | FP16, FP32, ε = 1e-4 and 1e-6 | ε = 1e-8 |
@@ -482,7 +604,7 @@ V100:
   | Total | about 2.1 s | about 1.6 s |
 
   As a result, no mixed strategy beats FP64 direct on either GPU at these sizes. The fastest mixed one is RAP 1e-6 on the V100 (4.41 s against 4.31 s) and AP 1e-8 on the H100 (3.08 s against 1.46 s).
-- **Each refinement step costs 0.15 to 0.2 s at N = 40960** (one A·v, one M⁻¹). With one right-hand side, the time goes into task and launch overhead of the tiled kernels, not into bandwidth.
+- **Each refinement iteration costs 0.15 to 0.2 s at N = 40960** (one A·v, one M⁻¹). With one right-hand side, the time goes into task and launch overhead of the tiled kernels, not into bandwidth.
 - **What would close the gap** (plan stage C):
   - a triangular solve that reads each tile in its storage precision on the GPU, which removes the conversion back and the re-send;
-  - fewer, larger tasks per refinement step.
+  - fewer, larger tasks per refinement iteration.
