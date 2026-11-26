@@ -151,7 +151,10 @@ CUDA build; see `BUILD.md`.
   adaptive kind-5 run gives 1.0e-5 in FP16 and 1.2e-8 in BF16 for
   `--fixedacc 1e-8`. A HIP run that uses FP16 tiles prints how many. Kind 10
   scales its FP16 operands on HIP and is not affected; the HIP builds' CTest
-  cases of adaptive kinds 5, 8 and 9 use 0x20.
+  cases of adaptive kinds 5, 8 and 9 use 0x20. gfx906 (Radeon VII) keeps FP16
+  subnormals and has no BF16 hardware, so keep FP16 there (BF16 GEMMs made an
+  adaptive kind-5 run 6x slower); its CTest cases still pass with 0x20.
+  rocBLAS has no gfx906 kernels from ROCm 6.4 on: build against ROCm 6.3.
 - `--enable_stochastic_rounding` is implemented for kinds 1 to 5 and the
   TRMM, not for kinds 8, 9 and 10.
 - The GPU GEMM variants other than the default are not implemented
@@ -170,6 +173,12 @@ CUDA build; see `BUILD.md`.
 - One process per node is the fastest layout; several ranks per GPU work but
   need `-- --mca device_cuda_memory_use <percent>` (`device_hip_memory_use`
   on AMD GPUs) so that each rank reserves only a share of the device memory.
+- Multi-rank GPU runs send tiles straight from GPU memory only when the MPI
+  library says it reads GPU memory (Open MPI's `MPIX_Query_rocm_support` or
+  `MPIX_Query_cuda_support`, MPICH's `MPIX_GPU_query_support`); otherwise
+  they go through host memory and a start-up note says so. An Open MPI or a
+  UCX built without ROCm cannot read HIP memory. `PARSEC_MCA_mpi_gpu_aware`
+  (0, 1, 2 or 3) overrides the choice.
 
 ## Cholesky kinds (`--kind_of_cholesky`)
 
@@ -294,6 +303,8 @@ Generated from the option table in `src/core/hicma_parsec_internal.c`.
 | `--adaptive_memory` | int | 0: memory allocated once; 1: memory reallocated per tile after precision decision |
 | `--fp8` | int | FP8 GEMMs in kinds 8, 9 and 10: 1 (default) use them when every GPU has compute capability >= 8.9; 0: never (those tiles use HP) |
 | `--fp8_scaling` | int | FP8 GEMMs: 1 (default) scale each operand tile by a power of two from its max entry; 0: unscaled |
+| `--operand_cache` | int | GEMM operand tiles kept converted to the GEMM precision for reuse. GPU GEMMs: FP8, FP16/BF16, FP32 per GPU; -1 (default): up to 2*NT tiles per precision, each at most 5% of the GPU memory PaRSEC manages, taken when needed. CPU GEMMs of kind 10 with runtime decisions (processes without GPUs): FP32 copies of the FP64 panel tiles in host memory, each freed after the last GEMM of the process that reads it; -1 (default): up to a quarter of the process's panel tiles (at least 2*NT), taken when needed. 0: off (convert per GEMM); > 0: up to that many tiles per precision (GPU) or in all (host) |
+| `--flush_subnormals` | int | CPU threads: 1 (default) flush subnormal results to zero and read subnormal inputs as zero (FTZ/DAZ on x86-64, FZ on AArch64) while HiCMA-X runs: low-precision BLAS on tiles with tiny entries no longer pays for subnormal arithmetic (2.0-2.5x for the mixed-precision kinds on a Broadwell CPU); 0: IEEE subnormals. GPU kernels and OmniCast conversions are not affected |
 | `--arena_pinned_memory` | flag | Use pinned host memory for taskpool arenas when GPUs are enabled |
 | `--adaptive_maxrank` | int | In -D 6, adaptively set the maxrank used in Cholesky based on the generation |
 | `--kind_of_cholesky` | int | Cholesky type |

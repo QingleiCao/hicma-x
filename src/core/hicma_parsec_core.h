@@ -54,6 +54,12 @@ extern "C" {
 void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *allocate_type, size_t *data_size);
 
 /**
+ * @brief Release memory from hicma_parsec_core_memory_allocation (pinned
+ * when GPUs are enabled, malloc otherwise).
+ */
+void hicma_parsec_core_memory_free(void *A);
+
+/**
  * @brief Configure initialized taskpool arenas to allocate pinned host memory.
  *
  * Uninitialized entries are ignored. This must be called before an arena makes
@@ -61,6 +67,13 @@ void hicma_parsec_core_memory_allocation(void **A, size_t nb_elements, char *all
  */
 void hicma_parsec_arenas_use_pinned_memory(parsec_arena_datatype_t *arenas,
                                            int arena_count);
+
+/**
+ * @brief Make every arena constructed from now on, those of DPLASMA's
+ * taskpools included, allocate pinned host memory on HIP (pageable memory if
+ * that fails; the free releases either). No effect in other builds.
+ */
+void hicma_parsec_arenas_pin_all(void);
 
 /**
  * @brief Release one host tile buffer with the deallocator matching its allocator.
@@ -386,6 +399,8 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_cpu(parsec_tiled_matrix_t* desc
  * @param[in] p_work_uv_sp Memory pool for UV single precision workspace
  * @param[in] p_work_mbr Memory pool for MBR workspace
  * @param[in] p_work_rr Memory pool for RR workspace
+ * @param[in] C_copy The data copy of C: an FP32 C that this GEMM widens to
+ *                   FP64 may move to a larger buffer, and its span is restored
  * @param[in] C Result matrix (dense)
  * @param[in] A Input matrix A (dense)
  * @param[in] B Input matrix B (dense)
@@ -408,6 +423,7 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_cpu(parsec_til
                                                      parsec_memory_pool_t *p_work_uv_sp,
                                                      parsec_memory_pool_t *p_work_mbr,
                                                      parsec_memory_pool_t *p_work_rr,
+                                                     parsec_data_copy_t *C_copy,
                                                      void *C, void *A, void *B,
                                                      int m, int n, int k,
                                                      int Crank, int Arank, int Brank,
@@ -700,6 +716,19 @@ void hicma_parsec_core_gemm_denseC_denseA_denseB_runtime_decision_gpu(void *this
                                                                       void *C, void *A, void *B, int m, int n, int k,
                                                                       int Crank, int Arank, int Brank,
                                                                       void *A_norm, void *B_norm);
+
+/**
+ * @brief Stage-in of the kind-10 GPU tasks that read tiles a CPU GEMM may have
+ *        widened to FP64 (potrf_dgemm, potrf_dtrsm and potrf_dsyrk)
+ *
+ * PaRSEC reuses a tile's existing GPU copy without checking its size and
+ * copies span bytes into it. A CPU GEMM that widens an FP32 tile to FP64
+ * grows span after a GPU allocated a copy at the FP32 size (the warmup stages
+ * every tile), so grow such a copy first, then run
+ * parsec_default_gpu_stage_in.
+ */
+int hicma_gpu_stage_in(parsec_gpu_task_t *gtask, uint32_t flow_mask,
+                       parsec_gpu_exec_stream_t *gpu_stream);
 
 /**
  * @brief GPU implementation of GEMM with dense C, low-rank A, dense B

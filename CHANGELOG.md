@@ -20,6 +20,90 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 - DPLASMA and PaRSEC moved to the ICLDisco master branches (PaRSEC `2c16c652e`,
   which includes ICLDisco/parsec#814, plus the fork's commits).
 
+### Data-type conversions: OmniCast
+
+- Every element conversion now goes through OmniCast (new submodule
+  `omnicast/`, https://github.com/QingleiCao/OmniCast, branch `main`): one C API
+  for FP64, FP32, FP16, BF16, FP8 (E4M3, E5M2) and integers on the CPU (SIMD
+  chosen at run time: AVX-512, AVX2+F16C, NEON) and on CUDA and HIP GPUs.
+  HiCMA-X's own conversion kernels and loops are removed: the GPU converters
+  of `hicma_parsec.cu`/`hicma_parsec_hip.cu` (`double2half_GPU`,
+  `float2fp8_padded_GPU`, `hicma_fp8_scaled_convert_GPU`, `memcpy_*_GPU`, ...),
+  the stochastic-rounding sources, the `convert_*_unary/binary_CPU` loops and
+  the `LAPACKE_dlag2s`/`slag2d` tile conversions. Call sites use `omc_*`
+  through `HICMA_OMC()`/`HICMA_OMC_SR()` (`hicma_parsec_datatype_convert.h`);
+  `hicma_parsec_fp8_operand_GPU` builds the scaled, transposed FP8 operand of
+  the cuBLASLt matmul.
+- Same results: the accuracy of every CTest case is identical to all printed
+  digits on an A100, a V100 and an H100 (including the FP8 cases).
+  Stochastic rounding keeps its random numbers and probabilities bit for bit.
+  FP64 -> FP8 (and FP16 on HIP) is now rounded once, directly, where HiCMA-X
+  went through FP32 (double rounding, which can differ in rare ties).
+- Faster: converting a tile in place is one kernel instead of a conversion into
+  a scratch tile plus a copy back (1.6-3.3x); the transposed FP8 operands are
+  3-6x faster (coalesced stores); FP32 -> FP16 and the other 2- and 4-byte
+  sources up to 2x; GPU stochastic rounding 1.2-1.45x; CPU stochastic rounding
+  3-9x; CPU FP64 <-> FP32 tiles 1.1-8x faster than MKL's `dlag2s`/`slag2d`.
+  Conversion kernels take 26 % less GPU time in a mixed-precision Cholesky
+  (the factorization is 0-1.6 % faster); CPU factorizations with stochastic
+  rounding are 18-19 % faster, the other CPU kinds unchanged. Details in
+  `docs/omnicast/README.md`.
+- OmniCast update (2026-11-22): every conversion with every option in place
+  and out of place on the host, CUDA and HIP; faster FP8 operands (1.04-1.13x),
+  in-place tile conversions (1.04-1.18x) and stochastic rounding from FP32
+  sources; a fix for scaled FP32 -> FP16 conversions on AMD GPUs (HiCMA-X
+  scales by powers of two and is not affected). Report in
+  `omnicast/docs/REPORT.md`.
+- FP16 conversions are available on every CPU (they were Fugaku-only), and
+  float -> integer conversions saturate (NaN -> 0) instead of being undefined
+  out of range.
+- GPU operand cache (`--operand_cache`, default on). A tile sent in a higher
+  precision than a GEMM's was converted again by every GEMM reading it, up to
+  NT - 1 times. Each GPU now keeps the converted FP8, FP16/BF16 and FP32
+  operands of a factorization and reuses them, with bit-identical results.
+  The memory comes from PaRSEC's device zone when first needed: up to 2*NT
+  tiles per precision, at most 5 % of the zone each. FP8 GEMMs read their
+  scales through cuBLASLt pointer attributes instead of two device copies.
+  On an H100 (N = 45056): 1.07-1.08x for kinds 8, 9 and 10, 1.02-1.04x for
+  the FP32/FP16 kinds; conversions take 4.9 % instead of 19 % of the GPU time
+  when most tiles are FP8. Report in `docs/omnicast/round3/REPORT.md`.
+- OmniCast round 3: hardware FP8 converts on sm_89+, 4 loads in flight in the
+  amax pass of dynamic scaling, an opt-in fused dynamic-scaling kernel, and,
+  for its other users, faster host FP8 encoding (F16C) and streaming stores
+  for large in-place widening on the host.
+- Subnormals on the CPU (`--flush_subnormals`, default on). The FP32 tiles of
+  the covariance problems hold many subnormal numbers, and on Intel CPUs every
+  SIMD operation on one takes a microcode assist: MKL's FP32 GEMMs ran at
+  0.74x the speed of the FP64 ones, so the mixed-precision kinds were
+  1.2-1.4x *slower* than FP64 on CPUs. HiCMA-X now sets flush-to-zero and
+  denormals-are-zero on its CPU threads while it runs (the main thread's
+  setting is restored at the end). On a Broadwell and a Skylake-SP node
+  (N = 16384, NB = 512) the mixed-precision kinds are 1.6-2.6x faster and
+  about 2x faster than FP64; FP64 runs are unchanged, and residuals agree
+  to 4-5 digits. An AMD Zen 2 CPU has no such penalty and is unchanged.
+  `--flush_subnormals 0` keeps IEEE subnormals. OmniCast's host conversions
+  now give the same bits whatever the caller's FTZ/DAZ or rounding mode
+  (some had changed under FTZ/DAZ; QingleiCao/OmniCast#2). Report in
+  `docs/omnicast/round4/REPORT.md`.
+- Host operand cache for kind 10 on CPUs (`--operand_cache`, default on).
+  With runtime decisions, every CPU GEMM that picks FP32 converted both of
+  its FP64 panel tiles again: 9342 conversions of 496 tiles at N = 16384. A
+  process without GPUs now keeps one FP32 copy per panel tile, converted
+  once and freed after the last GEMM of the process that reads it. The
+  copies are bounded, by default to a quarter of the process's panel tiles;
+  at the bound the copy whose tile has the fewest readers left is evicted.
+  Results are bit-identical. On a Broadwell node: 1.13-1.15x at N = 16384
+  (2454 conversions left instead of 9342, 130 MB) and 1.16x at N = 32768. Report
+  in `docs/omnicast/round5/REPORT.md`.
+- Kind 10 runtime CPU GEMMs, `ACC_DP`: with MKL, the FP32 GEMM whose
+  product is subtracted from an FP64 tile runs in 256-column panels, each
+  subtracted right after it is computed (`ACC_DP_PANEL`; CMake passes
+  `HICMA_PARSEC_BLAS_MKL` when the BLAS is MKL). Bit-identical; about 1 %
+  faster at N = 16384 on a Broadwell node, no measurable change at
+  N = 32768. The loop is bound by the memory bandwidth of the core; AVX,
+  prefetching and non-temporal stores did not help enough to keep. Report in
+  `docs/omnicast/round6/REPORT.md`.
+
 ### Correctness
 
 - The correctness check is binding: `check_dpotrf2` and `check_diff` returned
@@ -108,6 +192,50 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   GEMM are scaled by powers of two from their Frobenius norms and the GEMM's
   alpha divides the scales out (exact): 1.5e-8 and 9.1e-11. CUDA builds are
   unchanged.
+- Kind 10 with GPUs, a runtime CPU GEMM on an FP32 tile: widening the tile
+  to FP64 left its span (the bytes PaRSEC copies) at the FP32 size, so the
+  next GPU task on it got half the tile; restoring the span alone would make
+  PaRSEC copy the FP64 tile into a GPU copy the warmup allocated at the FP32
+  size, over the neighbouring tile; and with `--adaptive_memory` the
+  widening overflowed the FP32-sized host buffer. The CPU GEMM now restores
+  the span and moves C to an FP64-sized host buffer when needed, and the GPU
+  GEMM, TRSM and SYRK grow a GPU copy smaller than the span before PaRSEC's
+  stage-in (`hicma_gpu_stage_in`). PaRSEC's own placement puts no kind-10
+  GEMM on the CPU in a process with GPUs (also with
+  `device_load_balance_allow_cpu=1` in the runs made); with GEMMs forced onto
+  the CPU and `--adaptive_decision 1` the factor was wrong or the run
+  crashed, and is now right (residuals as with every GEMM on the GPU). Other
+  runs give the same bits as before. Report in
+  `docs/omnicast/round6/REPORT.md`, section 7.
+- Cholesky with GPUs (kinds 1, 2, 5, 8, 9, 10): a GEMM that a GPU accepts
+  now always runs on a GPU. The CPU and recursive chores of `potrf_dgemm`
+  get an evaluate, `hicma_potrf_gemm_cpu_evaluate`, installed by
+  `hicma_potrf_install_hooks` in a process with GPUs, that declines such a
+  GEMM; a GEMM every GPU evaluate declines (outside the dense band) still
+  runs on the CPU. Before, the GPU placement rested on the preferred GPU the
+  warmup and `potrf_bind_A` give each tile: without it and with
+  `device_load_balance_allow_cpu=1`, PaRSEC put every kind-10 GEMM on the
+  CPU (3 to 6 times slower in one process on a V100 node). Default runs give
+  the same bits. Report in `docs/omnicast/round6/REPORT.md`, section 8.
+- The GPU kernels of the Cholesky check the status of their cuBLAS,
+  cuBLASLt and cuSOLVER calls (hipBLAS and rocSOLVER on HIP). Most stored it
+  unchecked, and the GPU POTRF checked it only in an `assert`, which Release
+  builds drop: a failed call left a tile without its update and the run went
+  on, to a wrong factor ("not positive definite", residual 7.6e+01 with one
+  TRSM failed on purpose) or a later, unrelated error. A failed call now stops
+  the run with the file, the line and the status name (`HICMA_CUBLAS()`,
+  `HICMA_CUSOLVER()` in `hicma_parsec_internal.h`, as `HICMA_OMC()` for
+  OmniCast). The cuBLAS handle setup checked `cublasCreate`'s status again
+  after `cublasSetStream` instead of `cublasSetStream`'s own; the cuBLASLt
+  descriptor attributes are checked too. Results do not change
+  (`docs/release-readiness.md`, section 5.23).
+- `hicma_parsec_core_memory_allocation` (the LL^T of `--check`, and the tiles
+  of the climate emulator and the TRMM performance test) ignored the result
+  of `cudaMallocHost`/`hipHostMalloc`: a failure crashed later with no word
+  about memory. It now returns NULL and clears the runtime's error, which a
+  later launch check would otherwise have reported as its own. The check
+  falls back to pageable memory as before, and every caller stops with the
+  size when no memory is left.
 
 ### Architecture and maintenance
 
@@ -401,6 +529,69 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
   (`PARSEC_MCA_mpi_gpu_aware` and a user-set mode still win). With GTL and
   the variable set, two ranks with one MI250X GCD each pass as they are.
 
+### Radeon VII pass (HIP on gfx906)
+
+- HiCMA-X ran on an AMD Radeon VII (gfx906) with the ROCm 6.3.2 user space:
+  CTest 46 / 46 (the 14 GPU cases, OmniCast's 4 tests, the two-rank cases),
+  with OmniCast and the GPU operand cache. ROCm 6.4 and later ship no rocBLAS
+  kernels for gfx906: build against ROCm 6.3 or earlier there
+  (`docs/release-readiness.md`, section 5.20).
+- gfx906 keeps FP16 subnormals in rocBLAS's FP16 GEMMs (FP32 and FP16 C) and
+  has no BF16 hardware: BF16 GEMMs (`--tensor_gemm_hp 0x20`) made an adaptive
+  kind-5 run at N=30720 6x slower (12.7 s against 2.1 s). The start-up note
+  that points HIP runs with FP16 tiles to BF16 is no longer printed on gfx906.
+- The operand cache gives bit-identical residuals on gfx906 (11
+  configurations; cache on, off and at 4 slots). Conversions are 2.6-2.9 % of
+  the GPU kernel time there, so halving them leaves the factorization within
+  noise (0.997-1.014x).
+
+### Multi-node and multi-GPU pass (two Radeon VII nodes)
+
+- Multi-rank GPU runs aborted at the first tile a GPU sent when the MPI
+  library cannot read GPU memory (Open MPI 5.0.5 and UCX 1.15 built without
+  ROCm: `ibv_reg_mr ... Bad address`, then the other rank waited forever).
+  Two causes:
+  - HiCMA-X told PaRSEC to send from GPU memory (`mpi_gpu_aware` 2) whatever
+    the library. It now asks it (Open MPI's `MPIX_Query_rocm_support` and
+    `MPIX_Query_cuda_support`, MPICH's `MPIX_GPU_query_support`) and keeps
+    remote transfers in host memory when the answer is no, with a start-up
+    note. Cray MPICH is handled as before, and a user-set
+    `PARSEC_MCA_mpi_gpu_aware` still wins. On NVIDIA nodes Open MPI reports
+    CUDA support and nothing changes.
+  - PaRSEC sent from GPU memory even with `mpi_gpu_aware` 0. A GPU task
+    forwards a flow it only reads in the GPU copy it read (the
+    `potrf_*_send` tasks forward the POTRF and TRSM results that way), and
+    the engine was handed that copy. PaRSEC (fork) now sends the host copy,
+    and a task whose output a local GPU task forwards read-only writes the
+    host copy back when there are other ranks. Two V100 ranks with
+    `mpi_gpu_aware` 0 now send no tile from GPU memory, with the same
+    residuals.
+- With two GPUs in a process, GPUs faulted on host pages ("Memory access
+  fault ... Page not present"): at nearly every run of the runtime decisions
+  and of kind 10 on two nodes, and rarely on one. HIP pins pageable host
+  memory for each copy from it, and the pageable sources were PaRSEC's arena
+  buffers (received tiles, new and temporary tiles, host copies). PaRSEC
+  (fork) lets an application choose the allocator of arena memory
+  (`parsec_arena_data_allocate`), and HiCMA-X makes it pinned on HIP with
+  more than one GPU per process. The matrix tiles are pinned already.
+- One of the two nodes still faulted now and then (17 of 132 runs) in the
+  `--check`, always in its LL^T: a `malloc` buffer that PaRSEC registers
+  (`hipHostRegister`) at its first GPU use. The LL^T is now allocated like
+  the tiles (pinned when GPUs are enabled, on CUDA as well) and given a
+  registration hook that does nothing; that node then passed 48 of 48.
+- Validated on histamine2 and histamine3 (two Radeon VIIs each, InfiniBand),
+  one rank per node: the two-rank CTest cases, the 14 GPU cases and the
+  operand cache on two nodes with one GPU each, and the GPU cases and the
+  cache on two nodes with two GPUs each and on one node with two GPUs
+  (`docs/release-readiness.md`, section 5.21).
+- Also run on two NVIDIA nodes, a V100 (leconte) and an A100 (methane), one
+  rank each, over Ethernet with Open MPI and UCX built with CUDA, so tiles
+  leave from GPU memory. The two-rank CTest cases, the 22 GPU cases and the
+  operand cache pass, and sending from GPU memory and through host memory
+  give the same residuals. One run in 144 gave a wrong factor and was not
+  reproduced; other failures were clean aborts while another job used the
+  same GPU (`docs/release-readiness.md`, section 5.22).
+
 ### Documentation
 
 - `TESTS.md` regenerated from the option table; `BUILD.md`, `README.md` and
@@ -410,9 +601,11 @@ based on, `docs/release-improvement-plan.md` the task list and its status,
 
 - Cholesky drivers need `N % NB == 0`.
 - Kinds 1 to 4 have no HIP bodies. HIP GPU runs were validated on Frontier
-  (MI210, MI250X; `docs/release-readiness.md`, section 5.15).
-- AMD GPUs flush FP16 subnormals in their FP16 GEMMs: use
-  `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the dense layout.
+  (MI210, MI250X; `docs/release-readiness.md`, section 5.15) and on a Radeon
+  VII (gfx906, section 5.20).
+- AMD gfx90a GPUs (MI210, MI250X) flush FP16 subnormals in their FP16 GEMMs:
+  use `--tensor_gemm_hp 0x20` (BF16) with adaptive precisions in the dense
+  layout. gfx906 keeps them and has no BF16 hardware: keep FP16 there.
 - `--enable_stochastic_rounding` is not implemented for kinds 8, 9 and 10.
 - The CPU and GPU runtime-decision GEMMs use different storage policies for
   FP16 updates.

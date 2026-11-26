@@ -57,6 +57,7 @@
 #include <stdlib.h>    /**< Standard library functions */
 #include <stdio.h>     /**< Standard I/O functions */
 #include <string.h>    /**< String manipulation functions */
+#include <pthread.h>   /**< Mutexes of the GPU and host operand caches */
 
 /* ============================================================================
  * System definitions
@@ -164,6 +165,70 @@ typedef struct parsec_cuda_exec_stream_s parsec_cuda_exec_stream_t;
 #include <parsec/utils/zone_malloc.h>      /**< Zone-based memory allocation */
 #include "hicma_parsec_hip_cuda.h"         /**< HIP-CUDA compatibility layer (brings the HIP device types) */
 #endif
+
+/* ============================================================================
+ * GPU library status checks
+ * ============================================================================ */
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#define HICMA_GPU_BLAS_NAME             "hipBLAS"
+#define HICMA_GPU_BLAS_STRING(s_)       hipblasStatusToString(s_)
+#define HICMA_GPU_SOLVER_NAME           "rocSOLVER"
+#define HICMA_GPU_SOLVER_STRING(s_)     rocblas_status_to_string(s_)
+#define HICMA_GPU_SOLVER_SUCCESS        rocblas_status_success
+typedef rocblas_status hicma_gpu_solver_status_t;   /**< rocsolver_* return a rocBLAS status */
+#else
+#define HICMA_GPU_BLAS_NAME             "cuBLAS"
+#define HICMA_GPU_BLAS_STRING(s_)       cublasGetStatusString(s_)
+#define HICMA_GPU_SOLVER_NAME           "cuSOLVER"
+#define HICMA_GPU_SOLVER_STRING(s_)     hicma_cusolver_status_string(s_)
+#define HICMA_GPU_SOLVER_SUCCESS        CUSOLVER_STATUS_SUCCESS
+typedef cusolverStatus_t hicma_gpu_solver_status_t;
+
+/** cuSOLVER has no status-string function */
+static inline const char *hicma_cusolver_status_string(cusolverStatus_t s)
+{
+    switch( s ) {
+        case CUSOLVER_STATUS_NOT_INITIALIZED:           return "CUSOLVER_STATUS_NOT_INITIALIZED";
+        case CUSOLVER_STATUS_ALLOC_FAILED:              return "CUSOLVER_STATUS_ALLOC_FAILED";
+        case CUSOLVER_STATUS_INVALID_VALUE:             return "CUSOLVER_STATUS_INVALID_VALUE";
+        case CUSOLVER_STATUS_ARCH_MISMATCH:             return "CUSOLVER_STATUS_ARCH_MISMATCH";
+        case CUSOLVER_STATUS_EXECUTION_FAILED:          return "CUSOLVER_STATUS_EXECUTION_FAILED";
+        case CUSOLVER_STATUS_INTERNAL_ERROR:            return "CUSOLVER_STATUS_INTERNAL_ERROR";
+        case CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED: return "CUSOLVER_STATUS_MATRIX_TYPE_NOT_SUPPORTED";
+        case CUSOLVER_STATUS_NOT_SUPPORTED:             return "CUSOLVER_STATUS_NOT_SUPPORTED";
+        default:                                        return "unknown cuSOLVER status";
+    }
+}
+#endif
+
+/** Abort with the call site when a cuBLAS or cuBLASLt call (hipBLAS on HIP)
+ *  of a GPU kernel fails. The kernels enqueue their work and return, so a
+ *  failed call leaves a tile without its update and the factor wrong; a
+ *  failure means a wrong argument, a broken handle or a dead GPU context,
+ *  not a condition to recover from (as HICMA_OMC for OmniCast). */
+#define HICMA_CUBLAS(call) do {                                                    \
+        cublasStatus_t hicma_cublas_status_ = (call);                              \
+        if( CUBLAS_STATUS_SUCCESS != hicma_cublas_status_ ) {                      \
+            fprintf(stderr, "%s:%d: " HICMA_GPU_BLAS_NAME ": %s (status %d)\n",    \
+                    __FILE__, __LINE__, HICMA_GPU_BLAS_STRING(hicma_cublas_status_), \
+                    (int)hicma_cublas_status_);                                    \
+            abort();                                                               \
+        }                                                                          \
+    } while(0)
+
+/** The same for cuSOLVER (rocSOLVER on HIP). A matrix that is not positive
+ *  definite is not a failure here: POTRF reports it in its info argument. */
+#define HICMA_CUSOLVER(call) do {                                                  \
+        hicma_gpu_solver_status_t hicma_cusolver_status_ = (call);                 \
+        if( HICMA_GPU_SOLVER_SUCCESS != hicma_cusolver_status_ ) {                 \
+            fprintf(stderr, "%s:%d: " HICMA_GPU_SOLVER_NAME ": %s (status %d)\n",  \
+                    __FILE__, __LINE__, HICMA_GPU_SOLVER_STRING(hicma_cusolver_status_), \
+                    (int)hicma_cusolver_status_);                                  \
+            abort();                                                               \
+        }                                                                          \
+    } while(0)
+#endif /* PARSEC_HAVE_DEV_CUDA_SUPPORT || PARSEC_HAVE_DEV_HIP_SUPPORT */
 
 /* ============================================================================
  * C++ compatibility
@@ -673,6 +738,12 @@ typedef struct hicma_parsec_params_s {
     int fp8;                  /**< --fp8: 1 (default) use FP8 GEMMs where the GPUs support them; 0: never */
     int fp8_enabled;          /**< HAVE_FP8, --fp8, kind 8, 9 or 10, and every GPU supports FP8 GEMM (CC >= 8.9) */
     int fp8_scaling;          /**< FP8 GEMMs: scale each operand tile by a power of two from its amax */
+    int operand_cache;        /**< GEMM operand tiles kept converted, per GPU and on the host (kind 10 runtime CPU GEMMs); -1 auto (default), 0 off, > 0 tiles per cache */
+    int operand_cache_epoch;  /**< Bumped per factorization: cached operands of an earlier one are stale */
+    struct hicma_host_operand_cache_s *host_operand_cache; /**< FP32 copies of the panel tiles for the kind 10 runtime CPU GEMMs (hicma_host_operand_cache_begin); NULL when off */
+    int flush_subnormals;     /**< --flush_subnormals: CPU threads flush subnormals (FTZ/DAZ) while HiCMA-X runs; 1 (default) or 0 */
+    int fp_env_changed;       /**< hicma_parsec_setup_parsec changed the main thread's floating-point control register */
+    unsigned long fp_env_saved; /**< That register before the change, restored by hicma_parsec_cleanup_parsec */
 
     /* ========================================================================
      * Performance metrics
@@ -922,7 +993,7 @@ static inline int hicma_tile_trsm_bytes(const hicma_parsec_params_t *params, int
  * Layout of an FP8 (E4M3) tile that potrf_dtrsm_send sends to FP8 GEMMs: the
  * operand cublasLtMatmul takes (transposed, zero padded to a square of side
  * hicma_fp8_ld(mb)), followed by the HICMA_FP8_SCALE_FLOATS floats
- * {amax, s, 1/s, 0} of its per-tile scale (see hicma_fp8_scaled_convert_GPU),
+ * {amax, s, 1/s, 0} of its per-tile scale (see hicma_parsec_fp8_operand_GPU),
  * so the scale travels with the tile.
  */
 #define HICMA_FP8_SCALE_FLOATS 4
@@ -1000,6 +1071,8 @@ typedef struct parsec_potrf_stream_workspace_s {
     cudaStream_t norm_meta_stream;  /**< Non-blocking stream for metadata reads (NULL if unused) */
     double *norm_meta_host;         /**< Pinned host buffer, 4 doubles: A {norm, precision}, B {norm, precision} */
 
+    struct hicma_operand_cache_s **operand_cache; /**< The device's operand caches (parsec_potrf_gpu_workspace_t) */
+
 #if HAVE_FP8
     /* FP8 precision support */
     cublasLtHandle_t lightHandle;           /**< cuBLASLt handle */
@@ -1012,10 +1085,10 @@ typedef struct parsec_potrf_stream_workspace_s {
     size_t workspaceSize;                   /**< FP8 workspace size */
     cublasLtMatmulHeuristicResult_t heuristicResultsArray; /**< Heuristic results */
     cublasLtMatmulPreference_t pref;        /**< Matrix multiplication preferences */
-    /* FP8 GEMMs: operands scaled per tile by hicma_fp8_scaled_convert_GPU
+    /* FP8 GEMMs: operands scaled per tile by hicma_parsec_fp8_operand_GPU
      * (or sent so by potrf_dtrsm_send); matmulDesc_scaled reads 1/s_A and
      * 1/s_B from fp8_scale[2] and fp8_scale[6] */
-    cublasLtMatmulDesc_t matmulDesc_scaled; /**< matmulDesc with A/B scale pointers */
+    cublasLtMatmulDesc_t matmulDesc_scaled; /**< matmulDesc with A/B scale pointers (hicma_fp8_set_scales before each GEMM) */
     cublasLtMatmulHeuristicResult_t heuristic_scaled; /**< Heuristic result for matmulDesc_scaled */
     float *fp8_scale;                       /**< Device, 8 floats: A {amax, s, 1/s, -}, B {amax, s, 1/s, -} */
 #endif
@@ -1025,10 +1098,68 @@ typedef struct parsec_potrf_stream_workspace_s {
 /**
  * @brief GPU workspace for POTRF operations
  */
+/** Operand caches of a GPU, by what a cached tile holds */
+enum {
+    HICMA_OPC_FP8 = 0,  /**< FP8 GEMM operands (transposed, padded, scale after the entries) */
+    HICMA_OPC_2B,       /**< FP16 and BF16 tiles */
+    HICMA_OPC_4B,       /**< FP32 tiles */
+    HICMA_OPC_NUM
+};
+
 typedef struct parsec_potrf_gpu_workspace_s {
     parsec_potrf_stream_workspace_t *stream_workspace;  /**< Stream workspace */
     parsec_device_cuda_module_t *cuda_device;           /**< CUDA device module */
+    struct hicma_operand_cache_s *operand_cache[HICMA_OPC_NUM];  /**< NULL when off */
 } parsec_potrf_gpu_workspace_t;
+
+/**
+ * GEMM operand cache of a GPU. A GPU GEMM reads its A and B tiles in the
+ * precision of the GEMM, but a panel tile is sent in the highest precision
+ * any of its consumers needs (decisions_send; with a DP diagonal, usually
+ * DP), so the GEMMs of lower precision used to convert both operands, each
+ * time: tile (m, k) was converted once per GEMM reading it, up to NT-1
+ * times, for O(NT^3) conversions in all. A panel tile no longer changes after
+ * its TRSM, and its conversion depends only on the tile (stochastic rounding
+ * seeds per tile, hicma_parsec_sr_seed), so the cache keeps each tile it has
+ * converted, O(NT^2) conversions, bit-identical results. Slots are taken from
+ * the device memory zone when first needed (none for runs without such
+ * conversions), up to max_slots; when full or the zone has no room, the least
+ * recently used slot is converted again. Entries belong to one factorization
+ * (operand_cache_epoch) of one matrix. The streams of the device share it: a
+ * GEMM on another stream than the conversion waits for its event, and a slot
+ * is overwritten only after the GEMMs that read it, on every stream.
+ */
+typedef struct hicma_operand_cache_slot_s {
+    const void *desc;      /**< Matrix of the cached tile */
+    size_t tile;           /**< Tile index, hicma_tile_idx(m, k) */
+    int epoch;             /**< operand_cache_epoch of the conversion */
+    int src_type;          /**< omc_dtype_t the tile was converted from */
+    int dst_type;          /**< omc_dtype_t it was converted to */
+    int sr;                /**< Stochastic rounding */
+    float scale;           /**< Host scale of the conversion (1: none) */
+    int valid;             /**< Holds a converted tile */
+    int pins;              /**< GEMMs between hicma_operand_cache_get and _put */
+    int producer;          /**< Stream index that converted it */
+    uint64_t stamp;        /**< Last use, for LRU */
+    uint64_t used;         /**< Streams (bit j) with a done[j] event recorded since the conversion */
+    void *buf;             /**< The converted tile (FP8: then its scale {amax, s, 1/s, 0}) */
+    cudaEvent_t ready;     /**< Recorded on the producer stream after the conversion */
+    cudaEvent_t *done;     /**< Per stream: recorded after the last GEMM of that stream that read buf */
+} hicma_operand_cache_slot_t;
+
+typedef struct hicma_operand_cache_s {
+    pthread_mutex_t lock;
+    zone_malloc_t *zone;   /**< Device memory zone the slots come from */
+    int max_slots;         /**< Slots it may take */
+    int nslots;            /**< Slots taken so far */
+    int grow;              /**< 0 once the zone had no room: reuse slots */
+    int nstreams;          /**< Stream indices 0 .. nstreams-1 (PaRSEC exec_stream index) */
+    int mb;                /**< Tile size; leading dimension of the cached tiles */
+    size_t slot_bytes;     /**< Bytes of a slot */
+    uint64_t clock;
+    uint64_t hits, misses, fallbacks;
+    hicma_operand_cache_slot_t *slots;
+} hicma_operand_cache_t;
 
 /**
  * @brief Main POTRF workspace structure

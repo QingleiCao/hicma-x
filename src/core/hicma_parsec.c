@@ -23,6 +23,9 @@
  **/
 
 #include "hicma_parsec.h"
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+#include "hicma_parsec_gpu.h"
+#endif
 #include "hicma_parsec_sparse_analysis.h"
 
 /* =============================================================================
@@ -295,8 +298,16 @@ int hicma_parsec_matrix_pre_analysis( parsec_context_t *parsec,
      * ||LL^T-A||/||A|| = 1.0e-5 for --fixedacc 1e-8, the same tiles in BF16
      * (FP32's exponent range) 1.2e-8. --tensor_gemm chooses; say so when the
      * decisions produced FP16 tiles. The run-time decision (kind 10) scales its
-     * FP16 operands and is not concerned. */
-    if( params->gpus > 0 && 0 == params->rank && !params->adaptive_decision_runtime
+     * FP16 operands and is not concerned. gfx906 (Radeon VII, MI50/60), which
+     * has no matrix cores, keeps FP16 subnormals in rocBLAS's FP16 GEMMs (FP32
+     * and FP16 C, measured) and has no BF16 hardware (BF16 GEMMs made an
+     * adaptive kind-5 run 6x slower): no note there. */
+    int fp16_flushes = 1;
+    hipDeviceProp_t prop;
+    if( params->gpus > 0 && hipSuccess == hipGetDeviceProperties(&prop, 0)
+        && 0 == strncmp(prop.gcnArchName, "gfx906", 6) )
+        fp16_flushes = 0;
+    if( fp16_flushes && params->gpus > 0 && 0 == params->rank && !params->adaptive_decision_runtime
         && (MASK_TF16_A16_B16_C32_OP32 == HICMA_FP16_GEMM(params) || MASK_TF16_A16_B16_C16_OP16 == HICMA_FP16_GEMM(params)) ) {
         const int NT = params->NT;
         int nb_hp = 0;
@@ -458,6 +469,16 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
         memset(params->nb_datatype_conversions, 0,
                (size_t)params->counter_stride * sizeof(uint64_t));
     }
+
+    /* GEMM operands cached by an earlier factorization (or the warmup) are
+     * stale: tiles of this one have other values */
+    params->operand_cache_epoch++;
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+    {
+        uint64_t operand_cache_stats[5];
+        hicma_operand_cache_stats(data, operand_cache_stats, 1);
+    }
+#endif
 
     /* Synchronize all processes and start timing for accurate measurement */
     MPI_Barrier( MPI_COMM_WORLD );
@@ -641,6 +662,30 @@ int hicma_parsec_potrf( parsec_context_t *parsec,
             fprintf(stderr, GRN"Number_of_GEMMs: DENSE_DP= %lu DENSE_SP= %lu DENSE_HP= %lu DENSE_FP8= %lu LOW_RANK_DP= %lu LOW_RANK_SP= %lu Number_of_Datatype_Conversions= %lu\n"RESET,
                     params->nb_gemms[DENSE_DP*counter_stride], params->nb_gemms[DENSE_SP*counter_stride], params->nb_gemms[DENSE_HP*counter_stride],
                     params->nb_gemms[DENSE_FP8*counter_stride], params->nb_gemms[LOW_RANK_DP*counter_stride], params->nb_gemms[LOW_RANK_SP*counter_stride], params->nb_datatype_conversions[0]);
+        }
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+        if( params->gpus > 0 ) {
+            uint64_t operand_cache_stats[5];
+            hicma_operand_cache_stats(data, operand_cache_stats, 1);
+            MPI_Allreduce(MPI_IN_PLACE, operand_cache_stats, 5, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+            if( 0 == params->rank ) {
+                fprintf(stderr, GRN"GPU_operand_cache: conversions= %lu reuses= %lu fallbacks= %lu slots= %lu MB= %.1f\n"RESET,
+                        operand_cache_stats[0], operand_cache_stats[1], operand_cache_stats[2],
+                        operand_cache_stats[3], (double)operand_cache_stats[4] / 1.0e6);
+            }
+        }
+#endif
+        if( params->adaptive_decision_runtime ) {
+            /* Every rank takes part; ranks with GPUs have no host cache and add zeros */
+            uint64_t host_cache_stats[8];
+            hicma_host_operand_cache_stats(params->host_operand_cache, host_cache_stats, 1);
+            host_cache_stats[7] = NULL != params->host_operand_cache;
+            MPI_Allreduce(MPI_IN_PLACE, host_cache_stats, 8, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+            if( 0 == params->rank && host_cache_stats[7] > 0 ) {
+                fprintf(stderr, GRN"CPU_operand_cache: conversions= %lu reuses= %lu fallbacks= %lu evictions= %lu tiles= %lu MB= %.1f held= %lu\n"RESET,
+                        host_cache_stats[0], host_cache_stats[1], host_cache_stats[2], host_cache_stats[3],
+                        host_cache_stats[4], (double)host_cache_stats[5] / 1.0e6, host_cache_stats[6]);
+            }
         }
     }
 

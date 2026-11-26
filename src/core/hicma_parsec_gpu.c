@@ -193,6 +193,90 @@ parsec_potrf_stream_workspace_t *lookup_gpu_workspace( parsec_device_cuda_module
 }
 
 /**
+ * @brief Create an operand cache of a GPU (see hicma_operand_cache_t)
+ *
+ * Up to --operand_cache slots of slot_bytes, or by default (-1) two panels
+ * (2 NT tiles) and at most 5% of the device memory zone; taken from the zone
+ * only when first needed. NULL when off.
+ */
+static hicma_operand_cache_t *hicma_operand_cache_create(parsec_device_cuda_module_t *cuda_device,
+        hicma_parsec_params_t *params, int mb, size_t slot_bytes)
+{
+    if( 0 == params->operand_cache ) return NULL;
+
+    zone_malloc_t *zone = cuda_device->super.memory;
+    slot_bytes = (slot_bytes + 255) / 256 * 256;
+    long nslots = params->operand_cache;
+    if( nslots < 0 ) {
+        size_t zone_bytes = (size_t)zone->max_segment * zone->unit_size;
+        long cap = (long)(zone_bytes / 20 / slot_bytes);
+        nslots = 2L * params->NT;
+        if( nslots > cap ) nslots = cap;
+        if( nslots < 4 ) return NULL;
+    }
+    int nstreams = cuda_device->super.max_exec_streams;
+    if( nstreams > 64 ) return NULL;
+
+    hicma_operand_cache_t *c = (hicma_operand_cache_t *)calloc(1, sizeof(hicma_operand_cache_t));
+    if( NULL == c || NULL == (c->slots = (hicma_operand_cache_slot_t *)calloc((size_t)nslots, sizeof(hicma_operand_cache_slot_t))) ) {
+        fprintf(stderr, "GPU operand cache: out of host memory\n");
+        abort();
+    }
+    pthread_mutex_init(&c->lock, NULL);
+    c->zone = zone;
+    c->max_slots = (int)nslots;
+    c->nslots = 0;
+    c->grow = 1;
+    c->nstreams = nstreams;
+    c->mb = mb;
+    c->slot_bytes = slot_bytes;
+    return c;
+}
+
+static void hicma_operand_cache_destroy(hicma_operand_cache_t *c, parsec_device_cuda_module_t *cuda_device)
+{
+    if( NULL == c ) return;
+    cudaSetDevice(cuda_device->cuda_index);
+    for( int i = 0; i < c->nslots; i++ ) {
+        cudaEventDestroy(c->slots[i].ready);
+        for( int j = 0; j < c->nstreams; j++ ) {
+            cudaEventDestroy(c->slots[i].done[j]);
+        }
+        free(c->slots[i].done);
+        zone_free(cuda_device->super.memory, c->slots[i].buf);
+    }
+    pthread_mutex_destroy(&c->lock);
+    free(c->slots);
+    free(c);
+}
+
+/**
+ * @brief Operand cache counters, summed over this process's GPUs and caches
+ *
+ * @param[out] stats {conversions, reuses, fallbacks, slots taken, bytes taken}
+ * @param[in] reset Zero the counters (not the slots) afterwards
+ */
+void hicma_operand_cache_stats( hicma_parsec_data_t *data, uint64_t stats[5], int reset )
+{
+    for( int q = 0; q < 5; q++ ) stats[q] = 0;
+    if( NULL == data->ws_gpu ) return;
+    for( int i = 0; i < (int)parsec_nb_devices; i++ ) {
+        for( int t = 0; t < HICMA_OPC_NUM; t++ ) {
+            hicma_operand_cache_t *c = data->ws_gpu->gpu_workspace[i].operand_cache[t];
+            if( NULL == c ) continue;
+            pthread_mutex_lock(&c->lock);
+            stats[0] += c->misses;
+            stats[1] += c->hits;
+            stats[2] += c->fallbacks;
+            stats[3] += (uint64_t)c->nslots;
+            stats[4] += (uint64_t)c->nslots * c->slot_bytes;
+            if( reset ) c->misses = c->hits = c->fallbacks = 0;
+            pthread_mutex_unlock(&c->lock);
+        }
+    }
+}
+
+/**
  * @brief Allocate memory for workspace
  *
  * Allocates memory for GPU workspace structures including device-specific
@@ -224,6 +308,11 @@ void workspace_memory_free( parsec_potrf_workspace_t *ws)
         parsec_device_module_t *device = parsec_mca_device_get(i);
         if( NULL == device ) continue;
         if( device->type != PARSEC_DEV_CUDA && device->type != PARSEC_DEV_HIP ) continue;
+
+        for( int t = 0; t < HICMA_OPC_NUM; t++ ) {
+            hicma_operand_cache_destroy(ws->gpu_workspace[i].operand_cache[t], ws->gpu_workspace[i].cuda_device);
+            ws->gpu_workspace[i].operand_cache[t] = NULL;
+        }
 
         for(int j = 0; j < ws->gpu_workspace[i].cuda_device->super.max_exec_streams; j++) {
             /* j 0, h2d; j 1, d2h */
@@ -372,14 +461,15 @@ void gpu_handle_init( hicma_parsec_data_t *data ) {
             /* Create handle_cublas_gpu */
             status = cublasCreate(&handle_cublas_gpu);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
+            status = cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = handle_cublas_gpu;
 
             /* Create handle_cublas_gpu_deviceptr */
             status = cublasCreate(&handle_cublas_gpu_deviceptr);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            status = cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             status = cublasSetPointerMode(handle_cublas_gpu_deviceptr, CUBLAS_POINTER_MODE_DEVICE);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = handle_cublas_gpu_deviceptr;
@@ -592,12 +682,12 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 cublasLtMatmulDesc_t matmulDesc;
                 HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescCreate(&matmulDesc, CUBLAS_COMPUTE_32F, CUDA_R_32F), "cuBLASLt matmul descriptor");
                 const cublasOperation_t transa = CUBLAS_OP_T, transb = CUBLAS_OP_N;
-                cublasLtMatmulDescSetAttribute(
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(
                         matmulDesc, CUBLASLT_MATMUL_DESC_TRANSA, &transa,
-                        sizeof(transa));
-                cublasLtMatmulDescSetAttribute(
+                        sizeof(transa)), "cuBLASLt matmul descriptor");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(
                         matmulDesc, CUBLASLT_MATMUL_DESC_TRANSB, &transb,
-                        sizeof(transb));
+                        sizeof(transb)), "cuBLASLt matmul descriptor");
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].matmulDesc= matmulDesc;
 
                 // Adesc Bdesc Cdesc
@@ -624,9 +714,9 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 // heuristicResultsArray 
                 cublasLtMatmulPreference_t pref;
                 HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulPreferenceCreate(&pref), "cuBLASLt preference");
-                cublasLtMatmulPreferenceSetAttribute(
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulPreferenceSetAttribute(
                         pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
-                        &workspaceSize, sizeof(workspaceSize));
+                        &workspaceSize, sizeof(workspaceSize)), "cuBLASLt preference");
 
                 int requestedAlgoCount = 1;
                 int returnAlgoCount = 0;
@@ -647,7 +737,7 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 data->ws_gpu->gpu_workspace[i].stream_workspace[j].pref = pref;
 
                 /* FP8 GEMMs: same GEMM, with device pointers to the per-tile
-                 * scales 1/s_A and 1/s_B that hicma_fp8_scaled_convert_GPU writes,
+                 * scales 1/s_A and 1/s_B that hicma_parsec_fp8_operand_GPU writes,
                  * or the GEMM copies from a tile sent in FP8, on this stream before
                  * each GEMM (initially 1). */
                 float *fp8_scale = NULL;
@@ -657,10 +747,10 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
                 const float *a_scale = fp8_scale + 2, *b_scale = fp8_scale + 6;
                 cublasLtMatmulDesc_t matmulDesc_scaled;
                 HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescCreate(&matmulDesc_scaled, CUBLAS_COMPUTE_32F, CUDA_R_32F), "cuBLASLt scaled matmul descriptor");
-                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSA, &transa, sizeof(transa));
-                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSB, &transb, sizeof(transb));
-                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale, sizeof(a_scale));
-                cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale, sizeof(b_scale));
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSA, &transa, sizeof(transa)), "cuBLASLt scaled matmul descriptor");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_TRANSB, &transb, sizeof(transb)), "cuBLASLt scaled matmul descriptor");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &a_scale, sizeof(a_scale)), "cuBLASLt scaled matmul descriptor");
+                HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == cublasLtMatmulDescSetAttribute(matmulDesc_scaled, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale, sizeof(b_scale)), "cuBLASLt scaled matmul descriptor");
 
                 cublasLtMatmulHeuristicResult_t heuristic_scaled;
                 memset(&heuristic_scaled, 0, sizeof(heuristic_scaled));
@@ -717,14 +807,15 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             /* Create handle_cublas_gpu */
             status = cublasCreate(&handle_cublas_gpu);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
+            status = cublasSetStream( handle_cublas_gpu, cuda_stream->cuda_stream );
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas = handle_cublas_gpu;
 
             /* Create handle_cublas_gpu_deviceptr */
             status = cublasCreate(&handle_cublas_gpu_deviceptr);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            status = cublasSetStream( handle_cublas_gpu_deviceptr, cuda_stream->cuda_stream );
+            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             status = cublasSetPointerMode(handle_cublas_gpu_deviceptr, CUBLAS_POINTER_MODE_DEVICE);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
             data->ws_gpu->gpu_workspace[i].stream_workspace[j].handle_cublas_deviceptr = handle_cublas_gpu_deviceptr;
@@ -732,7 +823,6 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
             /* Create handle_cublas_tensor */
             status = cublasCreate(&handle_cublas_tensor);
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cublasCreate");
-            HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
 #if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT)
             status = cublasSetMathMode(handle_cublas_tensor, CUBLAS_DEFAULT_MATH); /* Set the math mode to allow cuBLAS to use Tensor Cores */
             HICMA_GPU_HANDLE_CHECK(CUBLAS_STATUS_SUCCESS == status, "cuBLAS handle setup");
@@ -771,6 +861,21 @@ void gpu_temporay_buffer_init( hicma_parsec_data_t *data, hicma_parsec_params_t 
 #if defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
             hicma_gpu_handles_warmup(&data->ws_gpu->gpu_workspace[i].stream_workspace[j], cuda_stream->cuda_stream, mb);
 #endif
+        }
+
+        /* GEMM operand caches shared by the device's streams; device memory
+         * is taken only for conversions that happen */
+        {
+            parsec_potrf_gpu_workspace_t *gw = &data->ws_gpu->gpu_workspace[i];
+            if( params->fp8_enabled ) {
+                gw->operand_cache[HICMA_OPC_FP8] = hicma_operand_cache_create(cuda_device, params, mb,
+                        (size_t)hicma_fp8_tile_bytes(mb));
+            }
+            gw->operand_cache[HICMA_OPC_2B] = hicma_operand_cache_create(cuda_device, params, mb, (size_t)mb * nb * 2);
+            gw->operand_cache[HICMA_OPC_4B] = hicma_operand_cache_create(cuda_device, params, mb, (size_t)mb * nb * 4);
+            for(int j = 2; j < cuda_device->super.max_exec_streams; j++) {
+                gw->stream_workspace[j].operand_cache = gw->operand_cache;
+            }
         }
     }
 
