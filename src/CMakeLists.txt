@@ -42,6 +42,7 @@ set(SRC
     core/hicma_parsec_flat_file.c
     core/hicma_parsec_datatype_convert.c
     core/hicma_parsec_io.c
+    core/hicma_parsec_ir.c
     
     # Climate emulator files
     climate_emulator/climate_emulator.c

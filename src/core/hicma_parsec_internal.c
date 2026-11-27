@@ -270,6 +270,17 @@ static int is_negative_number(const char *str) {
  * @note This function skips PaRSEC/MPI specific arguments
  * @note Help is displayed and program exits if --help is requested
  */
+/* Whether --name or --name=value appears on the command line (before a "--") */
+static int hicma_option_given(int argc, char **argv, const char *name) {
+    size_t len = strlen(name);
+    for (int i = 1; i < argc; i++) {
+        if (0 == strcmp(argv[i], "--")) break;
+        if (0 == strncmp(argv[i], "--", 2) && 0 == strncmp(argv[i] + 2, name, len)
+            && ('\0' == argv[i][2 + len] || '=' == argv[i][2 + len])) return 1;
+    }
+    return 0;
+}
+
 static int parse_arguments_parsing(int argc, char **argv, hicma_parsec_params_t *params) {
     config_option_t options[] = {
         // PaRSEC specific options
@@ -1077,11 +1088,12 @@ void parse_arguments(int *_argc, char*** _argv, hicma_parsec_params_t *params)
     }
 
     /* Kernel Parameter Default Adjustment */
-    // Adjust default kernel parameters for certain problem types (0-7)
+    // Adjust default kernel parameters for certain problem types (0-7) when
+    // none of them was given: an explicit --beta 0.03 used to become 0.1
     if( params->kind_of_problem <= 7
-            && params->sigma == 1.0  
-            && params->beta == 0.03
-            && params->nu == 1.0 ) {
+            && !hicma_option_given(argc, argv, "sigma")
+            && !hicma_option_given(argc, argv, "beta")
+            && !hicma_option_given(argc, argv, "nu") ) {
         params->sigma = 1.0;    // Standard deviation
         params->beta = 0.1;     // Spatial correlation (increased from 0.03)
         params->nu = 0.5;       // Smoothness parameter (decreased from 1.0)
@@ -2571,6 +2583,15 @@ int hicma_parsec_params_check( hicma_parsec_params_t *params )
 }
 
 
+#if defined(PARSEC_HAVE_DEV_CUDA_SUPPORT) || defined(PARSEC_HAVE_DEV_HIP_SUPPORT)
+/* Memory registration hook of a collection whose memory is already pinned */
+static int hicma_parsec_memory_noop(parsec_data_collection_t *dc, parsec_device_module_t *device)
+{
+    (void)dc; (void)device;
+    return PARSEC_SUCCESS;
+}
+#endif
+
 /**
  * @brief Initialize data descriptors and GPU workspace
  * 
@@ -2652,8 +2673,11 @@ int hicma_parsec_data_init( hicma_parsec_data_t *data, hicma_parsec_params_t *pa
          * no GPU is used) PaRSEC keeps its own lazy per-tile registration */
         params->dcAd_host_registered = 0;
         if( params->gpus > 0 && cudaSuccess == cudaHostRegister(data->dcAd.mat, allocate_size, cudaHostRegisterDefault) ) {
-            data->dcAd.super.super.register_memory = NULL;
-            data->dcAd.super.super.unregister_memory = NULL;
+            /* No-ops rather than NULL: DPLASMA's wrapped collections
+             * (dplasma_lapack_adtt.c) call these hooks without a NULL check,
+             * so a DPLASMA GPU routine on dcAd (dpotrs, dtrmm) jumped to 0 */
+            data->dcAd.super.super.register_memory = hicma_parsec_memory_noop;
+            data->dcAd.super.super.unregister_memory = hicma_parsec_memory_noop;
             params->dcAd_host_registered = 1;
         }
 #endif
